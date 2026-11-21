@@ -15,6 +15,7 @@ import { preferFpTsArrayMethods } from "./prefer-fp-ts-array-methods.js";
 import { preferFunctionComposition } from "./prefer-function-composition.js";
 import { preferMonadicComposition } from "./prefer-monadic-composition.js";
 import { preferMonadicErrorHandling } from "./prefer-monadic-error-handling.js";
+import { preferPointFree } from "./prefer-point-free.js";
 import { preferReadonlyCollections } from "./prefer-readonly-collections.js";
 import { preferTypeOverInterface } from "./prefer-type-over-interface.js";
 import { requireExhaustiveMatch } from "./require-exhaustive-match.js";
@@ -37,6 +38,7 @@ export const rules = {
   "prefer-function-composition": preferFunctionComposition,
   "prefer-monadic-composition": preferMonadicComposition,
   "prefer-monadic-error-handling": preferMonadicErrorHandling,
+  "prefer-point-free": preferPointFree,
   "prefer-readonly-collections": preferReadonlyCollections,
   "prefer-type-over-interface": preferTypeOverInterface,
   "require-exhaustive-match": requireExhaustiveMatch,

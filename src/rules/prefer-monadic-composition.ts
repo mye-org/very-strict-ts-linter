@@ -64,7 +64,7 @@ const getCallbackReturnExpression = (arg: TSESTree.CallExpressionArgument) =>
     .with({ type: AST_NODE_TYPES.ArrowFunctionExpression }, (fn) =>
       match(fn.body)
         .with({ type: AST_NODE_TYPES.BlockStatement }, getSingleBlockReturnExpr)
-        .with(P._, (expr) => O.some(expr))
+        .with(P._, O.some)
         .exhaustive(),
     )
     .with(P._, () => O.none)

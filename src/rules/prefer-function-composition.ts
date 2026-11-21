@@ -42,8 +42,8 @@ const getSingleBlockReturnCall = (body: TSESTree.BlockStatement) => {
 
 const getArrowReturnCall = (node: TSESTree.ArrowFunctionExpression) =>
   match(node.body)
-    .with({ type: AST_NODE_TYPES.CallExpression }, (body) => O.some(body))
-    .with({ type: AST_NODE_TYPES.BlockStatement }, (body) => getSingleBlockReturnCall(body))
+    .with({ type: AST_NODE_TYPES.CallExpression }, O.some)
+    .with({ type: AST_NODE_TYPES.BlockStatement }, getSingleBlockReturnCall)
     .with(P._, () => O.none)
     .exhaustive();
 
