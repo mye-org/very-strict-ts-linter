@@ -5,6 +5,7 @@ import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
+import { hasFunctionInit, isEsTreeFunctionNode } from "../utils/type-helpers.js";
 
 type MessageIds =
   | "preferUnionOverBooleanParam"
@@ -203,11 +204,7 @@ const getEnclosingFunctionNode = (node: TSESTree.Node): O.Option<FunctionNode> =
   pipe(
     O.fromNullable(node.parent),
     O.flatMap((parent) =>
-      parent.type === AST_NODE_TYPES.FunctionDeclaration ||
-      parent.type === AST_NODE_TYPES.FunctionExpression ||
-      parent.type === AST_NODE_TYPES.ArrowFunctionExpression
-        ? O.some(parent)
-        : getEnclosingFunctionNode(parent),
+      isEsTreeFunctionNode(parent) ? O.some(parent) : getEnclosingFunctionNode(parent),
     ),
   );
 
@@ -358,9 +355,7 @@ const checkFunctionNode = (
     .exhaustive();
 };
 
-const isFunctionInitializer = (node: TSESTree.VariableDeclarator) =>
-  node.init?.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-  node.init?.type === AST_NODE_TYPES.FunctionExpression;
+const isFunctionInitializer = hasFunctionInit;
 
 const checkVariableDeclarator = (
   node: TSESTree.VariableDeclarator,
@@ -399,7 +394,7 @@ export const preferUnionOverBoolean = createRule<[], MessageIds>({
     type: "suggestion",
     docs: {
       description:
-        "Discourage boolean blindness across parameters, types, variables, and non-predicate return types; prefer discriminated unions, Option, or Either.",
+        "Discourage boolean blindness across parameters, types, variables, and non-predicate return types; prefer discriminated unions, Option, or Either (see also `no-lifecycle-flag-clusters`).",
     },
     messages: {
       preferUnionOverBooleanParam:

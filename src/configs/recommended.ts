@@ -5,15 +5,38 @@ import tseslint from "typescript-eslint";
 import { rules } from "../rules/index.js";
 
 export type StrictFpConfigOptions = Partial<
-  Record<"files" | "boundaryFiles" | "testFiles", ReadonlyArray<string>> &
+  Record<"files" | "boundaryFiles" | "testFiles" | "domainFiles" | "applicationFiles", ReadonlyArray<string>> &
     Record<"maxFunctionLines", number>
 >;
 
+export const dddBoundaryRules = {
+  "strict-fp/domain-layer-purity": "error",
+  "strict-fp/no-cross-aggregate-reference": "error",
+  "strict-fp/no-domain-raw-primitives": "error",
+  "strict-fp/no-unit-suffixed-primitives": "error",
+  "strict-fp/repository-aggregate-root-only": "error",
+  "strict-fp/ubiquitous-language": "error",
+} as const satisfies TSESLint.FlatConfig.Rules;
+
+export const dddDiscoveryRules = {
+  "strict-fp/no-data-clumps": "error",
+  "strict-fp/no-external-entity-mutation": "error",
+  "strict-fp/no-inline-infra-side-effects": "error",
+  "strict-fp/no-lifecycle-flag-clusters": "error",
+  "strict-fp/no-model-polysemy": "error",
+  "strict-fp/no-multi-repo-orchestration": "error",
+  "strict-fp/no-repeated-guard-clauses": "error",
+  "strict-fp/no-scattered-validation": "error",
+  "strict-fp/no-stringly-typed-discriminants": "error",
+  "strict-fp/no-train-wreck-navigation": "error",
+} as const satisfies TSESLint.FlatConfig.Rules;
+
 const baseStrictFpRules = {
+  ...dddBoundaryRules,
+  ...dddDiscoveryRules,
   "strict-fp/fp-ts-import-convention": "error",
   "strict-fp/no-any-or-unknown": "error",
   "strict-fp/no-classes": "error",
-  "strict-fp/no-domain-raw-primitives": "error",
   "strict-fp/no-explicit-return-type": "error",
   "strict-fp/no-if-else-or-switch": "error",
   "strict-fp/no-imperative-loops": "error",
@@ -35,10 +58,29 @@ const baseStrictFpRules = {
   "@typescript-eslint/no-explicit-any": "off",
 } as const satisfies TSESLint.FlatConfig.Rules;
 
-export const strictFpRules = (maxLines = 15) =>
+const buildUbiquitousOptions = (options: StrictFpConfigOptions) =>
+  options.domainFiles || options.applicationFiles
+    ? {
+        "strict-fp/ubiquitous-language": [
+          "error",
+          {
+            domainPatterns: [
+              ...(options.domainFiles ?? ["**/domain/**", "**/domains/**"]),
+              ...(options.applicationFiles ?? ["**/application/**"]),
+            ],
+          },
+        ] as TSESLint.FlatConfig.RuleEntry,
+      }
+    : {};
+
+export const strictFpRules = (maxLines = 15, options: StrictFpConfigOptions = {}) =>
   ({
     ...baseStrictFpRules,
     "strict-fp/max-function-lines": ["error", { maxLines }],
+    ...(options.domainFiles
+      ? { "strict-fp/domain-layer-purity": ["error", { domainPatterns: options.domainFiles }] as TSESLint.FlatConfig.RuleEntry }
+      : {}),
+    ...buildUbiquitousOptions(options),
   }) satisfies TSESLint.FlatConfig.Rules;
 
 const boundaryOverrideRules = {
@@ -55,6 +97,11 @@ const boundaryOverrideRules = {
   "strict-fp/prefer-point-free": "off",
   "strict-fp/no-null-undefined": "off",
   "strict-fp/no-domain-raw-primitives": "off",
+  "strict-fp/no-unit-suffixed-primitives": "off",
+  "strict-fp/no-scattered-validation": "off",
+  "strict-fp/no-inline-infra-side-effects": "off",
+  "strict-fp/no-multi-repo-orchestration": "off",
+  "strict-fp/domain-layer-purity": "off",
   "strict-fp/prefer-union-over-boolean": "off",
   "strict-fp/require-exhaustive-match": "off",
   "strict-fp/no-any-or-unknown": "off",
@@ -64,6 +111,13 @@ const boundaryOverrideRules = {
 const testOverrideRules = {
   "strict-fp/max-function-lines": "off",
   "strict-fp/no-domain-raw-primitives": "off",
+  "strict-fp/no-unit-suffixed-primitives": "off",
+  "strict-fp/no-data-clumps": "off",
+  "strict-fp/no-scattered-validation": "off",
+  "strict-fp/no-stringly-typed-discriminants": "off",
+  "strict-fp/no-repeated-guard-clauses": "off",
+  "strict-fp/no-lifecycle-flag-clusters": "off",
+  "strict-fp/no-model-polysemy": "off",
   "strict-fp/no-null-undefined": "off",
   "strict-fp/prefer-union-over-boolean": "off",
   "strict-fp/no-throw-outside-unsafe": "off",
@@ -91,6 +145,30 @@ const createTestConfig = (files: O.Option<ReadonlyArray<string>>) =>
     ),
   );
 
+export const createDddBoundaryConfig = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictFpConfigOptions = {},
+) => [
+  {
+    name: "strict-fp/ddd-boundary",
+    files: options.files ? [...options.files] : ["**/*.ts", "**/*.tsx"],
+    plugins: { "strict-fp": plugin },
+    rules: dddBoundaryRules,
+  },
+];
+
+export const createDddDiscoveryConfig = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictFpConfigOptions = {},
+) => [
+  {
+    name: "strict-fp/ddd-discovery",
+    files: options.files ? [...options.files] : ["**/*.ts", "**/*.tsx"],
+    plugins: { "strict-fp": plugin },
+    rules: dddDiscoveryRules,
+  },
+];
+
 export const createStrictFpConfig = (
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
@@ -100,7 +178,7 @@ export const createStrictFpConfig = (
     name: "strict-fp/recommended",
     files: options.files ? [...options.files] : ["**/*.ts", "**/*.tsx"],
     plugins: { "strict-fp": plugin },
-    rules: strictFpRules(options.maxFunctionLines ?? 15),
+    rules: strictFpRules(options.maxFunctionLines ?? 15, options),
   },
   ...createBoundaryConfig(O.fromNullable(options.boundaryFiles)),
   ...createTestConfig(O.fromNullable(options.testFiles)),

@@ -4,6 +4,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
+import { isEsTreeAnonymousFunctionNode, isPipeCallExpression } from "../utils/type-helpers.js";
 
 type MessageIds =
   | "nestedChain"
@@ -39,8 +40,7 @@ const getPipeStepNamespaceAndMethod = (arg: TSESTree.CallExpressionArgument) =>
     .exhaustive();
 
 const isChainCallbackParent = (node: TSESTree.Node) =>
-  (node.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-    node.type === AST_NODE_TYPES.FunctionExpression) &&
+  isEsTreeAnonymousFunctionNode(node) &&
   node.parent.type === AST_NODE_TYPES.CallExpression &&
   pipe(getMemberCallInfo(node.parent), O.exists((info) => info.method === "chain"));
 
@@ -164,14 +164,11 @@ const classifyMemberCall = (
     .with({ isImperativeGuard: true }, () => makeReport("imperativeMonadCheck", { guard: `${namespace}.${method}` }))
     .otherwise(() => O.none);
 
-const isPipeCall = (node: TSESTree.CallExpression) =>
-  node.callee.type === AST_NODE_TYPES.Identifier && node.callee.name === "pipe";
-
 const checkCallNode = (
   node: TSESTree.CallExpression,
   report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
 ) => {
-  match(isPipeCall(node))
+  match(isPipeCallExpression(node))
     .with(true, () => {
       pipe(findMapThenFlattenTargets(node.arguments), RA.map((target) => { report(target, "mapThenFlatten", {}); }));
     })

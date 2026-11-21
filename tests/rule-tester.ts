@@ -19,3 +19,13 @@ export const createTypeAwareRuleTester = () =>
       },
     },
   });
+
+export const createDddSampleRuleTester = () =>
+  new RuleTester({
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: path.resolve(import.meta.dirname, "ddd-sample"),
+      },
+    },
+  });

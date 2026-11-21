@@ -1,4 +1,4 @@
-import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
+import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
@@ -20,13 +20,59 @@ const reportPrimitiveType = (
     .exhaustive();
 };
 
+const checkTypeNode = (
+  typeAnnotation: O.Option<TSESTree.TSTypeAnnotation>,
+  report: (node: TSESTree.Node, messageId: MessageIds, data: O.Option<Readonly<Record<string, string>>>) => void,
+) => {
+  pipe(
+    typeAnnotation,
+    O.map((ann) => ann.typeAnnotation),
+    O.filter((typeNode) => !isInsideNewtypeDefinition(typeNode)),
+    O.map((typeNode) => {
+      reportPrimitiveType(
+        typeNode,
+        (n, kind) => { report(n, "rawStringOrNumber", O.some({ kind })); },
+        (n) => { report(n, "rawBoolean", O.none); },
+      );
+    }),
+  );
+};
+
+const reportWithData = (
+  reportPlain: (node: TSESTree.Node, messageId: MessageIds) => void,
+  reportData: (node: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
+  node: TSESTree.Node,
+  messageId: MessageIds,
+  data: O.Option<Readonly<Record<string, string>>>,
+) => {
+  pipe(
+    data,
+    O.match(
+      () => { reportPlain(node, messageId); },
+      (d) => { reportData(node, messageId, d); },
+    ),
+  );
+};
+
+const makeReporter =
+  (reportFn: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+  (node: TSESTree.Node, messageId: MessageIds, data: O.Option<Readonly<Record<string, string>>>) => {
+    reportWithData(
+      (n, id) => { reportFn({ node: n, messageId: id }); },
+      (n, id, d) => { reportFn({ node: n, messageId: id, data: d }); },
+      node,
+      messageId,
+      data,
+    );
+  };
+
 export const noDomainRawPrimitives = createRule<[], MessageIds>({
   name: "no-domain-raw-primitives",
   meta: {
     type: "problem",
     docs: {
       description:
-        "Disallow raw string, number, and boolean in domain object properties; require branded newtypes and discriminated unions.",
+        "Disallow raw string, number, and boolean in domain object properties (types, interfaces, and class fields); require branded newtypes and discriminated unions.",
     },
     messages: {
       rawStringOrNumber:
@@ -37,19 +83,19 @@ export const noDomainRawPrimitives = createRule<[], MessageIds>({
     schema: [],
     defaultOptions: [],
   },
-  create: (context) => ({
-    TSPropertySignature: (node) => {
-      pipe(
-        O.fromNullable(node.typeAnnotation?.typeAnnotation),
-        O.filter((typeNode) => !isInsideNewtypeDefinition(typeNode)),
-        O.map((typeNode) => {
-          reportPrimitiveType(
-            typeNode,
-            (n, kind) => { context.report({ node: n, messageId: "rawStringOrNumber", data: { kind } }); },
-            (n) => { context.report({ node: n, messageId: "rawBoolean" }); },
-          );
-        }),
-      );
-    },
-  }),
+  create: (context) => {
+    const report = makeReporter((d) => { context.report(d); });
+    return {
+      TSPropertySignature: (node) => { checkTypeNode(O.fromNullable(node.typeAnnotation), report); },
+      PropertyDefinition: (node) => { checkTypeNode(O.fromNullable(node.typeAnnotation), report); },
+      TSParameterProperty: (node) => {
+        checkTypeNode(
+          node.parameter.type === AST_NODE_TYPES.Identifier
+            ? O.fromNullable(node.parameter.typeAnnotation)
+            : O.none,
+          report,
+        );
+      },
+    };
+  },
 });

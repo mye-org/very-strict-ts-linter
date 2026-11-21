@@ -4,6 +4,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
+import { hasFunctionInit } from "../utils/type-helpers.js";
 
 type MessageIds = "unnecessaryLocalConst";
 
@@ -18,9 +19,7 @@ const isFunctionNode = (node: O.Option<TSESTree.Node>) =>
     ),
   );
 
-const isLocalHelperFunction = (declarator: TSESTree.VariableDeclarator) =>
-  declarator.init?.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-  declarator.init?.type === AST_NODE_TYPES.FunctionExpression;
+const isLocalHelperFunction = hasFunctionInit;
 
 const hasSingleRead = (
   declarator: TSESTree.VariableDeclarator,

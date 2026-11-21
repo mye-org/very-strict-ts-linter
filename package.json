@@ -11,6 +11,9 @@
       "import": "./dist/index.js"
     }
   },
+  "bin": {
+    "strict-fp-radar": "./dist/cli/discovery-radar.js"
+  },
   "files": [
     "dist",
     "src",
@@ -22,7 +25,8 @@
     "prepare": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "radar": "node dist/cli/discovery-radar.js"
   },
   "dependencies": {
     "@typescript-eslint/utils": "^8.30.0",

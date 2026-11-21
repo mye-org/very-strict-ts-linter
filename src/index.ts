@@ -1,5 +1,7 @@
 import type { TSESLint } from "@typescript-eslint/utils";
 import {
+  createDddBoundaryConfig,
+  createDddDiscoveryConfig,
   createStrictFpConfig,
   pluginMeta,
   pluginRules,
@@ -13,10 +15,14 @@ const plugin: TSESLint.FlatConfig.Plugin = {
 
 const configs = {
   recommended: createStrictFpConfig(plugin),
+  dddBoundary: createDddBoundaryConfig(plugin),
+  dddDiscovery: createDddDiscoveryConfig(plugin),
 } as const;
 
 export {
   configs,
+  createDddBoundaryConfig,
+  createDddDiscoveryConfig,
   createStrictFpConfig,
   pluginRules as rules,
   type StrictFpConfigOptions,
@@ -28,4 +34,8 @@ export default {
   configs,
   createStrictFpConfig: (options?: StrictFpConfigOptions) =>
     createStrictFpConfig(plugin, options),
+  createDddBoundaryConfig: (options?: StrictFpConfigOptions) =>
+    createDddBoundaryConfig(plugin, options),
+  createDddDiscoveryConfig: (options?: StrictFpConfigOptions) =>
+    createDddDiscoveryConfig(plugin, options),
 };

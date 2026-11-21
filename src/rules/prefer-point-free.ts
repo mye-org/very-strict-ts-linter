@@ -11,6 +11,7 @@ import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
+import { isPipeCallExpression } from "../utils/type-helpers.js";
 
 type MessageIds = "preferPointFree";
 
@@ -22,6 +23,11 @@ type FunctionNode =
 type ForwardedCall = Readonly<{
   call: TSESTree.CallExpression;
   kind: "return" | "void";
+}>;
+
+type ResolvedCallee = Readonly<{
+  type: ts.Type;
+  signature: ts.Signature;
 }>;
 
 const isObjectMethodOrAccessor = (node: FunctionNode) =>
@@ -68,8 +74,7 @@ const getForwardedCall = (node: FunctionNode) =>
     .with(P._, () => O.none as O.Option<ForwardedCall>)
     .exhaustive();
 
-const isPipeCall = (call: TSESTree.CallExpression) =>
-  call.callee.type === AST_NODE_TYPES.Identifier && call.callee.name === "pipe";
+const isPipeCall = isPipeCallExpression;
 
 const isMatchingParamAndArg = (param: TSESTree.Parameter, arg: TSESTree.CallExpressionArgument) =>
   match([param, arg] as const)
@@ -237,8 +242,7 @@ const isMutuallyAssignable = (a: ts.Type, b: ts.Type, checker: ts.TypeChecker) =
 
 const hasEquivalentAnnotatedType = (
   node: FunctionNode,
-  calleeType: ts.Type,
-  calleeSig: ts.Signature,
+  callee: ResolvedCallee,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) => {
@@ -247,21 +251,20 @@ const hasEquivalentAnnotatedType = (
     O.fromNullable(wrapperType.getCallSignatures()[0]),
     O.exists(
       (wrapperSig) =>
-        !hasAnyLeakage(wrapperSig, calleeSig, checker) &&
-        isMutuallyAssignable(wrapperType, calleeType, checker),
+        !hasAnyLeakage(wrapperSig, callee.signature, checker) &&
+        isMutuallyAssignable(wrapperType, callee.type, checker),
     ),
   );
 };
 
 const hasPreservedExplicitSignature = (
   node: FunctionNode,
-  calleeType: ts.Type,
-  calleeSig: ts.Signature,
+  callee: ResolvedCallee,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
   !hasExplicitTypeInfo(node) ||
-  hasEquivalentAnnotatedType(node, calleeType, calleeSig, services, checker);
+  hasEquivalentAnnotatedType(node, callee, services, checker);
 
 const isValidCallTarget = (call: TSESTree.CallExpression) =>
   !call.optional &&
@@ -272,16 +275,15 @@ const isValidCallTarget = (call: TSESTree.CallExpression) =>
 const isSafeCalleeSig = (
   node: FunctionNode,
   { call, kind }: ForwardedCall,
-  calleeType: ts.Type,
-  calleeSig: ts.Signature,
+  callee: ResolvedCallee,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
   isSafeMemberCallee(call.callee, services, checker) &&
-  !hasNonVoidThisParam(calleeSig, checker) &&
-  hasMatchingArity(node, calleeSig) &&
-  isVoidReturnCompatible(kind, calleeSig, checker) &&
-  hasPreservedExplicitSignature(node, calleeType, calleeSig, services, checker);
+  !hasNonVoidThisParam(callee.signature, checker) &&
+  hasMatchingArity(node, callee.signature) &&
+  isVoidReturnCompatible(kind, callee.signature, checker) &&
+  hasPreservedExplicitSignature(node, callee, services, checker);
 
 const isTypeSafeEtaReduction = (
   node: FunctionNode,
@@ -295,7 +297,7 @@ const isTypeSafeEtaReduction = (
     sigs.length === 1 &&
     pipe(
       O.fromNullable(sigs[0]),
-      O.exists((calleeSig) => isSafeCalleeSig(node, forwarded, calleeType, calleeSig, services, checker)),
+      O.exists((signature) => isSafeCalleeSig(node, forwarded, { type: calleeType, signature }, services, checker)),
     )
   );
 };

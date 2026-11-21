@@ -6,6 +6,8 @@ import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
 import {
+  isEsTreeAnonymousFunctionNode,
+  isEsTreeFunctionNode,
   isInsideUnsafeOrMustFunction,
   isUnsafeOrMustName,
 } from "../utils/type-helpers.js";
@@ -23,8 +25,7 @@ const PROMISE_STATIC_METHODS = new Set([
 ]);
 
 const isExemptNamedArrowOrFn = (node: TSESTree.Node) =>
-  (node.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-    node.type === AST_NODE_TYPES.FunctionExpression) &&
+  isEsTreeAnonymousFunctionNode(node) &&
   node.parent.type === AST_NODE_TYPES.VariableDeclarator &&
   node.parent.id.type === AST_NODE_TYPES.Identifier &&
   isUnsafeOrMustName(node.parent.id.name);
@@ -37,10 +38,7 @@ const isExemptFunction = (node: TSESTree.Node) =>
   isExemptNamedArrowOrFn(node);
 
 const isAsyncFunctionNode = (node: TSESTree.Node) =>
-  (node.type === AST_NODE_TYPES.FunctionDeclaration ||
-    node.type === AST_NODE_TYPES.FunctionExpression ||
-    node.type === AST_NODE_TYPES.ArrowFunctionExpression) &&
-  node.async;
+  isEsTreeFunctionNode(node) && node.async;
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
 const isInsideAsyncFunction = (node: TSESTree.Node): boolean =>

@@ -25,6 +25,13 @@ ruleTester.run("no-domain-raw-primitives", noDomainRawPrimitives, {
         { messageId: "rawBoolean" },
       ],
     },
+    {
+      code: `class Card { readonly id: string = ""; constructor(public readonly count: number) {} }`,
+      errors: [
+        { messageId: "rawStringOrNumber" },
+        { messageId: "rawStringOrNumber" },
+      ],
+    },
   ],
 });
 
