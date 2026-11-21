@@ -4,9 +4,11 @@ import { noExplicitReturnType } from "../src/rules/no-explicit-return-type.js";
 import { noNullUndefined } from "../src/rules/no-null-undefined.js";
 import { preferReadonlyCollections } from "../src/rules/prefer-readonly-collections.js";
 import { preferTypeOverInterface } from "../src/rules/prefer-type-over-interface.js";
-import { createRuleTester } from "./rule-tester.js";
+import { preferUnionOverBoolean } from "../src/rules/prefer-union-over-boolean.js";
+import { createRuleTester, createTypeAwareRuleTester } from "./rule-tester.js";
 
 const ruleTester = createRuleTester();
+const typeAwareRuleTester = createTypeAwareRuleTester();
 
 ruleTester.run("no-domain-raw-primitives", noDomainRawPrimitives, {
   valid: [
@@ -158,3 +160,128 @@ ruleTester.run("no-explicit-return-type", noExplicitReturnType, {
     },
   ],
 });
+
+typeAwareRuleTester.run("prefer-union-over-boolean", preferUnionOverBoolean, {
+  valid: [
+    `
+      type AuthState =
+        | { readonly kind: "authenticated"; readonly userId: string }
+        | { readonly kind: "unauthenticated" };
+      const render = (state: AuthState) => state.kind;
+    `,
+    `
+      type Result<E, A> =
+        | { readonly ok: true; readonly value: A }
+        | { readonly ok: false; readonly error: E };
+      const ok = <A>(value: A) => ({ ok: true as const, value });
+    `,
+    `type Card = { readonly isLearned: boolean };`,
+    `const checkString = (x: string | number): x is string => typeof x === "string";`,
+    `const isEven = (n: number) => n % 2 === 0;`,
+    `function hasPermission(role: string) { return role === "admin"; }`,
+    `const canEdit = (age: number) => age >= 18;`,
+    `const shouldRetry = (code: number) => code >= 500;`,
+    `
+      type Predicate<A> = (a: A) => boolean;
+      const validatePositive: Predicate<number> = (n) => n > 0;
+    `,
+    `
+      type IsAdmin = (role: string) => boolean;
+      type UserPredicate = (role: string) => boolean;
+    `,
+    `
+      declare const RA: { filter: <A>(f: (a: A) => boolean) => (as: ReadonlyArray<A>) => ReadonlyArray<A> };
+      const positives = RA.filter((n: number) => n > 0)([1, -1]);
+    `,
+    `
+      declare const match: <T>(v: T) => { when: (p: (v: T) => unknown, h: () => number) => number };
+      const res = match(1).when((n) => n > 0, () => 1);
+    `,
+    `
+      declare const match: <T>(v: T) => { with: (p: T, h: () => number) => { exhaustive: () => number } };
+      const sign = (n: number) => match(n > 0).with(true, () => 1).exhaustive();
+    `,
+    `
+      declare const match: <T>(v: T) => {
+        with: <R>(p: T, h: () => R) => {
+          otherwise: <R2>(h: () => R2) => R | R2;
+        };
+      };
+      const isPositive = (n: number) => match(n).with(0, () => false).otherwise(() => n > 0);
+    `,
+    `
+      type Predicate<A> = (a: A) => boolean;
+      declare const flow: <A, B>(ab: (a: A) => B) => (a: A) => B;
+      declare const RA: { every: <A>(p: Predicate<A>) => Predicate<ReadonlyArray<A>> };
+      const hasAllPositive = (xs: ReadonlyArray<number>) => RA.every(flow((n: number) => n > 0))(xs);
+    `,
+    `
+      declare const pipe: <A, B>(a: A, ab: (a: A) => B) => B;
+      const isPositive = (n: number) => pipe(n, (x) => x > 0);
+    `,
+  ],
+  invalid: [
+    {
+      code: `const render = (isError: boolean) => (isError ? "err" : "ok");`,
+      errors: [{ messageId: "preferUnionOverBooleanParam" }],
+    },
+    {
+      code: `const render = (isError = false) => (isError ? "err" : "ok");`,
+      errors: [{ messageId: "preferUnionOverBooleanParam" }],
+    },
+    {
+      code: `type Flag = boolean;`,
+      errors: [{ messageId: "preferUnionOverBooleanType" }],
+    },
+    {
+      code: `type Pair = readonly [string, boolean];`,
+      errors: [{ messageId: "preferUnionOverBooleanType" }],
+    },
+    {
+      code: `
+        type Box<A> = { readonly value: A };
+        type BoxedBool = Box<boolean>;
+      `,
+      errors: [{ messageId: "preferUnionOverBooleanType" }],
+    },
+    {
+      code: `
+        type Newtype<URI, A> = { readonly URI: URI; readonly value: A };
+        type BrandedFlag = Newtype<{ readonly F: unique symbol }, boolean>;
+      `,
+      errors: [{ messageId: "preferUnionOverBooleanType" }],
+    },
+    {
+      code: `const validateUser = (age: number) => age >= 18;`,
+      errors: [{ messageId: "preferUnionOverBooleanReturn" }],
+    },
+    {
+      code: `function checkAccess(role: string) { return role === "admin"; }`,
+      errors: [{ messageId: "preferUnionOverBooleanReturn" }],
+    },
+    {
+      code: `
+        declare const RA: { map: <A, B>(f: (a: A) => B) => (as: ReadonlyArray<A>) => ReadonlyArray<B> };
+        const flags = RA.map((x: number) => x > 0)([1, 2]);
+      `,
+      errors: [{ messageId: "preferUnionOverBooleanReturn" }],
+    },
+    {
+      code: `type ValidateUser = (age: number) => boolean;`,
+      errors: [{ messageId: "preferUnionOverBooleanReturn" }],
+    },
+    {
+      code: `const ok = true;`,
+      errors: [{ messageId: "preferUnionOverBooleanVar" }],
+    },
+    {
+      code: `const isValid = 1 > 0;`,
+      errors: [{ messageId: "preferUnionOverBooleanVar" }],
+    },
+    {
+      code: `const explicitFlag: boolean = false;`,
+      errors: [{ messageId: "preferUnionOverBooleanVar" }],
+    },
+  ],
+});
+

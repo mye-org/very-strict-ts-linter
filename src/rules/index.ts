@@ -18,6 +18,7 @@ import { preferMonadicErrorHandling } from "./prefer-monadic-error-handling.js";
 import { preferPointFree } from "./prefer-point-free.js";
 import { preferReadonlyCollections } from "./prefer-readonly-collections.js";
 import { preferTypeOverInterface } from "./prefer-type-over-interface.js";
+import { preferUnionOverBoolean } from "./prefer-union-over-boolean.js";
 import { requireExhaustiveMatch } from "./require-exhaustive-match.js";
 
 export const rules = {
@@ -41,5 +42,6 @@ export const rules = {
   "prefer-point-free": preferPointFree,
   "prefer-readonly-collections": preferReadonlyCollections,
   "prefer-type-over-interface": preferTypeOverInterface,
+  "prefer-union-over-boolean": preferUnionOverBoolean,
   "require-exhaustive-match": requireExhaustiveMatch,
 } as const;

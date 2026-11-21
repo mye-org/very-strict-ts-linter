@@ -40,15 +40,15 @@ const isNewtypeReference = (node: TSESTree.Node) =>
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
 const hasNewtypeAncestor = (node: TSESTree.Node): boolean =>
-  isNewtypeReference(node) || walkUpForNewtype(O.fromNullable(node.parent));
+  isNewtypeReference(node) || hasNewtypeInAncestors(O.fromNullable(node.parent));
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
-const walkUpForNewtype = (current: O.Option<TSESTree.Node>): boolean =>
+const hasNewtypeInAncestors = (current: O.Option<TSESTree.Node>): boolean =>
   pipe(current, O.exists(hasNewtypeAncestor));
 
 export const isInsideNewtypeDefinition = flow(
   (node: TSESTree.Node) => O.fromNullable(node.parent),
-  walkUpForNewtype,
+  hasNewtypeInAncestors,
 );
 
 export const isPredicateReturnType = (node: TSESTree.Node) =>

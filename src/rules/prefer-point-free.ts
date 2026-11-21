@@ -71,7 +71,7 @@ const getForwardedCall = (node: FunctionNode) =>
 const isPipeCall = (call: TSESTree.CallExpression) =>
   call.callee.type === AST_NODE_TYPES.Identifier && call.callee.name === "pipe";
 
-const doesParamMatchArg = (param: TSESTree.Parameter, arg: TSESTree.CallExpressionArgument) =>
+const isMatchingParamAndArg = (param: TSESTree.Parameter, arg: TSESTree.CallExpressionArgument) =>
   match([param, arg] as const)
     .with(
       [{ type: AST_NODE_TYPES.Identifier }, { type: AST_NODE_TYPES.Identifier }],
@@ -86,14 +86,14 @@ const doesParamMatchArg = (param: TSESTree.Parameter, arg: TSESTree.CallExpressi
     )
     .otherwise(() => false);
 
-const argsMatchParams = (
+const hasMatchingArgsAndParams = (
   params: ReadonlyArray<TSESTree.Parameter>,
   args: ReadonlyArray<TSESTree.CallExpressionArgument>,
 ) =>
   params.length === args.length &&
   pipe(
     RA.zip(params, args),
-    RA.every(([param, arg]) => doesParamMatchArg(param, arg)),
+    RA.every(([param, arg]) => isMatchingParamAndArg(param, arg)),
   );
 
 const isRangeInside = (inner: TSESTree.Range, outer: TSESTree.Range) =>
@@ -232,7 +232,7 @@ const getNodeType = (
   checker: ts.TypeChecker,
 ) => checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(node));
 
-const areMutuallyAssignable = (a: ts.Type, b: ts.Type, checker: ts.TypeChecker) =>
+const isMutuallyAssignable = (a: ts.Type, b: ts.Type, checker: ts.TypeChecker) =>
   checker.isTypeAssignableTo(a, b) && checker.isTypeAssignableTo(b, a);
 
 const hasEquivalentAnnotatedType = (
@@ -248,12 +248,12 @@ const hasEquivalentAnnotatedType = (
     O.exists(
       (wrapperSig) =>
         !hasAnyLeakage(wrapperSig, calleeSig, checker) &&
-        areMutuallyAssignable(wrapperType, calleeType, checker),
+        isMutuallyAssignable(wrapperType, calleeType, checker),
     ),
   );
 };
 
-const preservesExplicitSignature = (
+const hasPreservedExplicitSignature = (
   node: FunctionNode,
   calleeType: ts.Type,
   calleeSig: ts.Signature,
@@ -281,7 +281,7 @@ const isSafeCalleeSig = (
   !hasNonVoidThisParam(calleeSig, checker) &&
   hasMatchingArity(node, calleeSig) &&
   isVoidReturnCompatible(kind, calleeSig, checker) &&
-  preservesExplicitSignature(node, calleeType, calleeSig, services, checker);
+  hasPreservedExplicitSignature(node, calleeType, calleeSig, services, checker);
 
 const isTypeSafeEtaReduction = (
   node: FunctionNode,
@@ -311,7 +311,7 @@ const isPointFreeCandidate = (
     O.exists(
       (forwarded) =>
         isValidCallTarget(forwarded.call) &&
-        argsMatchParams(node.params, forwarded.call.arguments) &&
+        hasMatchingArgsAndParams(node.params, forwarded.call.arguments) &&
         !hasVarRefInCallee(node, forwarded.call.callee, sourceCode) &&
         isTypeSafeEtaReduction(node, forwarded, services, services.program.getTypeChecker()),
     ),

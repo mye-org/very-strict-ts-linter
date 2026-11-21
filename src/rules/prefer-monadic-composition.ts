@@ -86,7 +86,7 @@ const isMonadConstructorExpr = (
       O.exists((info) => info.namespace === namespace && constructors.has(info.method)),
     ));
 
-const returnsSameMonadConstructor = (
+const isReturningSameMonadConstructor = (
   arg: TSESTree.CallExpressionArgument,
   namespace: string,
 ) =>
@@ -141,8 +141,8 @@ const isUnwrapAndRewrap = (
     node.arguments.length === 2 &&
     firstArg !== undefined &&
     secondArg !== undefined &&
-    returnsSameMonadConstructor(firstArg, namespace) &&
-    returnsSameMonadConstructor(secondArg, namespace)
+    isReturningSameMonadConstructor(firstArg, namespace) &&
+    isReturningSameMonadConstructor(secondArg, namespace)
   );
 };
 
