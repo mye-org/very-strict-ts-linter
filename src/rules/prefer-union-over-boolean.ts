@@ -65,13 +65,16 @@ const getFunctionParams = (node: TSESTree.Node) =>
     ? O.some<ReadonlyArray<TSESTree.Parameter>>(node.params)
     : O.none;
 
+const hasParamNode = (node: TSESTree.Node, params: ReadonlyArray<TSESTree.Parameter>) =>
+  pipe(params, RA.some((p) => p === node));
+
 const isParameterHolder = (node: TSESTree.Node) =>
   node.parent?.type === AST_NODE_TYPES.AssignmentPattern
     ? node.parent.left === node && isFunctionLikeType(node.parent.parent)
     : pipe(
         O.fromNullable(node.parent),
         O.flatMap(getFunctionParams),
-        O.exists((params) => pipe(params, RA.some((p) => p === node))),
+        O.exists((params) => hasParamNode(node, params)),
       );
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
@@ -157,6 +160,12 @@ const isPredicateType = (type: ts.Type, checker: ts.TypeChecker): boolean =>
 const isPredicateParamSymbol = (param: ts.Symbol, checker: ts.TypeChecker) =>
   pipe(checker.getTypeOfSymbol(param), (t) => isPredicateType(t, checker));
 
+const isSigArgPredicate = (sig: ts.Signature, argIndex: number, checker: ts.TypeChecker) =>
+  pipe(
+    O.fromNullable(sig.getParameters()[argIndex]),
+    O.exists((param) => isPredicateParamSymbol(param, checker)),
+  );
+
 const hasCalleePredicateParam = (
   call: TSESTree.CallExpression,
   argIndex: number,
@@ -166,12 +175,7 @@ const hasCalleePredicateParam = (
   pipe(
     services.esTreeNodeToTSNodeMap.get(call.callee),
     (tsCallee) => checker.getTypeAtLocation(tsCallee).getCallSignatures(),
-    RA.some((sig) =>
-      pipe(
-        O.fromNullable(sig.getParameters()[argIndex]),
-        O.exists((param) => isPredicateParamSymbol(param, checker)),
-      ),
-    ),
+    RA.some((sig) => isSigArgPredicate(sig, argIndex, checker)),
   );
 
 const isCallPredicateArg = (

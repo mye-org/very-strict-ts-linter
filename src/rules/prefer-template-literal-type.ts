@@ -45,6 +45,9 @@ const hasFullCartesianCounts = (
   );
 };
 
+const isValidSplitList = (partsList: ReadonlyArray<ReadonlyArray<string>>) =>
+  pipe(partsList, RA.every((p) => p.length === 2 && Boolean(p[0]) && Boolean(p[1])));
+
 const isCartesianProductForDelimiter = (
   values: ReadonlyArray<string>,
   delimiter: string,
@@ -53,9 +56,12 @@ const isCartesianProductForDelimiter = (
     values,
     RA.map((v) => v.split(delimiter)),
     (partsList) =>
-      pipe(partsList, RA.every((p) => p.length === 2 && Boolean(p[0]) && Boolean(p[1]))) &&
+      isValidSplitList(partsList) &&
       hasFullCartesianCounts(partsList, new Set(values).size),
   );
+
+const hasAnyDelimiterCartesian = (values: ReadonlyArray<string>) =>
+  pipe(DELIMITERS, RA.some((d) => isCartesianProductForDelimiter(values, d)));
 
 const isCartesianStringUnion = (node: TSESTree.TSUnionType) =>
   node.types.length >= 4 &&
@@ -64,7 +70,7 @@ const isCartesianStringUnion = (node: TSESTree.TSUnionType) =>
     RA.filterMap(extractStringLiteral),
     (values) =>
       values.length === node.types.length &&
-      pipe(DELIMITERS, RA.some((d) => isCartesianProductForDelimiter(values, d))),
+      hasAnyDelimiterCartesian(values),
   );
 
 const getFunctionName = (fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression) =>
@@ -82,18 +88,19 @@ const isCollectionCallbackFn = (fn: TSESTree.Node) =>
   fn.parent.callee.property.type === AST_NODE_TYPES.Identifier &&
   COLLECTION_CALLBACK_METHODS.has(fn.parent.callee.property.name);
 
+const isExemptNamedFn = (
+  fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression,
+) =>
+  pipe(
+    getFunctionName(fn),
+    O.exists((name) => isUnsafeOrMustName(name) || EXEMPT_FN_PREFIX_RE.test(name)),
+  );
+
 const isExemptEnclosingFunction = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
   pipe(
     getEnclosingEsTreeFunction(node),
-    O.exists(
-      (fn) =>
-        isCollectionCallbackFn(fn) ||
-        pipe(
-          getFunctionName(fn),
-          O.exists((name) => isUnsafeOrMustName(name) || EXEMPT_FN_PREFIX_RE.test(name)),
-        ),
-    ),
+    O.exists((fn) => isCollectionCallbackFn(fn) || isExemptNamedFn(fn)),
   );
 
 const isStringTypedParamTsNode = (

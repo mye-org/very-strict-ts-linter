@@ -84,6 +84,13 @@ const classifyDeclarator = (declarator: TSESTree.VariableDeclarator) =>
         .otherwise(() => O.none)
     : O.none;
 
+const reportDeclarator = (
+  decl: TSESTree.VariableDeclarator,
+  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
+) => {
+  pipe(classifyDeclarator(decl), O.map((messageId) => { report({ node: decl, messageId }); }));
+};
+
 const reportVarDecl = (
   node: TSESTree.VariableDeclaration,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
@@ -92,9 +99,7 @@ const reportVarDecl = (
     .with(true, () => {
       pipe(
         node.declarations as ReadonlyArray<TSESTree.VariableDeclarator>,
-        RA.map((decl) => {
-          pipe(classifyDeclarator(decl), O.map((messageId) => { report({ node: decl, messageId }); }));
-        }),
+        RA.map((decl) => { reportDeclarator(decl, report); }),
       );
     })
     .with(false, () => {})

@@ -93,15 +93,21 @@ type MultiRepoContext = Readonly<{
   readonly visitorKeys: TSESLint.SourceCode["visitorKeys"];
 }>;
 
+const collectBlockBodyCalls = (
+  body: FunctionNode["body"],
+  visitorKeys: TSESLint.SourceCode["visitorKeys"],
+) =>
+  body.type === AST_NODE_TYPES.BlockStatement
+    ? pipe(body.body, RA.flatMap((s) => collectCallsInBody(s, visitorKeys)))
+    : ([] as ReadonlyArray<TSESTree.CallExpression>);
+
 const collectDistinctRepos = (
   fn: FunctionNode,
   { methodSet, visitorKeys }: MultiRepoContext,
   services: ParserServicesWithTypeInformation,
 ) =>
   pipe(
-    fn.body.type === AST_NODE_TYPES.BlockStatement
-      ? pipe(fn.body.body, RA.flatMap((s) => collectCallsInBody(s, visitorKeys)))
-      : [],
+    collectBlockBodyCalls(fn.body, visitorKeys),
     RA.filterMap((call) => extractRepoKey(call, methodSet, services)),
     RA.uniq(S.Eq),
   );

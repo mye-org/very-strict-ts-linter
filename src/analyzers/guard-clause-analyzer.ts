@@ -123,6 +123,9 @@ const groupBySignature = (
   [occ.signature]: [...(acc[occ.signature] ?? []), occ],
 });
 
+const extractGuardLocations = (occs: ReadonlyArray<GuardOccurrence>) =>
+  pipe(occs, RA.map((o) => o.location));
+
 const toGuardCluster = (
   [signature, occs]: readonly [string, ReadonlyArray<GuardOccurrence>],
   minOccurrences: number,
@@ -133,7 +136,7 @@ const toGuardCluster = (
         O.map((first) => ({
           signature,
           preview: first.preview,
-          locations: pipe(occs, RA.map((o) => o.location)),
+          locations: extractGuardLocations(occs),
         })),
       )
     : (O.none as O.Option<GuardCluster>);
@@ -157,6 +160,9 @@ type GuardIndex = Readonly<{
 
 const guardIndexCache = new WeakMap<ts.Program, Readonly<Record<string, GuardIndex>>>();
 
+const indexClustersByLocation = (clusters: ReadonlyArray<GuardCluster>) =>
+  pipe(clusters, RA.reduce({}, addClusterByLocation));
+
 const computeGuardIndex = (program: ts.Program, minClauses: number, minOccurrences: number) =>
   pipe(
     getProgramGuards(program),
@@ -166,7 +172,7 @@ const computeGuardIndex = (program: ts.Program, minClauses: number, minOccurrenc
     RA.filterMap((entry) => toGuardCluster(entry, minOccurrences)),
     (clusters) => ({
       clusters,
-      byLocation: pipe(clusters, RA.reduce({}, addClusterByLocation)),
+      byLocation: indexClustersByLocation(clusters),
     }),
   );
 

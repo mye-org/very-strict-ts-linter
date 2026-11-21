@@ -4,12 +4,12 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow, pipe } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
+import { isCalleeOfCallExpression } from "../utils/type-helpers.js";
 
 type Options = [Readonly<Record<"maxHops", number>>];
 type MessageIds = "trainWreckNavigation";
 
-const isCallCallee = (node: TSESTree.MemberExpression) =>
-  node.parent.type === AST_NODE_TYPES.CallExpression && node.parent.callee === node;
+const isCallCallee = isCalleeOfCallExpression;
 
 const isOutermostPropertyChain = (node: TSESTree.MemberExpression) =>
   !isCallCallee(node) &&

@@ -83,6 +83,14 @@ const isPredicateCallbackArg = (fn: TSESTree.Node) =>
   fn.parent.callee.property.type === AST_NODE_TYPES.Identifier &&
   COLLECTION_PREDICATE_METHODS.has(fn.parent.callee.property.name);
 
+const isExemptFnName = (
+  fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression,
+) =>
+  pipe(
+    getEnclosingFnName(fn),
+    O.exists((name) => isUnsafeOrMustName(name) || PREDICATE_NAME_RE.test(name)),
+  );
+
 const isExemptLengthContext = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
   pipe(
@@ -91,10 +99,7 @@ const isExemptLengthContext = (node: TSESTree.Node) =>
       (fn) =>
         isInlineCallCallback(fn) ||
         isPredicateCallbackArg(fn) ||
-        pipe(
-          getEnclosingFnName(fn),
-          O.exists((name) => isUnsafeOrMustName(name) || PREDICATE_NAME_RE.test(name)),
-        ),
+        isExemptFnName(fn),
     ),
   );
 

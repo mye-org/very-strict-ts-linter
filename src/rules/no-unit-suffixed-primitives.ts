@@ -39,18 +39,19 @@ const DEFAULT_SUFFIX_SUGGESTIONS = [
 
 const hasUnitSuffix = hasStrictSuffix;
 
+const matchCustomSuffix = (name: string, customSuffixes: ReadonlyArray<string>) =>
+  pipe(
+    customSuffixes,
+    RA.findFirst((suffix) => hasUnitSuffix(name, suffix)),
+    O.map((suffix) => ({ suffix, vo: "ValueObject" })),
+  );
+
 const matchSuffixSuggestion = (name: string, customSuffixes: ReadonlyArray<string>) =>
   pipe(
     DEFAULT_SUFFIX_SUGGESTIONS,
     RA.findFirst(([suffix]) => hasUnitSuffix(name, suffix)),
     O.map(([suffix, vo]) => ({ suffix, vo })),
-    O.altW(() =>
-      pipe(
-        customSuffixes,
-        RA.findFirst((suffix) => hasUnitSuffix(name, suffix)),
-        O.map((suffix) => ({ suffix, vo: "ValueObject" })),
-      ),
-    ),
+    O.altW(() => matchCustomSuffix(name, customSuffixes)),
   );
 
 const getNodePrimitiveKind = (

@@ -126,13 +126,16 @@ const getParamUnwrappedTypes = (param: ts.Symbol, checker: ts.TypeChecker) =>
     O.getOrElse(() => [] as ReadonlyArray<ts.Type>),
   );
 
+const getSigParamUnwrappedTypes = (sig: ts.Signature, checker: ts.TypeChecker) =>
+  pipe(sig.getParameters(), RA.flatMap((p) => getParamUnwrappedTypes(p, checker)));
+
 const extractRepoSignatureEntities = (type: ts.Type, checker: ts.TypeChecker) =>
   pipe(
     type.getProperties(),
     RA.flatMap((prop) => getSymbolCallSignatures(prop, checker)),
     RA.flatMap((sig) => [
       ...unwrapContainerTsTypes(checker.getReturnTypeOfSignature(sig), checker),
-      ...pipe(sig.getParameters(), RA.flatMap((p) => getParamUnwrappedTypes(p, checker))),
+      ...getSigParamUnwrappedTypes(sig, checker),
     ]),
     RA.filter(isComplexDomainType),
     RA.filterMap(getTsTypeName),
@@ -149,11 +152,11 @@ const extractRepoCandidate = (node: ts.Node, sf: ts.SourceFile, checker: ts.Type
       })
     : O.none;
 
+const pairFileNodes = (sf: ts.SourceFile) =>
+  pipe(collectTsNodes(sf, sf), RA.map((node) => ({ node, sf })));
+
 const collectNodesAndFiles = (program: ts.Program) =>
-  pipe(
-    getProjectSourceFiles(program),
-    RA.flatMap((sf) => pipe(collectTsNodes(sf, sf), RA.map((node) => ({ node, sf })))),
-  );
+  pipe(getProjectSourceFiles(program), RA.flatMap(pairFileNodes));
 
 const collectAggregateGraph = (program: ts.Program) => {
   const checker = program.getTypeChecker();
@@ -167,6 +170,22 @@ const collectAggregateGraph = (program: ts.Program) => {
 const getProgramGraph = (program: ts.Program) =>
   memoizeByProgram(program, aggregateGraphCache, collectAggregateGraph);
 
+const extractAggregateChildPairs = (
+  agg: AggregateCandidate,
+  aggregateRoots: ReadonlySet<string>,
+) =>
+  pipe(
+    agg.referencedTypes,
+    RA.filter((child) => child !== agg.name && !aggregateRoots.has(child)),
+    RA.map((child) => [child, agg.name] as const),
+  );
+
+const appendUniqueParent = (existing: O.Option<ReadonlyArray<string>>, parent: string) =>
+  pipe(
+    [...O.getOrElse(() => [] as ReadonlyArray<string>)(existing), parent],
+    RA.uniq(S.Eq),
+  );
+
 const computeChildOwnership = (
   candidates: ReadonlyArray<AggregateCandidate>,
   aggregateRoots: ReadonlySet<string>,
@@ -174,16 +193,10 @@ const computeChildOwnership = (
   pipe(
     candidates,
     RA.filter((c) => aggregateRoots.has(c.name)),
-    RA.flatMap((agg) =>
-      pipe(
-        agg.referencedTypes,
-        RA.filter((child) => child !== agg.name && !aggregateRoots.has(child)),
-        RA.map((child) => [child, agg.name] as const),
-      ),
-    ),
+    RA.flatMap((agg) => extractAggregateChildPairs(agg, aggregateRoots)),
     RA.reduce({}, (acc: Readonly<Record<string, ReadonlyArray<string>>>, [child, parent]) => ({
       ...acc,
-      [child]: pipe([...(acc[child] ?? []), parent], RA.uniq(S.Eq)),
+      [child]: appendUniqueParent(O.fromNullable(acc[child]), parent),
     })),
   );
 

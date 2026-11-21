@@ -1,3 +1,5 @@
+import { noFpTsChain } from "../src/rules/no-fp-ts-chain.js";
+import { noNestedPipe } from "../src/rules/no-nested-pipe.js";
 import { preferFunctionComposition } from "../src/rules/prefer-function-composition.js";
 import { preferMonadicComposition } from "../src/rules/prefer-monadic-composition.js";
 import { preferMonadicErrorHandling } from "../src/rules/prefer-monadic-error-handling.js";
@@ -328,3 +330,210 @@ typeAwareRuleTester.run("prefer-point-free", preferPointFree, {
     },
   ],
 });
+
+ruleTester.run("no-nested-pipe", noNestedPipe, {
+  valid: [
+    // Single top-level pipe
+    `const res = pipe(x, f, g);`,
+    // Inner pipeline extracted into standalone function
+    `
+      const transformItem = (x: number) => pipe(x, f, g);
+      const res = pipe(items, RA.map(transformItem));
+    `,
+    // Extracted into helper before outer pipe
+    `
+      const outer = (opt: O.Option<number>) => {
+        const inner = (x: number) => pipe(x, f, g);
+        return pipe(opt, O.map(inner));
+      };
+    `,
+    // Sibling pipes not nested inside each other
+    `const pair = [pipe(a, f), pipe(b, g)];`,
+    // Method .pipe() (e.g. Node stream / RxJS) inside pipe is not fp-ts pipe
+    `const res = pipe(getStream(), (s) => s.pipe(transform));`,
+  ],
+  invalid: [
+    {
+      code: `const res = pipe(pipe(x, f), g);`,
+      errors: [{ messageId: "noNestedPipe" }],
+    },
+    {
+      code: `const res = pipe(items, RA.map((x) => pipe(x, f, g)));`,
+      errors: [{ messageId: "noNestedPipe" }],
+    },
+    {
+      code: `
+        const res = pipe(
+          opt,
+          O.flatMap((x) => {
+            return pipe(b(x), O.map((y) => x + y));
+          }),
+        );
+      `,
+      errors: [{ messageId: "noNestedPipe" }],
+    },
+    {
+      code: `
+        const res = pipe(
+          val,
+          (v) => match(v).with("a", () => pipe(v, f)).otherwise(() => v),
+        );
+      `,
+      errors: [{ messageId: "noNestedPipe" }],
+    },
+    {
+      code: `
+        const res = pipe(
+          x,
+          (a) => pipe(a, (b) => pipe(b, f)),
+        );
+      `,
+      errors: [{ messageId: "noNestedPipe" }, { messageId: "noNestedPipe" }],
+    },
+  ],
+});
+
+typeAwareRuleTester.run("no-fp-ts-chain", noFpTsChain, {
+  valid: [
+    // Idiomatic flatMap and Do-notation
+    `
+      import * as O from "fp-ts/lib/Option.js";
+      import { pipe } from "fp-ts/lib/function.js";
+      const res = pipe(O.some(1), O.flatMap((x) => O.some(x + 1)));
+    `,
+    `
+      import * as E from "fp-ts/lib/Either.js";
+      import { pipe } from "fp-ts/lib/function.js";
+      const res = pipe(E.Do, E.bind("a", () => E.right(1)));
+    `,
+    `
+      import { flatMap } from "fp-ts/lib/Option.js";
+      import * as O from "fp-ts/lib/Option.js";
+      import { pipe } from "fp-ts/lib/function.js";
+      const res = pipe(O.some(1), flatMap((x) => O.some(x + 1)));
+    `,
+    // Non-fp-ts chain functions or methods are allowed
+    `
+      const chain = (x: number) => x + 1;
+      const res = chain(1);
+    `,
+    `
+      const builder = { chain: (x: number) => x + 1 };
+      const res = builder.chain(1);
+    `,
+    // Shadowed parameter named O with non-fp-ts chain
+    `
+      import * as O from "fp-ts/lib/Option.js";
+      const fn = (opt: { chain: (x: number) => number }) => opt.chain(1);
+      const shadowed = (O: { chain: (x: number) => number }) => O.chain(1);
+      const ok = O.some(1);
+    `,
+    // Type-only import or typeof query should not fail
+    `
+      import type * as O from "fp-ts/lib/Option.js";
+      type OptionChain = typeof O.chain;
+    `,
+  ],
+  invalid: [
+    {
+      code: `
+        import * as O from "fp-ts/lib/Option.js";
+        import { pipe } from "fp-ts/lib/function.js";
+        const res = pipe(O.some(1), O.chain((x) => O.some(x + 1)));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `
+        import * as E from "fp-ts/Either";
+        import { pipe } from "fp-ts/function";
+        const res = pipe(E.right(1), E.chain((x) => E.right(x + 1)));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `
+        import * as TE from "fp-ts/lib/TaskEither.js";
+        import { pipe } from "fp-ts/lib/function.js";
+        const res = pipe(TE.right(1), TE.chain((x) => TE.right(x + 1)));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `
+        import * as RA from "fp-ts/lib/ReadonlyArray.js";
+        import { pipe } from "fp-ts/lib/function.js";
+        const res = pipe([1, 2], RA.chain((x) => [x, x + 1]));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `
+        import { chain, some } from "fp-ts/lib/Option.js";
+        import { pipe } from "fp-ts/lib/function.js";
+        const res = pipe(some(1), chain((x) => some(x + 1)));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `
+        import { chain as bindOption, some } from "fp-ts/lib/Option.js";
+        import { pipe } from "fp-ts/lib/function.js";
+        const res = pipe(some(1), bindOption((x) => some(x + 1)));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `
+        import * as O from "fp-ts/lib/Option.js";
+        const step = O.chain;
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `
+        import * as O from "fp-ts/lib/Option.js";
+        const res = O.Monad.chain(O.some(1), (x) => O.some(x + 1));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `export { chain } from "fp-ts/lib/Option.js";`,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `import { chain } from "fp-ts/lib/Option.js";`,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+  ],
+});
+
+ruleTester.run("no-fp-ts-chain (ast fallback)", noFpTsChain, {
+  valid: [
+    `
+      import * as O from "fp-ts/lib/Option.js";
+      const res = pipe(O.some(1), O.flatMap((x) => O.some(x + 1)));
+    `,
+    `
+      const custom = { chain: (x: number) => x + 1 };
+      const res = custom.chain(1);
+    `,
+  ],
+  invalid: [
+    {
+      code: `
+        import * as O from "fp-ts/lib/Option.js";
+        const res = pipe(O.some(1), O.chain((x) => O.some(x + 1)));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+    {
+      code: `
+        import { chain as bindEither } from "fp-ts/Either";
+        const res = pipe(x, bindEither((a) => E.right(a)));
+      `,
+      errors: [{ messageId: "noFpTsChain" }],
+    },
+  ],
+});
+

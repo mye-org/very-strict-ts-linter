@@ -59,6 +59,16 @@ const checkPropertyMember = (
   );
 };
 
+const checkAllPropertyMembers = (
+  members: ReadonlyArray<MemberNode>,
+  aggName: string,
+  aggregateRoots: ReadonlySet<string>,
+  services: ParserServicesWithTypeInformation,
+  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+) => {
+  pipe(members, RA.map((m) => { checkPropertyMember(m, aggName, aggregateRoots, services, report); }));
+};
+
 const checkAggregateMembers = (
   name: O.Option<string>,
   members: ReadonlyArray<MemberNode>,
@@ -70,7 +80,7 @@ const checkAggregateMembers = (
     name,
     O.filter((aggName) => aggregateRoots.has(aggName)),
     O.map((aggName) => {
-      pipe(members, RA.map((m) => { checkPropertyMember(m, aggName, aggregateRoots, services, report); }));
+      checkAllPropertyMembers(members, aggName, aggregateRoots, services, report);
     }),
   );
 };

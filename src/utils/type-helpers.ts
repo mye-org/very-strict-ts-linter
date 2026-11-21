@@ -214,6 +214,9 @@ const getContainerTypeArgs = (type: ts.Type, checker: ts.TypeChecker) => {
     : ([] as ReadonlyArray<ts.Type>);
 };
 
+const unwrapArgList = (args: ReadonlyArray<ts.Type>, fallback: ts.Type, checker: ts.TypeChecker) =>
+  args.length > 0 ? pipe(args, RA.flatMap((arg) => unwrapContainerTsTypes(arg, checker))) : [fallback];
+
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive type unwrap
 export const unwrapContainerTsTypes = (type: ts.Type, checker: ts.TypeChecker): ReadonlyArray<ts.Type> =>
   type.isUnion()
@@ -222,9 +225,7 @@ export const unwrapContainerTsTypes = (type: ts.Type, checker: ts.TypeChecker): 
         RA.filter((m) => !(m.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Never))),
         RA.flatMap((m) => unwrapContainerTsTypes(m, checker)),
       )
-    : pipe(getContainerTypeArgs(type, checker), (args) =>
-        args.length > 0 ? pipe(args, RA.flatMap((arg) => unwrapContainerTsTypes(arg, checker))) : [type],
-      );
+    : unwrapArgList(getContainerTypeArgs(type, checker), type, checker);
 
 const isEstreeNodeObj = (val: object): val is TSESTree.Node =>
   Boolean(val) && "type" in val;
@@ -240,18 +241,19 @@ const extractChildValue = (val: object) =>
         ),
       );
 
+const extractKeyChildren = (node: TSESTree.Node, key: string) =>
+  pipe(
+    O.fromNullable((node as object as Readonly<Record<string, object>>)[key]),
+    O.match(() => [] as ReadonlyArray<TSESTree.Node>, extractChildValue),
+  );
+
 export const getEstreeChildNodes = (
   node: TSESTree.Node,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) =>
   pipe(
     visitorKeys[node.type] ?? [],
-    RA.flatMap((key) =>
-      pipe(
-        O.fromNullable((node as object as Readonly<Record<string, object>>)[key]),
-        O.match(() => [] as ReadonlyArray<TSESTree.Node>, extractChildValue),
-      ),
-    ),
+    RA.flatMap((key) => extractKeyChildren(node, key)),
   );
 
 export const isSetterMethodName = (name: string) =>
@@ -297,3 +299,6 @@ export const getEnclosingEsTreeFunction = (node: TSESTree.Node): O.Option<TSESTr
       isEsTreeFunctionNode(parent) ? O.some(parent) : getEnclosingEsTreeFunction(parent),
     ),
   );
+
+export const isCalleeOfCallExpression = (node: TSESTree.Node) =>
+  node.parent?.type === AST_NODE_TYPES.CallExpression && node.parent.callee === node;

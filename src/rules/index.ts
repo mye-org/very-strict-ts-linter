@@ -8,6 +8,7 @@ import { noDataClumps } from "./no-data-clumps.js";
 import { noDomainRawPrimitives } from "./no-domain-raw-primitives.js";
 import { noExplicitReturnType } from "./no-explicit-return-type.js";
 import { noExternalEntityMutation } from "./no-external-entity-mutation.js";
+import { noFpTsChain } from "./no-fp-ts-chain.js";
 import { noIfElseOrSwitch } from "./no-if-else-or-switch.js";
 import { noImperativeLoops } from "./no-imperative-loops.js";
 import { noInlineInfraSideEffects } from "./no-inline-infra-side-effects.js";
@@ -15,6 +16,7 @@ import { noLetOrVar } from "./no-let-or-var.js";
 import { noLifecycleFlagClusters } from "./no-lifecycle-flag-clusters.js";
 import { noModelPolysemy } from "./no-model-polysemy.js";
 import { noMultiRepoOrchestration } from "./no-multi-repo-orchestration.js";
+import { noNestedPipe } from "./no-nested-pipe.js";
 import { noNestedTernary } from "./no-nested-ternary.js";
 import { noNullUndefined } from "./no-null-undefined.js";
 import { noOptionalStateBags } from "./no-optional-state-bags.js";
@@ -55,6 +57,7 @@ export const rules = {
   "no-domain-raw-primitives": noDomainRawPrimitives,
   "no-explicit-return-type": noExplicitReturnType,
   "no-external-entity-mutation": noExternalEntityMutation,
+  "no-fp-ts-chain": noFpTsChain,
   "no-if-else-or-switch": noIfElseOrSwitch,
   "no-imperative-loops": noImperativeLoops,
   "no-inline-infra-side-effects": noInlineInfraSideEffects,
@@ -62,6 +65,7 @@ export const rules = {
   "no-lifecycle-flag-clusters": noLifecycleFlagClusters,
   "no-model-polysemy": noModelPolysemy,
   "no-multi-repo-orchestration": noMultiRepoOrchestration,
+  "no-nested-pipe": noNestedPipe,
   "no-nested-ternary": noNestedTernary,
   "no-null-undefined": noNullUndefined,
   "no-optional-state-bags": noOptionalStateBags,

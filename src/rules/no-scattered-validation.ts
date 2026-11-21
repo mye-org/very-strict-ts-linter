@@ -18,18 +18,16 @@ const VALIDATION_FN_RE = /^(isValid|validate|assertValid)[A-Z]/;
 
 const regexCountCache = new WeakMap<ts.Program, ReadonlyArray<Readonly<Record<"text" | "file", string>>>>();
 
+const collectFileRegexes = (sf: ts.SourceFile) =>
+  pipe(
+    collectTsNodes(sf, sf),
+    RA.filter(ts.isRegularExpressionLiteral),
+    RA.map((lit) => ({ text: lit.text, file: sf.fileName })),
+  );
+
 const getProgramRegexes = (program: ts.Program) =>
   memoizeByProgram(program, regexCountCache, (p) =>
-    pipe(
-      getProjectSourceFiles(p),
-      RA.flatMap((sf) =>
-        pipe(
-          collectTsNodes(sf, sf),
-          RA.filter(ts.isRegularExpressionLiteral),
-          RA.map((lit) => ({ text: lit.text, file: sf.fileName })),
-        ),
-      ),
-    ),
+    pipe(getProjectSourceFiles(p), RA.flatMap(collectFileRegexes)),
   );
 
 const isDuplicatedNonVoRegex = (

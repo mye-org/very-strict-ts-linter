@@ -71,6 +71,11 @@ const isInvalidValidateReturn = (
     O.exists(isBooleanVoidOrOption),
   );
 
+const hasPrimitiveParam = (
+  params: ReadonlyArray<TSESTree.Parameter>,
+  services: ParserServicesWithTypeInformation,
+) => pipe(params, RA.some((p) => isPrimitiveParam(p, services)));
+
 const isValidateWithoutParse = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
@@ -80,8 +85,7 @@ const isValidateWithoutParse = (
     O.exists(
       (name) =>
         (VALIDATE_NAME_RE.test(name) ||
-          (IS_VALID_NAME_RE.test(name) &&
-            pipe(node.params, RA.some((p) => isPrimitiveParam(p, services))))) &&
+          (IS_VALID_NAME_RE.test(name) && hasPrimitiveParam(node.params, services))) &&
         isInvalidValidateReturn(node, services),
     ),
   );

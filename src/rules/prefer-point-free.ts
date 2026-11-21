@@ -150,6 +150,9 @@ const getCalleeSymbol = (
     O.fromNullable,
   );
 
+const hasNoUnsafeDeclaration = (decls: ReadonlyArray<ts.Declaration>) =>
+  !pipe(decls, RA.some(isUnsafeMethodDeclaration));
+
 const isSafeMemberCallee = (
   callee: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
@@ -163,7 +166,7 @@ const isSafeMemberCallee = (
         getCalleeSymbol(callee, services, checker),
         O.map((sym) => resolveSymbol(sym, checker)),
         O.map((sym) => sym.getDeclarations() ?? []),
-        O.exists((decls) => !pipe(decls, RA.some(isUnsafeMethodDeclaration))),
+        O.exists(hasNoUnsafeDeclaration),
       );
 
 const isRestParamSymbol = (sym: ts.Symbol) =>

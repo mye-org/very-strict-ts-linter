@@ -40,6 +40,12 @@ const formatClumpSection = (clumps: ReadonlyArray<ClumpFinding>) =>
         ),
       ).join("\n");
 
+const formatPolysemyClusters = (clusters: PolysemyFinding["clusters"]) =>
+  pipe(
+    clusters,
+    RA.map((c) => `  - \`${c.modulePath}\`: {${c.fields.join(", ")}}`),
+  ).join("\n");
+
 const formatPolysemySection = (models: ReadonlyArray<PolysemyFinding>) =>
   models.length === 0
     ? "- None detected."
@@ -47,10 +53,7 @@ const formatPolysemySection = (models: ReadonlyArray<PolysemyFinding>) =>
         models,
         RA.map(
           (m) =>
-            `- **${m.modelName}** (${m.location.file}:${String(m.location.line)}):\n${pipe(
-              m.clusters,
-              RA.map((c) => `  - \`${c.modulePath}\`: {${c.fields.join(", ")}}`),
-            ).join("\n")}`,
+            `- **${m.modelName}** (${m.location.file}:${String(m.location.line)}):\n${formatPolysemyClusters(m.clusters)}`,
         ),
       ).join("\n");
 

@@ -137,6 +137,13 @@ const extractCaseClauseOcc = (
       )
     : O.none;
 
+const collectSwitchCaseClauses = (
+  clauses: ts.NodeArray<ts.CaseOrDefaultClause>,
+  keyInfo: Readonly<Record<"targetKey" | "displayKey", string>>,
+  sf: ts.SourceFile,
+) =>
+  pipe(clauses, RA.filterMap((clause) => extractCaseClauseOcc(clause, keyInfo, sf)));
+
 const extractSwitchCaseOccurrences = (
   node: ts.SwitchStatement,
   sf: ts.SourceFile,
@@ -147,11 +154,7 @@ const extractSwitchCaseOccurrences = (
         getTargetKeyInfo(node.expression, sf, checker),
         O.match(
           () => [] as ReadonlyArray<DiscriminantOccurrence>,
-          (keyInfo) =>
-            pipe(
-              node.caseBlock.clauses,
-              RA.filterMap((clause) => extractCaseClauseOcc(clause, keyInfo, sf)),
-            ),
+          (keyInfo) => collectSwitchCaseClauses(node.caseBlock.clauses, keyInfo, sf),
         ),
       )
     : [];
@@ -230,13 +233,16 @@ const extractOccurrencesForProgram = (program: ts.Program) =>
 const getProgramOccurrences = (program: ts.Program) =>
   memoizeByProgram(program, discriminantCache, extractOccurrencesForProgram);
 
+const extractOccLocations = (occs: ReadonlyArray<DiscriminantOccurrence>) =>
+  pipe(occs, RA.map((o) => o.location));
+
 const buildCluster = (occs: ReadonlyArray<DiscriminantOccurrence>, literals: ReadonlyArray<string>) =>
   pipe(
     O.fromNullable(occs[0]),
     O.map((first) => ({
       targetKey: first.displayKey,
       literals,
-      locations: pipe(occs, RA.map((o) => o.location)),
+      locations: extractOccLocations(occs),
     })),
   );
 
@@ -256,16 +262,17 @@ const groupByTargetKey = (
   [occ.targetKey]: [...(acc[occ.targetKey] ?? []), occ],
 });
 
-const indexByLocation = (clusters: ReadonlyArray<DiscriminantCluster>) =>
+const indexClusterLocations = (
+  acc: Readonly<Record<string, DiscriminantCluster>>,
+  cluster: DiscriminantCluster,
+) =>
   pipe(
-    clusters,
-    RA.reduce({}, (acc: Readonly<Record<string, DiscriminantCluster>>, cluster) =>
-      pipe(
-        cluster.locations,
-        RA.reduce(acc, (inner, loc) => ({ ...inner, [makeLocationKey(loc)]: cluster })),
-      ),
-    ),
+    cluster.locations,
+    RA.reduce(acc, (inner, loc) => ({ ...inner, [makeLocationKey(loc)]: cluster })),
   );
+
+const indexByLocation = (clusters: ReadonlyArray<DiscriminantCluster>) =>
+  pipe(clusters, RA.reduce({}, indexClusterLocations));
 
 type DiscriminantIndex = Readonly<{
   readonly clusters: ReadonlyArray<DiscriminantCluster>;

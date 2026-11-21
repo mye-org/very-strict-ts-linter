@@ -31,16 +31,17 @@ const getPropCallSigs = (prop: ts.Symbol, checker: ts.TypeChecker) =>
 const resolveDeclTypes = (param: ts.Symbol, checker: ts.TypeChecker) => (decl: ts.Declaration) =>
   pipe(checker.getTypeOfSymbolAtLocation(param, decl), (t) => unwrapContainerTsTypes(t, checker));
 
+const resolveSingleParamTypes = (checker: ts.TypeChecker) => (p: ts.Symbol) =>
+  pipe(
+    O.fromNullable(p.valueDeclaration ?? p.declarations?.[0]),
+    O.map(resolveDeclTypes(p, checker)),
+    O.getOrElse(() => [] as ReadonlyArray<ts.Type>),
+  );
+
 const getParamTypesFromSig = (sig: ts.Signature, checker: ts.TypeChecker) =>
   pipe(
     sig.getParameters(),
-    RA.flatMap((p) =>
-      pipe(
-        O.fromNullable(p.valueDeclaration ?? p.declarations?.[0]),
-        O.map(resolveDeclTypes(p, checker)),
-        O.getOrElse(() => [] as ReadonlyArray<ts.Type>),
-      ),
-    ),
+    RA.flatMap(resolveSingleParamTypes(checker)),
   );
 
 const extractEntityNamesFromDecl = (
@@ -74,6 +75,15 @@ const resolveManagedEntities = (
     O.getOrElse(() => extractEntityNamesFromDecl(reportNode, services)),
   );
 
+const resolveChildEntityInfo = (
+  entity: string,
+  childSet: ReadonlySet<string>,
+  graph: ReturnType<typeof analyzeAggregateGraph>,
+) =>
+  childSet.has(entity)
+    ? O.some({ entity, parent: "parent Aggregate Root" })
+    : pipe(graph.isChildEntity(entity), O.map((parents) => ({ entity, parent: parents.join(", ") })));
+
 const findNonAggregateWithSets = (
   managedEntities: ReadonlyArray<string>,
   childSet: ReadonlySet<string>,
@@ -83,11 +93,7 @@ const findNonAggregateWithSets = (
   pipe(
     managedEntities,
     RA.filter((entity) => !explicitAggs.has(entity)),
-    RA.filterMap((entity) =>
-      childSet.has(entity)
-        ? O.some({ entity, parent: "parent Aggregate Root" })
-        : pipe(graph.isChildEntity(entity), O.map((parents) => ({ entity, parent: parents.join(", ") }))),
-    ),
+    RA.filterMap((entity) => resolveChildEntityInfo(entity, childSet, graph)),
     RA.head,
   );
 

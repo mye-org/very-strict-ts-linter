@@ -23,17 +23,20 @@ const getParentMemberCall = (current: TSESTree.Node) =>
     ? O.some([current.parent, current.parent.parent] as const)
     : O.none;
 
+const resolveTerminatorFromStep = (
+  [member, parentCall]: readonly [TSESTree.MemberExpression, TSESTree.CallExpression],
+) =>
+  pipe(
+    getTerminatorPropName(member),
+    O.map((methodName) => [parentCall, methodName] as const),
+    O.alt(() => findMatchChainTerminator(parentCall)),
+  );
+
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
 const findMatchChainTerminator = (current: TSESTree.Node): O.Option<readonly [TSESTree.CallExpression, string]> =>
   pipe(
     getParentMemberCall(current),
-    O.flatMap(([member, parentCall]) =>
-      pipe(
-        getTerminatorPropName(member),
-        O.map((methodName) => [parentCall, methodName] as const),
-        O.alt(() => findMatchChainTerminator(parentCall)),
-      ),
-    ),
+    O.flatMap(resolveTerminatorFromStep),
   );
 
 const isMatchCall = (node: TSESTree.CallExpression) =>

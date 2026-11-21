@@ -182,12 +182,13 @@ const extractNodesWithPath =
 const extractEdgesFromFile = (ctx: EdgeExtractionContext) => (sf: ts.SourceFile) =>
   pipe(collectTsNodes(sf, sf), extractNodesWithPath(normalizeFilePath(sf.fileName), ctx));
 
+const extractFileModels = (checker: ts.TypeChecker) => (sf: ts.SourceFile) =>
+  pipe(collectTsNodes(sf, sf), RA.filterMap((n) => extractModelDef(n, sf, checker)));
+
 const collectModelsFromFiles = (files: ReadonlyArray<ts.SourceFile>, checker: ts.TypeChecker) =>
   pipe(
     files,
-    RA.flatMap((sf) =>
-      pipe(collectTsNodes(sf, sf), RA.filterMap((n) => extractModelDef(n, sf, checker))),
-    ),
+    RA.flatMap(extractFileModels(checker)),
     RA.reduce({}, (acc: Readonly<Record<string, ModelDef>>, m) => ({ ...acc, [m.modelKey]: m })),
   );
 
@@ -237,22 +238,31 @@ const computeJaccard = (a: ReadonlyArray<string>, b: ReadonlyArray<string>, unio
 const jaccardSimilarity = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
   computeJaccard(a, b, new Set([...a, ...b]).size);
 
+const hasLaterLowOverlap = (
+  indexed: ReadonlyArray<Readonly<Record<"idx", number> & { readonly cluster: ModuleFieldUsage }>>,
+  idx1: number,
+  c1: ModuleFieldUsage,
+  maxOverlap: number,
+) =>
+  pipe(
+    indexed,
+    RA.some(({ idx: idx2, cluster: c2 }) => idx2 > idx1 && jaccardSimilarity(c1.fields, c2.fields) <= maxOverlap),
+  );
+
 const hasOverlapBelow = (
   indexed: ReadonlyArray<Readonly<Record<"idx", number> & { readonly cluster: ModuleFieldUsage }>>,
   maxOverlap: number,
 ) =>
   pipe(
     indexed,
-    RA.some(({ idx: idx1, cluster: c1 }) =>
-      pipe(
-        indexed,
-        RA.some(({ idx: idx2, cluster: c2 }) => idx2 > idx1 && jaccardSimilarity(c1.fields, c2.fields) <= maxOverlap),
-      ),
-    ),
+    RA.some(({ idx: idx1, cluster: c1 }) => hasLaterLowOverlap(indexed, idx1, c1, maxOverlap)),
   );
 
 const hasDisjointPair = (clusters: ReadonlyArray<ModuleFieldUsage>, maxOverlap: number) =>
   hasOverlapBelow(pipe(clusters, RA.mapWithIndex((idx, cluster) => ({ idx, cluster }))), maxOverlap);
+
+const extractSortedModuleFields = (moduleEdges: ReadonlyArray<AccessEdge>) =>
+  pipe(moduleEdges, RA.map((e) => e.field), RA.uniq(S.Eq), RA.sort(S.Ord));
 
 const groupEdgesByModule = (edges: ReadonlyArray<AccessEdge>, model: ModelDef) =>
   pipe(
@@ -262,7 +272,7 @@ const groupEdgesByModule = (edges: ReadonlyArray<AccessEdge>, model: ModelDef) =
     R.toEntries,
     RA.map(([modulePath, moduleEdges]) => ({
       modulePath,
-      fields: pipe(moduleEdges, RA.map((e) => e.field), RA.uniq(S.Eq), RA.sort(S.Ord)),
+      fields: extractSortedModuleFields(moduleEdges),
     })),
   );
 
@@ -307,19 +317,24 @@ type PolysemyIndex = Readonly<{
 
 const polysemyIndexCache = new WeakMap<ts.Program, Readonly<Record<string, PolysemyIndex>>>();
 
+const extractPolysemyFindings = (
+  data: ReturnType<typeof getProgramData>,
+  thresholds: PolysemyThresholds,
+) =>
+  pipe(
+    R.toEntries(data.models),
+    RA.filterMap(([, model]) =>
+      toPolysemyFinding(model, data.edgesByModel[model.modelKey] ?? [], thresholds),
+    ),
+  );
+
 const computePolysemyIndex = (
   program: ts.Program,
   thresholds: PolysemyThresholds,
 ) =>
   pipe(
     getProgramData(program),
-    (data) =>
-      pipe(
-        R.toEntries(data.models),
-        RA.filterMap(([, model]) =>
-          toPolysemyFinding(model, data.edgesByModel[model.modelKey] ?? [], thresholds),
-        ),
-      ),
+    (data) => extractPolysemyFindings(data, thresholds),
     indexPolysemyFindings,
   );
 

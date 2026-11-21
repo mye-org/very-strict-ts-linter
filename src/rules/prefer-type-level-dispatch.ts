@@ -47,14 +47,15 @@ const getMemberTagLiteral = (member: ts.Type, checker: ts.TypeChecker) =>
 const hasAllTagsInSet = (tags: ReadonlyArray<string>, tagSet: ReadonlySet<string>) =>
   pipe(tags, RA.every((tag) => tagSet.has(tag)));
 
+const hasMonadicTagSet = (tags: ReadonlyArray<string>) =>
+  pipe(MONADIC_TAG_SETS, RA.some((set) => hasAllTagsInSet(tags, set)));
+
 const isExpandedMonadicUnion = (type: ts.Type, checker: ts.TypeChecker) =>
   type.isUnion() &&
   pipe(
     type.types,
     RA.filterMap((m) => getMemberTagLiteral(m, checker)),
-    (tags) =>
-      tags.length === type.types.length &&
-      pipe(MONADIC_TAG_SETS, RA.some((set) => hasAllTagsInSet(tags, set))),
+    (tags) => tags.length === type.types.length && hasMonadicTagSet(tags),
   );
 
 const isMonadicWrapperType = (type: ts.Type, checker: ts.TypeChecker) =>
@@ -77,10 +78,16 @@ const isPairDistinct = (a: ts.Type, b: ts.Type, checker: ts.TypeChecker) =>
   !isSamePrimitiveFamily(a, b) &&
   (!checker.isTypeAssignableTo(a, b) || !checker.isTypeAssignableTo(b, a));
 
+const hasDistinctOther = (
+  a: ts.Type,
+  members: ReadonlyArray<ts.Type>,
+  checker: ts.TypeChecker,
+) => pipe(members, RA.some((b) => a !== b && isPairDistinct(a, b, checker)));
+
 const hasHeterogeneousMembers = (members: ReadonlyArray<ts.Type>, checker: ts.TypeChecker) =>
   pipe(
     members,
-    RA.some((a) => pipe(members, RA.some((b) => a !== b && isPairDistinct(a, b, checker)))),
+    RA.some((a) => hasDistinctOther(a, members, checker)),
   );
 
 const isFiniteNonBooleanUnionParam = (
@@ -202,6 +209,17 @@ const getCallbackReturnType = (
 
 const hasAtLeastTwo = (xs: ReadonlyArray<ts.Type>) => xs.length >= 2;
 
+const hasHeterogeneousCallbacks = (
+  callbacks: ReadonlyArray<TSESTree.Expression>,
+  services: ParserServicesWithTypeInformation,
+  checker: ts.TypeChecker,
+) =>
+  pipe(
+    callbacks,
+    RA.filterMap((cb) => getCallbackReturnType(cb, services, checker)),
+    (types) => hasAtLeastTwo(types) && hasHeterogeneousMembers(types, checker),
+  );
+
 const hasCorrelatedMatchBranches = (
   node: FunctionNode,
   paramNames: ReadonlySet<string>,
@@ -210,13 +228,7 @@ const hasCorrelatedMatchBranches = (
 ) =>
   pipe(
     findMatchChainInExpr(node.body, paramNames),
-    RA.some((callbacks) =>
-      pipe(
-        callbacks,
-        RA.filterMap((cb) => getCallbackReturnType(cb, services, checker)),
-        (types) => hasAtLeastTwo(types) && hasHeterogeneousMembers(types, checker),
-      ),
-    ),
+    RA.some((callbacks) => hasHeterogeneousCallbacks(callbacks, services, checker)),
   );
 
 const isWideUnionReturn = (sig: ts.Signature, checker: ts.TypeChecker) => {

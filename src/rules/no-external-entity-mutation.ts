@@ -69,15 +69,16 @@ const collectAssignmentsInBlock = (
         ),
       ];
 
+const toTargetAssignment = (m: TSESTree.MemberExpression) =>
+  pipe(
+    getRootTarget(m.object),
+    O.map((id) => ({ targetName: id.name, targetNode: id, member: m })),
+  );
+
 const groupMutationsByTarget = (mutations: ReadonlyArray<TSESTree.MemberExpression>) =>
   pipe(
     mutations,
-    RA.filterMap((m) =>
-      pipe(
-        getRootTarget(m.object),
-        O.map((id) => ({ targetName: id.name, targetNode: id, member: m })),
-      ),
-    ),
+    RA.filterMap(toTargetAssignment),
     RA.reduce({}, (acc: Readonly<Record<string, ReadonlyArray<TargetAssignment>>>, entry) => ({
       ...acc,
       [entry.targetName]: [...(acc[entry.targetName] ?? []), entry],
@@ -101,6 +102,14 @@ const reportTargetMutations = (
   );
 };
 
+const collectBodyAssignments = (
+  body: FunctionBodyNode["body"],
+  visitorKeys: TSESLint.SourceCode["visitorKeys"],
+) =>
+  body.type === AST_NODE_TYPES.BlockStatement
+    ? pipe(body.body, RA.flatMap((s) => collectAssignmentsInBlock(s, visitorKeys)))
+    : ([] as ReadonlyArray<TSESTree.MemberExpression>);
+
 const checkFunctionMutations = (
   fn: FunctionBodyNode,
   minMutations: number,
@@ -110,9 +119,7 @@ const checkFunctionMutations = (
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   pipe(
-    fn.body.type === AST_NODE_TYPES.BlockStatement
-      ? pipe(fn.body.body, RA.flatMap((s) => collectAssignmentsInBlock(s, visitorKeys)))
-      : [],
+    collectBodyAssignments(fn.body, visitorKeys),
     groupMutationsByTarget,
     R.toEntries,
     RA.map(([targetName, items]) => {

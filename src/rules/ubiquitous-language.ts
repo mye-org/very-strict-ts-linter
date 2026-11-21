@@ -70,19 +70,16 @@ const getDeclaredNameFromTsNode = (node: ts.Node) =>
 
 const getContextDir = flow(path.dirname, normalizeFilePath);
 
+const extractSfTokens = (sf: ts.SourceFile) =>
+  pipe(collectTsNodes(sf, sf), RA.filterMap(getDeclaredNameFromTsNode), RA.flatMap(extractPascalTokens));
+
 const getProgramContextTerms = (program: ts.Program) =>
   memoizeByProgram(program, contextTermCache, (p) =>
     pipe(
       getProjectSourceFiles(p),
       RA.reduce({}, (acc: Readonly<Record<string, ReadonlySet<string>>>, sf) => {
         const dir = getContextDir(sf.fileName);
-        return {
-          ...acc,
-          [dir]: new Set([
-            ...(acc[dir] ?? []),
-            ...pipe(collectTsNodes(sf, sf), RA.filterMap(getDeclaredNameFromTsNode), RA.flatMap(extractPascalTokens)),
-          ]),
-        };
+        return { ...acc, [dir]: new Set([...(acc[dir] ?? []), ...extractSfTokens(sf)]) };
       }),
     ),
   );
@@ -99,36 +96,37 @@ const findCrudVerb = (name: string, verbs: ReadonlyArray<string>) =>
     }),
   );
 
+type SynonymContext = Readonly<{
+  readonly contextTerms: ReadonlySet<string>;
+  readonly synonymGroups: ReadonlyArray<ReadonlyArray<string>>;
+  readonly allowed: ReadonlySet<string>;
+}>;
+
 const findGroupConflict = (
   token: string,
   group: ReadonlyArray<string>,
-  contextTerms: ReadonlySet<string>,
-  allowed: ReadonlySet<string>,
+  ctx: SynonymContext,
 ) =>
   pipe(
     group,
-    RA.filter((term) => term !== token && contextTerms.has(term) && !allowed.has(term)),
+    RA.filter((term) => term !== token && ctx.contextTerms.has(term) && !ctx.allowed.has(term)),
     RA.uniq(S.Eq),
     (conflicting) =>
       conflicting.length > 0 ? O.some({ token, conflicting: conflicting.join(", ") }) : O.none,
   );
 
-const findSynonymCollision = (
-  name: string,
-  contextTerms: ReadonlySet<string>,
-  synonymGroups: ReadonlyArray<ReadonlyArray<string>>,
-  allowed: ReadonlySet<string>,
-) =>
+const matchTokenGroupConflict = (token: string, ctx: SynonymContext) =>
+  pipe(
+    ctx.synonymGroups,
+    RA.findFirst((group) => group.includes(token)),
+    O.flatMap((group) => findGroupConflict(token, group, ctx)),
+  );
+
+const findSynonymCollision = (name: string, ctx: SynonymContext) =>
   pipe(
     extractPascalTokens(name),
-    RA.filter((token) => !allowed.has(token)),
-    RA.filterMap((token) =>
-      pipe(
-        synonymGroups,
-        RA.findFirst((group) => group.includes(token)),
-        O.flatMap((group) => findGroupConflict(token, group, contextTerms, allowed)),
-      ),
-    ),
+    RA.filter((token) => !ctx.allowed.has(token)),
+    RA.filterMap((token) => matchTokenGroupConflict(token, ctx)),
     RA.head,
   );
 
@@ -167,7 +165,7 @@ const checkIdentifier = (
     .with(false, () => {
       reportGenericAndCrud(id, symbolKind, repoKind, options, report);
       pipe(
-        findSynonymCollision(id.name, contextTerms, options.synonymGroups, allowed),
+        findSynonymCollision(id.name, { contextTerms, synonymGroups: options.synonymGroups, allowed }),
         O.map(({ token, conflicting }) => {
           report({ node: id, messageId: "synonymCollision", data: { term: token, conflicting } });
         }),

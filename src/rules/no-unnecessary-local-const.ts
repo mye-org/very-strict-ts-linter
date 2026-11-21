@@ -21,15 +21,16 @@ const isFunctionNode = (node: O.Option<TSESTree.Node>) =>
 
 const isLocalHelperFunction = hasFunctionInit;
 
+const hasSingleReadRef = (v: TSESLint.Scope.Variable) =>
+  pipe(v.references, RA.filter((ref) => ref.isRead())).length === 1;
+
 const hasSingleRead = (
   declarator: TSESTree.VariableDeclarator,
   sourceCode: Readonly<TSESLint.SourceCode>,
 ) =>
   pipe(
     O.fromNullable(sourceCode.getDeclaredVariables(declarator)[0]),
-    O.filter(
-      (v) => pipe(v.references, RA.filter((ref) => ref.isRead())).length === 1,
-    ),
+    O.filter(hasSingleReadRef),
     O.map((v) => ({ declarator, name: v.name })),
   );
 

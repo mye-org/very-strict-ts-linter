@@ -90,6 +90,9 @@ const getCallTargetName = (expr: TSESTree.Expression): O.Option<string> =>
     .with(P._, () => O.none as O.Option<string>)
     .exhaustive();
 
+const isInfraCallName = (name: string, infraSet: ReadonlySet<string>) =>
+  infraSet.has(name.toLowerCase());
+
 const findInfraCallTarget = (
   node: TSESTree.Node,
   infraSet: ReadonlySet<string>,
@@ -97,7 +100,7 @@ const findInfraCallTarget = (
   node.type === AST_NODE_TYPES.CallExpression
     ? pipe(
         getCallTargetName(node.callee),
-        O.filter((name) => pipe(name.toLowerCase(), (k) => infraSet.has(k))),
+        O.filter((name) => isInfraCallName(name, infraSet)),
         O.map((target) => ({ node, target })),
       )
     : O.none;

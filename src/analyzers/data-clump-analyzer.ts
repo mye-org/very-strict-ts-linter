@@ -169,6 +169,9 @@ const prependHead = (head: string) => (rest: ReadonlyArray<string>) => [head, ..
 
 type CombineInput = Readonly<Record<"items", ReadonlyArray<string>> & Record<"size", number>>;
 
+const combinePrefixed = (head: string, items: ReadonlyArray<string>, size: number) =>
+  pipe(combinations({ items: items.slice(1), size: size - 1 }), RA.map(prependHead(head)));
+
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive combinations
 const combineWithHead = ({ items, size }: CombineInput): ReadonlyArray<ReadonlyArray<string>> =>
   pipe(
@@ -176,7 +179,7 @@ const combineWithHead = ({ items, size }: CombineInput): ReadonlyArray<ReadonlyA
     O.match(
       () => [] as ReadonlyArray<ReadonlyArray<string>>,
       (head) => [
-        ...pipe(combinations({ items: items.slice(1), size: size - 1 }), RA.map(prependHead(head))),
+        ...combinePrefixed(head, items, size),
         ...combinations({ items: items.slice(1), size }),
       ],
     ),
@@ -220,13 +223,14 @@ const appendLocationToMap = (
   [entry.key]: [...(acc[entry.key] ?? []), entry.location],
 });
 
+const hasLocationKey = (acc: ReadonlyArray<TsLocation>, loc: TsLocation) =>
+  pipe(acc, RA.some((existing) => makeLocationKey(existing) === makeLocationKey(loc)));
+
 const uniqueLocations = (locs: ReadonlyArray<TsLocation>) =>
   pipe(
     locs,
     RA.reduce([] as ReadonlyArray<TsLocation>, (acc, loc) =>
-      pipe(acc, RA.some((existing) => makeLocationKey(existing) === makeLocationKey(loc)))
-        ? acc
-        : [...acc, loc],
+      hasLocationKey(acc, loc) ? acc : [...acc, loc],
     ),
   );
 
@@ -242,6 +246,9 @@ const addFindingToLocationMap = (
     }),
   );
 
+const hasAllFields = (candidateFields: ReadonlyArray<string>, otherFields: ReadonlyArray<string>) =>
+  pipe(candidateFields, RA.every((f) => otherFields.includes(f)));
+
 const isSubsumedByLargerFinding = (
   candidate: ClumpFinding,
   allFindings: ReadonlyArray<ClumpFinding>,
@@ -253,7 +260,7 @@ const isSubsumedByLargerFinding = (
         other.key !== candidate.key &&
         other.fields.length > candidate.fields.length &&
         other.locations.length >= candidate.locations.length &&
-        pipe(candidate.fields, RA.every((f) => other.fields.includes(f))),
+        hasAllFields(candidate.fields, other.fields),
     ),
   );
 
@@ -289,6 +296,9 @@ const filterSubsumed = (rawFindings: ReadonlyArray<ClumpFinding>) =>
 
 const clumpIndexCache = new WeakMap<ts.Program, Readonly<Record<string, ClumpIndex>>>();
 
+const indexFindingsByLocation = (findings: ReadonlyArray<ClumpFinding>) =>
+  pipe(findings, RA.reduce({}, addFindingToLocationMap));
+
 export const analyzeDataClumps = (
   program: ts.Program,
   minSize = 2,
@@ -304,7 +314,7 @@ export const analyzeDataClumps = (
         filterSubsumed,
         (findings) => ({
           findings,
-          byLocation: pipe(findings, RA.reduce({}, addFindingToLocationMap)),
+          byLocation: indexFindingsByLocation(findings),
         }),
       ),
   );

@@ -87,19 +87,23 @@ const isMonadConstructorExpr = (
       O.exists((info) => info.namespace === namespace && constructors.has(info.method)),
     ));
 
+const isMatchingMonadConstructor = (
+  arg: TSESTree.CallExpressionArgument,
+  namespace: string,
+  constructors: ReadonlySet<string>,
+) =>
+  pipe(
+    getCallbackReturnExpression(arg),
+    O.exists((expr) => isMonadConstructorExpr(expr, namespace, constructors)),
+  );
+
 const isReturningSameMonadConstructor = (
   arg: TSESTree.CallExpressionArgument,
   namespace: string,
 ) =>
   pipe(
     RR.lookup(namespace, MONAD_REWRAP_CONSTRUCTORS),
-    O.flatMap((constructors) =>
-      pipe(
-        getCallbackReturnExpression(arg),
-        O.filter((expr) => isMonadConstructorExpr(expr, namespace, constructors)),
-      ),
-    ),
-    O.isSome,
+    O.exists((constructors) => isMatchingMonadConstructor(arg, namespace, constructors)),
   );
 
 const isInTernaryTest = (node: TSESTree.CallExpression) =>
