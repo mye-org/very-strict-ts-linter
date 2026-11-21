@@ -1,5 +1,6 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESTree } from "@typescript-eslint/utils";
 import { pipe } from "fp-ts/lib/function.js";
+import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 import { isArrayLikeType } from "../utils/type-helpers.js";
 
@@ -46,6 +47,19 @@ const isBannedArrayCall = (
   BANNED_ARRAY_METHODS.has(node.callee.property.name) &&
   isArrayTypeCall(node, services, services.program.getTypeChecker());
 
+const checkArrayCall = (
+  node: TSESTree.CallExpression,
+  services: ParserServicesWithTypeInformation,
+  report: (prop: TSESTree.Identifier) => void,
+) => {
+  match({ callee: node.callee, isBanned: isBannedArrayCall(node, services) })
+    .with(
+      { isBanned: true, callee: { type: AST_NODE_TYPES.MemberExpression, property: { type: AST_NODE_TYPES.Identifier } } },
+      ({ callee }) => { report(callee.property); },
+    )
+    .otherwise(() => {});
+};
+
 export const preferFpTsArrayMethods = createRule<[], MessageIds>({
   name: "prefer-fp-ts-array-methods",
   meta: {
@@ -63,17 +77,9 @@ export const preferFpTsArrayMethods = createRule<[], MessageIds>({
   },
   create: (context) => ({
     CallExpression: (node) => {
-      if (
-        isBannedArrayCall(node, ESLintUtils.getParserServices(context)) &&
-        node.callee.type === AST_NODE_TYPES.MemberExpression &&
-        node.callee.property.type === AST_NODE_TYPES.Identifier
-      ) {
-        context.report({
-          node: node.callee.property,
-          messageId: "preferFpTsArray",
-          data: { method: node.callee.property.name },
-        });
-      }
+      checkArrayCall(node, ESLintUtils.getParserServices(context), (prop) => {
+        context.report({ node: prop, messageId: "preferFpTsArray", data: { method: prop.name } });
+      });
     },
   }),
 });

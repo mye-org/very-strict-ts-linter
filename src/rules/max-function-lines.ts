@@ -1,4 +1,5 @@
 import { TSESTree } from "@typescript-eslint/utils";
+import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type Options = [Record<"maxLines", number>];
@@ -18,9 +19,12 @@ const reportIfTooLong = (
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
   const lineCount = getLineCount(node);
-  if (lineCount > maxLines) {
-    report({ node, messageId: "tooManyLines", data: { actual: String(lineCount), max: String(maxLines) } });
-  }
+  match(lineCount > maxLines)
+    .with(true, () => {
+      report({ node, messageId: "tooManyLines", data: { actual: String(lineCount), max: String(maxLines) } });
+    })
+    .with(false, () => {})
+    .exhaustive();
 };
 
 export const maxFunctionLines = createRule<Options, MessageIds>({

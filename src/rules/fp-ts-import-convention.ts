@@ -1,4 +1,7 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
+import * as O from "fp-ts/lib/Option.js";
+import { pipe } from "fp-ts/lib/function.js";
+import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "useLibPath" | "useNamespaceImport";
@@ -14,10 +17,12 @@ const checkTopLevelPath = (
   node: TSESTree.ImportDeclaration,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
-  const topLevelMatch = FP_TS_TOP_LEVEL_MODULE_RE.exec(node.source.value);
-  if (topLevelMatch?.[1]) {
-    report({ node: node.source, messageId: "useLibPath", data: { module: topLevelMatch[1] } });
-  }
+  pipe(
+    O.fromNullable(FP_TS_TOP_LEVEL_MODULE_RE.exec(node.source.value)?.[1]),
+    O.map((module) => {
+      report({ node: node.source, messageId: "useLibPath", data: { module } });
+    }),
+  );
 };
 
 const checkNamespaceImport = (
@@ -25,9 +30,15 @@ const checkNamespaceImport = (
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
   const source = node.source.value;
-  if (!FUNCTION_MODULE_RE.test(source) && node.importKind !== "type" && !hasOnlyNamespaceSpecifier(node)) {
-    report({ node, messageId: "useNamespaceImport", data: { source } });
-  }
+  match({
+    isFunctionModule: FUNCTION_MODULE_RE.test(source),
+    importKind: node.importKind,
+    hasNamespace: hasOnlyNamespaceSpecifier(node),
+  })
+    .with({ isFunctionModule: false, importKind: "value", hasNamespace: false }, () => {
+      report({ node, messageId: "useNamespaceImport", data: { source } });
+    })
+    .otherwise(() => {});
 };
 
 export const fpTsImportConvention = createRule<[], MessageIds>({
@@ -49,11 +60,13 @@ export const fpTsImportConvention = createRule<[], MessageIds>({
   },
   create: (context) => ({
     ImportDeclaration: (node) => {
-      if (!node.source.value.startsWith("fp-ts/")) {
-        return;
-      }
-      checkTopLevelPath(node, (d) => { context.report(d); });
-      checkNamespaceImport(node, (d) => { context.report(d); });
+      match(node.source.value.startsWith("fp-ts/"))
+        .with(true, () => {
+          checkTopLevelPath(node, (d) => { context.report(d); });
+          checkNamespaceImport(node, (d) => { context.report(d); });
+        })
+        .with(false, () => {})
+        .exhaustive();
     },
   }),
 });

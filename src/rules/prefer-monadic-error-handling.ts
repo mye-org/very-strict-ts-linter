@@ -1,4 +1,5 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESTree } from "@typescript-eslint/utils";
+import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
 import {
@@ -49,19 +50,37 @@ const isPromiseStaticCall = (object: TSESTree.Expression, propName: string) =>
   object.name === "Promise" &&
   PROMISE_STATIC_METHODS.has(propName);
 
+const isPromiseSymbol = (
+  object: TSESTree.Expression,
+  services: ParserServicesWithTypeInformation,
+  checker: ts.TypeChecker,
+) => {
+  const symbol = checker
+    .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(object))
+    .getSymbol();
+  return symbol?.name === "Promise" || symbol?.name === "PromiseLike";
+};
+
 const isPromiseTerminalCall = (
   object: TSESTree.Expression,
   propName: string,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
+) => PROMISE_TERMINAL_METHODS.has(propName) && isPromiseSymbol(object, services, checker);
+
+const reportPromiseMemberCall = (
+  node: TSESTree.CallExpression,
+  callee: TSESTree.MemberExpression & { property: TSESTree.Identifier },
+  services: ParserServicesWithTypeInformation,
+  report: (n: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  if (!PROMISE_TERMINAL_METHODS.has(propName)) {
-    return false;
-  }
-  const symbol = checker
-    .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(object))
-    .getSymbol();
-  return symbol?.name === "Promise" || symbol?.name === "PromiseLike";
+  match({
+    isStatic: isPromiseStaticCall(callee.object, callee.property.name),
+    isTerminal: isPromiseTerminalCall(callee.object, callee.property.name, services, services.program.getTypeChecker()),
+  })
+    .with({ isStatic: true }, () => { report(node, "noRawPromise"); })
+    .with({ isTerminal: true }, () => { report(callee.property, "noRawPromise"); })
+    .otherwise(() => {});
 };
 
 const checkCallExpression = (
@@ -69,23 +88,22 @@ const checkCallExpression = (
   services: ParserServicesWithTypeInformation,
   report: (n: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  if (node.callee.type !== AST_NODE_TYPES.MemberExpression || node.callee.property.type !== AST_NODE_TYPES.Identifier || isInsideUnsafeOrMustFunction(node)) {
-    return;
-  }
-  const propName = node.callee.property.name;
-  if (isPromiseStaticCall(node.callee.object, propName)) {
-    report(node, "noRawPromise");
-    return;
-  }
-  if (isPromiseTerminalCall(node.callee.object, propName, services, services.program.getTypeChecker())) {
-    report(node.callee.property, "noRawPromise");
-  }
+  match({ callee: node.callee, insideUnsafe: isInsideUnsafeOrMustFunction(node) })
+    .with(
+      { insideUnsafe: false, callee: { type: AST_NODE_TYPES.MemberExpression, property: { type: AST_NODE_TYPES.Identifier } } },
+      ({ callee }) => { reportPromiseMemberCall(node, callee, services, report); },
+    )
+    .otherwise(() => {});
 };
 
 const isRawNewPromise = (node: TSESTree.NewExpression) =>
   node.callee.type === AST_NODE_TYPES.Identifier &&
   node.callee.name === "Promise" &&
   !isInsideUnsafeOrMustFunction(node);
+
+const reportWhenTrue = (cond: boolean, fn: () => void) => {
+  match(cond).with(true, fn).with(false, () => {}).exhaustive();
+};
 
 export const preferMonadicErrorHandling = createRule<[], MessageIds>({
   name: "prefer-monadic-error-handling",
@@ -105,15 +123,15 @@ export const preferMonadicErrorHandling = createRule<[], MessageIds>({
   },
   create: (context) => {
     const checkAsync = (node: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression) => {
-      if (node.async && !isExemptFunction(node)) { context.report({ node, messageId: "noAsyncAwait" }); }
+      reportWhenTrue(node.async && !isExemptFunction(node), () => { context.report({ node, messageId: "noAsyncAwait" }); });
     };
     return {
-      TryStatement: (node) => { if (!isInsideUnsafeOrMustFunction(node)) { context.report({ node, messageId: "noTryCatch" }); } },
+      TryStatement: (node) => { reportWhenTrue(!isInsideUnsafeOrMustFunction(node), () => { context.report({ node, messageId: "noTryCatch" }); }); },
       FunctionDeclaration: checkAsync,
       FunctionExpression: checkAsync,
       ArrowFunctionExpression: checkAsync,
-      AwaitExpression: (node) => { if (!isInsideAsyncFunction(node) && !isInsideUnsafeOrMustFunction(node)) { context.report({ node, messageId: "noAsyncAwait" }); } },
-      NewExpression: (node) => { if (isRawNewPromise(node)) { context.report({ node, messageId: "noRawPromise" }); } },
+      AwaitExpression: (node) => { reportWhenTrue(!isInsideAsyncFunction(node) && !isInsideUnsafeOrMustFunction(node), () => { context.report({ node, messageId: "noAsyncAwait" }); }); },
+      NewExpression: (node) => { reportWhenTrue(isRawNewPromise(node), () => { context.report({ node, messageId: "noRawPromise" }); }); },
       CallExpression: (node) => { checkCallExpression(node, ESLintUtils.getParserServices(context), (n, id) => { context.report({ node: n, messageId: id }); }); },
     };
   },

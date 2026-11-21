@@ -2,6 +2,7 @@ import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
+import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "unnecessaryLocalConst";
@@ -47,6 +48,20 @@ const isInsideFunctionBody = (node: TSESTree.VariableDeclaration) =>
   node.parent.type === AST_NODE_TYPES.BlockStatement &&
   isFunctionNode(O.fromNullable(node.parent.parent));
 
+const reportSingleUseDeclarators = (
+  node: TSESTree.VariableDeclaration,
+  sourceCode: Readonly<TSESLint.SourceCode>,
+  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+) => {
+  pipe(
+    node.declarations as ReadonlyArray<TSESTree.VariableDeclarator>,
+    RA.filterMap((d) => isSingleUseDeclarator(d, sourceCode)),
+    RA.map(({ declarator, name }) => {
+      report({ node: declarator, messageId: "unnecessaryLocalConst", data: { name } });
+    }),
+  );
+};
+
 export const noUnnecessaryLocalConst = createRule<[], MessageIds>({
   name: "no-unnecessary-local-const",
   meta: {
@@ -64,16 +79,12 @@ export const noUnnecessaryLocalConst = createRule<[], MessageIds>({
   },
   create: (context) => ({
     VariableDeclaration: (node) => {
-      if (!isInsideFunctionBody(node)) {
-        return;
-      }
-      pipe(
-        node.declarations as ReadonlyArray<TSESTree.VariableDeclarator>,
-        RA.filterMap((d) => isSingleUseDeclarator(d, context.sourceCode)),
-        RA.map(({ declarator, name }) => {
-          context.report({ node: declarator, messageId: "unnecessaryLocalConst", data: { name } });
-        }),
-      );
+      match(isInsideFunctionBody(node))
+        .with(true, () => {
+          reportSingleUseDeclarators(node, context.sourceCode, (d) => { context.report(d); });
+        })
+        .with(false, () => {})
+        .exhaustive();
     },
   }),
 });

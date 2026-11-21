@@ -10,13 +10,26 @@ const typeAwareRuleTester = createTypeAwareRuleTester();
 
 ruleTester.run("no-if-else-or-switch", noIfElseOrSwitch, {
   valid: [
-    `const guard = (x: number): number => { if (x < 0) return 0; return x; };`,
     `const res = match(q).with({ kind: "a" }, () => 1).exhaustive();`,
+    `const guard = (x: number) => match(x < 0).with(true, () => 0).with(false, () => x).exhaustive();`,
+    `const complex = (x: number, y: string) => match({ isPositive: x > 0, tag: y }).with({ isPositive: true, tag: "a" }, () => 1).otherwise(() => 0);`,
   ],
   invalid: [
     {
+      code: `const guard = (x: number): number => { if (x < 0) return 0; return x; };`,
+      errors: [{ messageId: "noIfElse" }],
+    },
+    {
       code: `const f = (x: number): number => { if (x > 0) { return 1; } else { return 0; } };`,
       errors: [{ messageId: "noIfElse" }],
+    },
+    {
+      code: `const f = (x: number): number => { if (x > 0) { return 1; } else if (x < 0) { return -1; } else { return 0; } };`,
+      errors: [{ messageId: "noIfElse" }],
+    },
+    {
+      code: `const f = (x: number): number => { if (x < 0) return 0; if (x > 10) return 10; return x; };`,
+      errors: [{ messageId: "noIfElse" }, { messageId: "noIfElse" }],
     },
     {
       code: `const f = (x: string): number => { switch (x) { case "a": return 1; default: return 0; } };`,

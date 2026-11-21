@@ -1,4 +1,7 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
+import * as O from "fp-ts/lib/Option.js";
+import { pipe } from "fp-ts/lib/function.js";
+import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 import { isInsideNewtypeDefinition } from "../utils/type-helpers.js";
 
@@ -9,17 +12,12 @@ const reportPrimitiveType = (
   reportStringOrNumber: (node: TSESTree.Node, kind: string) => void,
   reportBoolean: (node: TSESTree.Node) => void,
 ) => {
-  if (typeNode.type === AST_NODE_TYPES.TSStringKeyword) {
-    reportStringOrNumber(typeNode, "string");
-    return;
-  }
-  if (typeNode.type === AST_NODE_TYPES.TSNumberKeyword) {
-    reportStringOrNumber(typeNode, "number");
-    return;
-  }
-  if (typeNode.type === AST_NODE_TYPES.TSBooleanKeyword) {
-    reportBoolean(typeNode);
-  }
+  match(typeNode.type)
+    .with(AST_NODE_TYPES.TSStringKeyword, () => { reportStringOrNumber(typeNode, "string"); })
+    .with(AST_NODE_TYPES.TSNumberKeyword, () => { reportStringOrNumber(typeNode, "number"); })
+    .with(AST_NODE_TYPES.TSBooleanKeyword, () => { reportBoolean(typeNode); })
+    .with(P._, () => {})
+    .exhaustive();
 };
 
 export const noDomainRawPrimitives = createRule<[], MessageIds>({
@@ -41,14 +39,17 @@ export const noDomainRawPrimitives = createRule<[], MessageIds>({
   },
   create: (context) => ({
     TSPropertySignature: (node) => {
-      const typeNode = node.typeAnnotation?.typeAnnotation;
-      if (typeNode && !isInsideNewtypeDefinition(typeNode)) {
-        reportPrimitiveType(
-          typeNode,
-          (n, kind) => { context.report({ node: n, messageId: "rawStringOrNumber", data: { kind } }); },
-          (n) => { context.report({ node: n, messageId: "rawBoolean" }); },
-        );
-      }
+      pipe(
+        O.fromNullable(node.typeAnnotation?.typeAnnotation),
+        O.filter((typeNode) => !isInsideNewtypeDefinition(typeNode)),
+        O.map((typeNode) => {
+          reportPrimitiveType(
+            typeNode,
+            (n, kind) => { context.report({ node: n, messageId: "rawStringOrNumber", data: { kind } }); },
+            (n) => { context.report({ node: n, messageId: "rawBoolean" }); },
+          );
+        }),
+      );
     },
   }),
 });

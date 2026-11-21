@@ -1,4 +1,7 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
+import * as O from "fp-ts/lib/Option.js";
+import { pipe } from "fp-ts/lib/function.js";
+import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "preferReadonlyArray" | "preferReadonlyMap" | "preferReadonlySet";
@@ -13,13 +16,15 @@ const reportTypeReference = (
   node: TSESTree.TSTypeReference,
   report: (n: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  if (node.typeName.type !== AST_NODE_TYPES.Identifier) {
-    return;
-  }
-  const messageId = TYPE_TO_MESSAGE[node.typeName.name];
-  if (messageId) {
-    report(node, messageId);
-  }
+  pipe(
+    match(node.typeName)
+      .with({ type: AST_NODE_TYPES.Identifier }, ({ name }) => O.fromNullable(TYPE_TO_MESSAGE[name]))
+      .with(P._, () => O.none)
+      .exhaustive(),
+    O.map((messageId) => {
+      report(node, messageId);
+    }),
+  );
 };
 
 export const preferReadonlyCollections = createRule<[], MessageIds>({

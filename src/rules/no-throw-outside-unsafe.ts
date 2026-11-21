@@ -1,4 +1,5 @@
 import { TSESTree } from "@typescript-eslint/utils";
+import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 import { isInsideUnsafeOrMustFunction } from "../utils/type-helpers.js";
 
@@ -21,9 +22,12 @@ export const noThrowOutsideUnsafe = createRule<[], MessageIds>({
   },
   create: (context) => ({
     ThrowStatement: (node: TSESTree.ThrowStatement) => {
-      if (!isInsideUnsafeOrMustFunction(node)) {
-        context.report({ node, messageId: "noThrow" });
-      }
+      match(isInsideUnsafeOrMustFunction(node))
+        .with(false, () => {
+          context.report({ node, messageId: "noThrow" });
+        })
+        .with(true, () => {})
+        .exhaustive();
     },
   }),
 });

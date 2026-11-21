@@ -2,6 +2,7 @@ import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
+import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds =
@@ -27,16 +28,15 @@ const getMemberCallInfo = (node: TSESTree.CallExpression) =>
     ? O.some({ namespace: node.callee.object.name, method: node.callee.property.name })
     : O.none;
 
-const getPipeStepNamespaceAndMethod = (arg: TSESTree.CallExpressionArgument) => {
-  if (arg.type === AST_NODE_TYPES.CallExpression) {
-    return getMemberCallInfo(arg);
-  }
-  return arg.type === AST_NODE_TYPES.MemberExpression &&
-    arg.object.type === AST_NODE_TYPES.Identifier &&
-    arg.property.type === AST_NODE_TYPES.Identifier
-    ? O.some({ namespace: arg.object.name, method: arg.property.name })
-    : O.none;
-};
+const getPipeStepNamespaceAndMethod = (arg: TSESTree.CallExpressionArgument) =>
+  match(arg)
+    .with({ type: AST_NODE_TYPES.CallExpression }, getMemberCallInfo)
+    .with(
+      { type: AST_NODE_TYPES.MemberExpression, object: { type: AST_NODE_TYPES.Identifier }, property: { type: AST_NODE_TYPES.Identifier } },
+      (m) => O.some({ namespace: m.object.name, method: m.property.name }),
+    )
+    .with(P._, () => O.none)
+    .exhaustive();
 
 const isChainCallbackParent = (node: TSESTree.Node) =>
   (node.type === AST_NODE_TYPES.ArrowFunctionExpression ||
@@ -50,20 +50,25 @@ const isInsideOuterChainCallback = (node: TSESTree.Node): boolean =>
     ? isChainCallbackParent(node.parent) || isInsideOuterChainCallback(node.parent)
     : false;
 
-const getCallbackReturnExpression = (arg: TSESTree.CallExpressionArgument) => {
-  if (arg.type !== AST_NODE_TYPES.ArrowFunctionExpression) {
-    return O.none;
-  }
-  if (arg.body.type !== AST_NODE_TYPES.BlockStatement) {
-    return O.some(arg.body);
-  }
-  const firstStmt = arg.body.body[0];
-  return arg.body.body.length === 1 &&
+const getSingleBlockReturnExpr = (body: TSESTree.BlockStatement) => {
+  const firstStmt = body.body[0];
+  return body.body.length === 1 &&
     firstStmt?.type === AST_NODE_TYPES.ReturnStatement &&
     firstStmt.argument
     ? O.some(firstStmt.argument)
     : O.none;
 };
+
+const getCallbackReturnExpression = (arg: TSESTree.CallExpressionArgument) =>
+  match(arg)
+    .with({ type: AST_NODE_TYPES.ArrowFunctionExpression }, (fn) =>
+      match(fn.body)
+        .with({ type: AST_NODE_TYPES.BlockStatement }, getSingleBlockReturnExpr)
+        .with(P._, (expr) => O.some(expr))
+        .exhaustive(),
+    )
+    .with(P._, () => O.none)
+    .exhaustive();
 
 const isMonadConstructorExpr = (
   expr: TSESTree.Expression,
@@ -148,35 +153,36 @@ const classifyMemberCall = (
   node: TSESTree.CallExpression,
   namespace: string,
   method: string,
-) => {
-  if (method === "chain" && isInsideOuterChainCallback(node)) {
-    return makeReport("nestedChain", {});
-  }
-  if (isUnwrapAndRewrap(node, namespace, method)) {
-    return makeReport("unwrapAndRewrap", { method });
-  }
-  if (MONAD_GUARD_METHODS.has(method) && isInTernaryTest(node)) {
-    return makeReport("imperativeMonadCheck", { guard: `${namespace}.${method}` });
-  }
-  return O.none;
-};
+) =>
+  match({
+    isNestedChain: method === "chain" && isInsideOuterChainCallback(node),
+    isUnwrapRewrap: isUnwrapAndRewrap(node, namespace, method),
+    isImperativeGuard: MONAD_GUARD_METHODS.has(method) && isInTernaryTest(node),
+  })
+    .with({ isNestedChain: true }, () => makeReport("nestedChain", {}))
+    .with({ isUnwrapRewrap: true }, () => makeReport("unwrapAndRewrap", { method }))
+    .with({ isImperativeGuard: true }, () => makeReport("imperativeMonadCheck", { guard: `${namespace}.${method}` }))
+    .otherwise(() => O.none);
+
+const isPipeCall = (node: TSESTree.CallExpression) =>
+  node.callee.type === AST_NODE_TYPES.Identifier && node.callee.name === "pipe";
 
 const checkCallNode = (
   node: TSESTree.CallExpression,
   report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
 ) => {
-  if (node.callee.type === AST_NODE_TYPES.Identifier && node.callee.name === "pipe") {
-    pipe(
-      findMapThenFlattenTargets(node.arguments),
-      RA.map((target) => { report(target, "mapThenFlatten", {}); }),
-    );
-    return;
-  }
-  pipe(
-    getMemberCallInfo(node),
-    O.flatMap(({ namespace, method }) => classifyMemberCall(node, namespace, method)),
-    O.map(([messageId, data]) => { report(node, messageId, data); }),
-  );
+  match(isPipeCall(node))
+    .with(true, () => {
+      pipe(findMapThenFlattenTargets(node.arguments), RA.map((target) => { report(target, "mapThenFlatten", {}); }));
+    })
+    .with(false, () => {
+      pipe(
+        getMemberCallInfo(node),
+        O.flatMap(({ namespace, method }) => classifyMemberCall(node, namespace, method)),
+        O.map(([messageId, data]) => { report(node, messageId, data); }),
+      );
+    })
+    .exhaustive();
 };
 
 export const preferMonadicComposition = createRule<[], MessageIds>({

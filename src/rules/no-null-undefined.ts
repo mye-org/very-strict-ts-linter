@@ -1,7 +1,29 @@
-import { AST_NODE_TYPES } from "@typescript-eslint/utils";
+import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
+import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "noNullType" | "noUndefinedType" | "noNullLiteral" | "noOptionalProperty";
+
+const checkOptionalProperty = (
+  node: TSESTree.TSPropertySignature,
+  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
+) => {
+  match(node.optional)
+    .with(true, () => { report({ node, messageId: "noOptionalProperty" }); })
+    .with(false, () => {})
+    .exhaustive();
+};
+
+const checkNullLiteral = (
+  node: TSESTree.Literal,
+  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
+) => {
+  match({ raw: node.raw, parentType: node.parent.type })
+    .with({ raw: "null", parentType: P.not(AST_NODE_TYPES.TSLiteralType) }, () => {
+      report({ node, messageId: "noNullLiteral" });
+    })
+    .otherwise(() => {});
+};
 
 export const noNullUndefined = createRule<[], MessageIds>({
   name: "no-null-undefined",
@@ -27,15 +49,7 @@ export const noNullUndefined = createRule<[], MessageIds>({
   create: (context) => ({
     TSNullKeyword: (node) => { context.report({ node, messageId: "noNullType" }); },
     TSUndefinedKeyword: (node) => { context.report({ node, messageId: "noUndefinedType" }); },
-    TSPropertySignature: (node) => {
-      if (node.optional) {
-        context.report({ node, messageId: "noOptionalProperty" });
-      }
-    },
-    Literal: (node) => {
-      if (node.raw === "null" && node.parent.type !== AST_NODE_TYPES.TSLiteralType) {
-        context.report({ node, messageId: "noNullLiteral" });
-      }
-    },
+    TSPropertySignature: (node) => { checkOptionalProperty(node, (d) => { context.report(d); }); },
+    Literal: (node) => { checkNullLiteral(node, (d) => { context.report(d); }); },
   }),
 });

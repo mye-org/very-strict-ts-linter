@@ -2,38 +2,33 @@ import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow, pipe } from "fp-ts/lib/function.js";
+import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 
 export const isUnsafeOrMustName = (name: string) =>
   name.endsWith("Unsafe") || name.startsWith("must");
 
-const getNamedParentKey = (gp: TSESTree.Node) => {
-  if (gp.type === AST_NODE_TYPES.VariableDeclarator && gp.id.type === AST_NODE_TYPES.Identifier) {
-    return O.some(gp.id.name);
-  }
-  if (
-    (gp.type === AST_NODE_TYPES.Property || gp.type === AST_NODE_TYPES.MethodDefinition) &&
-    gp.key.type === AST_NODE_TYPES.Identifier
-  ) {
-    return O.some(gp.key.name);
-  }
-  return O.none;
-};
+const getNamedParentKey = (gp: TSESTree.Node) =>
+  match(gp)
+    .with({ type: AST_NODE_TYPES.VariableDeclarator, id: { type: AST_NODE_TYPES.Identifier } }, (d) => O.some(d.id.name))
+    .with({ type: AST_NODE_TYPES.Property, key: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.key.name))
+    .with({ type: AST_NODE_TYPES.MethodDefinition, key: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.key.name))
+    .with(P._, () => O.none)
+    .exhaustive();
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
+const matchEnclosingFunctionParent = (parent: TSESTree.Node): O.Option<string> =>
+  match(parent)
+    .with({ type: AST_NODE_TYPES.FunctionDeclaration }, (fn) => (fn.id ? O.some(fn.id.name) : O.none))
+    .with({ type: AST_NODE_TYPES.FunctionExpression }, (fn) => getNamedParentKey(fn.parent))
+    .with({ type: AST_NODE_TYPES.ArrowFunctionExpression }, (fn) => getNamedParentKey(fn.parent))
+    .with({ type: AST_NODE_TYPES.MethodDefinition }, (m) => (m.key.type === AST_NODE_TYPES.Identifier ? O.some(m.key.name) : O.none))
+    .with(P._, () => getEnclosingFunctionName(parent))
+    .exhaustive();
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive callback
-const getEnclosingFunctionName = (node: TSESTree.Node): O.Option<string> => {
-  if (!node.parent) { return O.none; }
-  if (node.parent.type === AST_NODE_TYPES.FunctionDeclaration) {
-    return node.parent.id ? O.some(node.parent.id.name) : O.none;
-  }
-  if (node.parent.type === AST_NODE_TYPES.FunctionExpression || node.parent.type === AST_NODE_TYPES.ArrowFunctionExpression) {
-    return getNamedParentKey(node.parent.parent);
-  }
-  if (node.parent.type === AST_NODE_TYPES.MethodDefinition) {
-    return node.parent.key.type === AST_NODE_TYPES.Identifier ? O.some(node.parent.key.name) : O.none;
-  }
-  return getEnclosingFunctionName(node.parent);
-};
+const getEnclosingFunctionName = (node: TSESTree.Node): O.Option<string> =>
+  pipe(O.fromNullable(node.parent), O.flatMap(matchEnclosingFunctionParent));
 
 export const isInsideUnsafeOrMustFunction = (node: TSESTree.Node) =>
   pipe(getEnclosingFunctionName(node), O.exists(isUnsafeOrMustName));
@@ -69,15 +64,14 @@ const isArraySymbol = (type: ts.Type) => {
 };
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive callback
-export const isArrayLikeType = (type: ts.Type, checker: ts.TypeChecker): boolean => {
-  if (checker.isArrayType(type) || checker.isTupleType(type)) {
-    return true;
-  }
-  if (type.isUnion()) {
-    return pipe(type.types, RA.every((t) => isArrayLikeType(t, checker)));
-  }
-  return isArraySymbol(type);
-};
+export const isArrayLikeType = (type: ts.Type, checker: ts.TypeChecker): boolean =>
+  match({
+    isArrayOrTuple: checker.isArrayType(type) || checker.isTupleType(type),
+    isUnion: type.isUnion(),
+  })
+    .with({ isArrayOrTuple: true }, () => true)
+    .with({ isUnion: true }, () => type.isUnion() && pipe(type.types, RA.every((t) => isArrayLikeType(t, checker))))
+    .otherwise(() => isArraySymbol(type));
 
 const isBooleanOrLiteralOrEnum = (type: ts.Type) =>
   Boolean(

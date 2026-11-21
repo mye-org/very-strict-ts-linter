@@ -1,7 +1,20 @@
 import { TSESTree } from "@typescript-eslint/utils";
+import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "noLetOrVar" | "noMutation";
+
+const checkVariableDeclaration = (
+  node: TSESTree.VariableDeclaration,
+  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+) => {
+  match(node.kind)
+    .with("const", "using", "await using", () => {})
+    .with("let", "var", (kind) => {
+      report({ node, messageId: "noLetOrVar", data: { kind } });
+    })
+    .exhaustive();
+};
 
 export const noLetOrVar = createRule<[], MessageIds>({
   name: "no-let-or-var",
@@ -26,9 +39,7 @@ export const noLetOrVar = createRule<[], MessageIds>({
     };
     return {
       VariableDeclaration: (node: TSESTree.VariableDeclaration) => {
-        if (node.kind !== "const") {
-          context.report({ node, messageId: "noLetOrVar", data: { kind: node.kind } });
-        }
+        checkVariableDeclaration(node, (d) => { context.report(d); });
       },
       UpdateExpression: reportMutation,
       AssignmentExpression: reportMutation,

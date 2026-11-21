@@ -1,4 +1,5 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
+import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "noExplicitReturnType";
@@ -25,9 +26,11 @@ export const noExplicitReturnType = createRule<[], MessageIds>({
   },
   create: (context) => {
     const checkFunction = (node: FunctionNode) => {
-      if (node.returnType?.typeAnnotation.type !== AST_NODE_TYPES.TSTypePredicate && node.returnType) {
-        context.report({ node: node.returnType, messageId: "noExplicitReturnType" });
-      }
+      match(node.returnType)
+        .with({ typeAnnotation: { type: P.not(AST_NODE_TYPES.TSTypePredicate) } }, (returnType) => {
+          context.report({ node: returnType, messageId: "noExplicitReturnType" });
+        })
+        .otherwise(() => {});
     };
     return { FunctionDeclaration: checkFunction, FunctionExpression: checkFunction, ArrowFunctionExpression: checkFunction };
   },
