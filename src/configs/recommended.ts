@@ -12,6 +12,7 @@ export type StrictFpConfigOptions = Partial<
 const baseStrictFpRules = {
   "strict-fp/fp-ts-import-convention": "error",
   "strict-fp/no-any-or-unknown": "error",
+  "strict-fp/no-classes": "error",
   "strict-fp/no-domain-raw-primitives": "error",
   "strict-fp/no-explicit-return-type": "error",
   "strict-fp/no-if-else-or-switch": "error",

@@ -1,5 +1,6 @@
 import { fpTsImportConvention } from "../src/rules/fp-ts-import-convention.js";
 import { maxFunctionLines } from "../src/rules/max-function-lines.js";
+import { noClasses } from "../src/rules/no-classes.js";
 import { noNestedTernary } from "../src/rules/no-nested-ternary.js";
 import { noUnnecessaryLocalConst } from "../src/rules/no-unnecessary-local-const.js";
 import { preferFpTsArrayMethods } from "../src/rules/prefer-fp-ts-array-methods.js";
@@ -93,6 +94,35 @@ ruleTester.run("fp-ts-import-convention", fpTsImportConvention, {
     {
       code: `import { some, none } from "fp-ts/lib/Option";`,
       errors: [{ messageId: "useNamespaceImport" }],
+    },
+  ],
+});
+
+ruleTester.run("no-classes", noClasses, {
+  valid: [
+    `type Counter = { readonly count: number };`,
+    `const increment = (c: Counter) => ({ count: c.count + 1 });`,
+  ],
+  invalid: [
+    {
+      code: `class Counter { count = 0; }`,
+      errors: [{ messageId: "noClass" }],
+    },
+    {
+      code: `abstract class BaseService { abstract run(): void; }`,
+      errors: [{ messageId: "noClass" }],
+    },
+    {
+      code: `export default class {}`,
+      errors: [{ messageId: "noClass" }],
+    },
+    {
+      code: `const MyClass = class { value = 1; };`,
+      errors: [{ messageId: "noClass" }],
+    },
+    {
+      code: `const MyClass = class Inner { value = 1; };`,
+      errors: [{ messageId: "noClass" }],
     },
   ],
 });
