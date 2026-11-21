@@ -1,6 +1,7 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
@@ -55,11 +56,11 @@ const DEFAULT_FORBIDDEN_IMPORTS = [
   "node:child_process",
 ];
 
-const IMPURE_MEMBER_METHODS: Readonly<Record<string, ReadonlySet<string>>> = {
+const IMPURE_MEMBER_METHODS = {
   Date: new Set(["now"]),
   Math: new Set(["random"]),
   crypto: new Set(["randomUUID"]),
-};
+} as const satisfies Readonly<Record<string, ReadonlySet<string>>>;
 
 const IMPURE_DIRECT_CALLS = new Set(["fetch"]);
 
@@ -78,12 +79,18 @@ const isForbiddenImportSource = (
 
 const isImpureConsoleCall = (objName: string) => objName === "console";
 
+const hasImpureMemberMethod = (objName: string, propName: string) =>
+  pipe(
+    RR.lookup(objName, IMPURE_MEMBER_METHODS),
+    O.exists((methods) => methods.has(propName)),
+  );
+
 const isImpureMemberCall = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.MemberExpression &&
   callee.object.type === AST_NODE_TYPES.Identifier &&
   callee.property.type === AST_NODE_TYPES.Identifier &&
   (isImpureConsoleCall(callee.object.name) ||
-    Boolean(IMPURE_MEMBER_METHODS[callee.object.name]?.has(callee.property.name)));
+    hasImpureMemberMethod(callee.object.name, callee.property.name));
 
 const isImpureDirectCall = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.Identifier && IMPURE_DIRECT_CALLS.has(callee.name);

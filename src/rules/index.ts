@@ -17,6 +17,7 @@ import { noModelPolysemy } from "./no-model-polysemy.js";
 import { noMultiRepoOrchestration } from "./no-multi-repo-orchestration.js";
 import { noNestedTernary } from "./no-nested-ternary.js";
 import { noNullUndefined } from "./no-null-undefined.js";
+import { noOptionalStateBags } from "./no-optional-state-bags.js";
 import { noRepeatedGuardClauses } from "./no-repeated-guard-clauses.js";
 import { noScatteredValidation } from "./no-scattered-validation.js";
 import { noStringlyTypedDiscriminants } from "./no-stringly-typed-discriminants.js";
@@ -24,16 +25,23 @@ import { noThrowOutsideUnsafe } from "./no-throw-outside-unsafe.js";
 import { noTrainWreckNavigation } from "./no-train-wreck-navigation.js";
 import { noUnitSuffixedPrimitives } from "./no-unit-suffixed-primitives.js";
 import { noUnnecessaryLocalConst } from "./no-unnecessary-local-const.js";
+import { parseDontValidate } from "./parse-dont-validate.js";
+import { preferConstSatisfies } from "./prefer-const-satisfies.js";
+import { preferExhaustiveRecord } from "./prefer-exhaustive-record.js";
 import { preferFpTsArrayMethods } from "./prefer-fp-ts-array-methods.js";
 import { preferFunctionComposition } from "./prefer-function-composition.js";
 import { preferMonadicComposition } from "./prefer-monadic-composition.js";
 import { preferMonadicErrorHandling } from "./prefer-monadic-error-handling.js";
+import { preferNonemptyTuple } from "./prefer-nonempty-tuple.js";
 import { preferPointFree } from "./prefer-point-free.js";
 import { preferReadonlyCollections } from "./prefer-readonly-collections.js";
+import { preferTemplateLiteralType } from "./prefer-template-literal-type.js";
+import { preferTypeLevelDispatch } from "./prefer-type-level-dispatch.js";
 import { preferTypeOverInterface } from "./prefer-type-over-interface.js";
 import { preferUnionOverBoolean } from "./prefer-union-over-boolean.js";
 import { repositoryAggregateRootOnly } from "./repository-aggregate-root-only.js";
 import { requireExhaustiveMatch } from "./require-exhaustive-match.js";
+import { requireKeyofPath } from "./require-keyof-path.js";
 import { ubiquitousLanguage } from "./ubiquitous-language.js";
 
 export const rules = {
@@ -56,6 +64,7 @@ export const rules = {
   "no-multi-repo-orchestration": noMultiRepoOrchestration,
   "no-nested-ternary": noNestedTernary,
   "no-null-undefined": noNullUndefined,
+  "no-optional-state-bags": noOptionalStateBags,
   "no-repeated-guard-clauses": noRepeatedGuardClauses,
   "no-scattered-validation": noScatteredValidation,
   "no-stringly-typed-discriminants": noStringlyTypedDiscriminants,
@@ -63,15 +72,22 @@ export const rules = {
   "no-train-wreck-navigation": noTrainWreckNavigation,
   "no-unit-suffixed-primitives": noUnitSuffixedPrimitives,
   "no-unnecessary-local-const": noUnnecessaryLocalConst,
+  "parse-dont-validate": parseDontValidate,
+  "prefer-const-satisfies": preferConstSatisfies,
+  "prefer-exhaustive-record": preferExhaustiveRecord,
   "prefer-fp-ts-array-methods": preferFpTsArrayMethods,
   "prefer-function-composition": preferFunctionComposition,
   "prefer-monadic-composition": preferMonadicComposition,
   "prefer-monadic-error-handling": preferMonadicErrorHandling,
+  "prefer-nonempty-tuple": preferNonemptyTuple,
   "prefer-point-free": preferPointFree,
   "prefer-readonly-collections": preferReadonlyCollections,
+  "prefer-template-literal-type": preferTemplateLiteralType,
+  "prefer-type-level-dispatch": preferTypeLevelDispatch,
   "prefer-type-over-interface": preferTypeOverInterface,
   "prefer-union-over-boolean": preferUnionOverBoolean,
   "repository-aggregate-root-only": repositoryAggregateRootOnly,
   "require-exhaustive-match": requireExhaustiveMatch,
+  "require-keyof-path": requireKeyofPath,
   "ubiquitous-language": ubiquitousLanguage,
 } as const;

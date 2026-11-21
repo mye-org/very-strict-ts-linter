@@ -1,6 +1,7 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
@@ -15,12 +16,12 @@ type MessageIds =
 const MATCH_OR_FOLD_METHODS = new Set(["match", "matchW", "fold", "foldW"]);
 const MONAD_GUARD_METHODS = new Set(["isSome", "isNone", "isRight", "isLeft"]);
 
-const MONAD_REWRAP_CONSTRUCTORS: Readonly<Record<string, ReadonlySet<string>>> = {
+const MONAD_REWRAP_CONSTRUCTORS = {
   O: new Set(["some", "none", "fromNullable"]),
   E: new Set(["right", "left", "of"]),
   TE: new Set(["right", "left", "of", "rightIO", "leftIO"]),
   T: new Set(["of"]),
-};
+} as const satisfies Readonly<Record<string, ReadonlySet<string>>>;
 
 const getMemberCallInfo = (node: TSESTree.CallExpression) =>
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
@@ -91,7 +92,7 @@ const isReturningSameMonadConstructor = (
   namespace: string,
 ) =>
   pipe(
-    O.fromNullable(MONAD_REWRAP_CONSTRUCTORS[namespace]),
+    RR.lookup(namespace, MONAD_REWRAP_CONSTRUCTORS),
     O.flatMap((constructors) =>
       pipe(
         getCallbackReturnExpression(arg),

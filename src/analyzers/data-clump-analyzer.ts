@@ -81,7 +81,7 @@ const DEFAULT_IGNORED_NAMES = new Set([
   "error",
 ]);
 
-const KNOWN_CLUMPS: Readonly<Record<string, string>> = {
+const KNOWN_CLUMPS = {
   "amount,currency": "Money",
   "currency,value": "Money",
   "lat,lng": "GeoPoint",
@@ -93,13 +93,13 @@ const KNOWN_CLUMPS: Readonly<Record<string, string>> = {
   "city,street,zip": "Address",
   "city,country,street": "Address",
   "height,width": "Dimensions",
-};
+} as const satisfies Readonly<Record<string, string>>;
 
 const clumpCache = new WeakMap<ts.Program, ReadonlyArray<FieldBag>>();
 
 const suggestClumpName = (fields: ReadonlyArray<string>) =>
   pipe(
-    O.fromNullable(KNOWN_CLUMPS[fields.join(",")]),
+    R.lookup(fields.join(","), KNOWN_CLUMPS),
     O.getOrElse(() => "ValueObject"),
   );
 

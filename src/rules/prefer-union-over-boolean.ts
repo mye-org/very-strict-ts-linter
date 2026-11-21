@@ -5,7 +5,7 @@ import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
-import { hasFunctionInit, isEsTreeFunctionNode } from "../utils/type-helpers.js";
+import { hasFunctionInit, isEsTreeFunctionNode, PREDICATE_NAME_RE } from "../utils/type-helpers.js";
 
 type MessageIds =
   | "preferUnionOverBooleanParam"
@@ -26,7 +26,6 @@ type FunctionLikeNode =
   | TSESTree.TSCallSignatureDeclaration
   | TSESTree.TSConstructSignatureDeclaration;
 
-const PREDICATE_NAME_RE = /^(is|has|can|should)(?=$|[A-Z0-9_])/;
 const PREDICATE_TYPE_RE = /^(Is|Has|Can|Should)(?=$|[A-Z0-9_])/;
 const PREDICATE_TYPE_NAMES = new Set(["Predicate", "Refinement"]);
 const PREDICATE_METHOD_NAMES = new Set([

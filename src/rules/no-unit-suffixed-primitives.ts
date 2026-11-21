@@ -13,7 +13,7 @@ import {
 type Options = [Readonly<{ readonly suffixes: ReadonlyArray<string> }>];
 type MessageIds = "unitSuffixedPrimitive";
 
-const DEFAULT_SUFFIX_SUGGESTIONS: ReadonlyArray<readonly [string, string]> = [
+const DEFAULT_SUFFIX_SUGGESTIONS = [
   ["InCents", "Money"],
   ["Cents", "Money"],
   ["Millis", "Duration"],
@@ -35,7 +35,7 @@ const DEFAULT_SUFFIX_SUGGESTIONS: ReadonlyArray<readonly [string, string]> = [
   ["Uuid", "Uuid"],
   ["Url", "Url"],
   ["Phone", "PhoneNumber"],
-];
+] as const satisfies ReadonlyArray<readonly [string, string]>;
 
 const hasUnitSuffix = hasStrictSuffix;
 
@@ -44,7 +44,7 @@ const matchSuffixSuggestion = (name: string, customSuffixes: ReadonlyArray<strin
     DEFAULT_SUFFIX_SUGGESTIONS,
     RA.findFirst(([suffix]) => hasUnitSuffix(name, suffix)),
     O.map(([suffix, vo]) => ({ suffix, vo })),
-    O.alt(() =>
+    O.altW(() =>
       pipe(
         customSuffixes,
         RA.findFirst((suffix) => hasUnitSuffix(name, suffix)),

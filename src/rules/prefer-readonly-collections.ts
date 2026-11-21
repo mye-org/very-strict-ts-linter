@@ -1,16 +1,17 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "preferReadonlyArray" | "preferReadonlyMap" | "preferReadonlySet";
 
-const TYPE_TO_MESSAGE: Readonly<Record<string, MessageIds>> = {
+const TYPE_TO_MESSAGE = {
   Array: "preferReadonlyArray",
   Map: "preferReadonlyMap",
   Set: "preferReadonlySet",
-};
+} as const satisfies Readonly<Record<string, MessageIds>>;
 
 const reportTypeReference = (
   node: TSESTree.TSTypeReference,
@@ -18,7 +19,7 @@ const reportTypeReference = (
 ) => {
   pipe(
     match(node.typeName)
-      .with({ type: AST_NODE_TYPES.Identifier }, ({ name }) => O.fromNullable(TYPE_TO_MESSAGE[name]))
+      .with({ type: AST_NODE_TYPES.Identifier }, ({ name }) => RR.lookup(name, TYPE_TO_MESSAGE))
       .with(P._, () => O.none)
       .exhaustive(),
     O.map((messageId) => {

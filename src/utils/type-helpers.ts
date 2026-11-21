@@ -284,3 +284,16 @@ export const isMemberAssignment = (
   node.type === AST_NODE_TYPES.AssignmentExpression &&
   node.left.type === AST_NODE_TYPES.MemberExpression;
 
+export const PREDICATE_NAME_RE = /^(is|has|can|should)(?=$|[A-Z0-9_])/;
+
+export const isTsParameterSymbol = (sym: ts.Symbol) =>
+  Boolean(sym.valueDeclaration && ts.isParameter(sym.valueDeclaration));
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
+export const getEnclosingEsTreeFunction = (node: TSESTree.Node): O.Option<TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression> =>
+  pipe(
+    O.fromNullable(node.parent),
+    O.flatMap((parent) =>
+      isEsTreeFunctionNode(parent) ? O.some(parent) : getEnclosingEsTreeFunction(parent),
+    ),
+  );
