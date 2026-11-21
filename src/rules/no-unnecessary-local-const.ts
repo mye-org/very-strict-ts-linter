@@ -3,7 +3,7 @@ import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "unnecessaryLocalConst";
 
-const isFunctionNode = (node: TSESTree.Node | undefined): boolean =>
+const isFunctionNode = (node: TSESTree.Node | undefined) =>
   node?.type === AST_NODE_TYPES.ArrowFunctionExpression ||
   node?.type === AST_NODE_TYPES.FunctionDeclaration ||
   node?.type === AST_NODE_TYPES.FunctionExpression;

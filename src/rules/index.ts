@@ -2,6 +2,7 @@ import { fpTsImportConvention } from "./fp-ts-import-convention.js";
 import { maxFunctionLines } from "./max-function-lines.js";
 import { noAnyOrUnknown } from "./no-any-or-unknown.js";
 import { noDomainRawPrimitives } from "./no-domain-raw-primitives.js";
+import { noExplicitReturnType } from "./no-explicit-return-type.js";
 import { noIfElseOrSwitch } from "./no-if-else-or-switch.js";
 import { noImperativeLoops } from "./no-imperative-loops.js";
 import { noLetOrVar } from "./no-let-or-var.js";
@@ -19,6 +20,7 @@ export const rules = {
   "max-function-lines": maxFunctionLines,
   "no-any-or-unknown": noAnyOrUnknown,
   "no-domain-raw-primitives": noDomainRawPrimitives,
+  "no-explicit-return-type": noExplicitReturnType,
   "no-if-else-or-switch": noIfElseOrSwitch,
   "no-imperative-loops": noImperativeLoops,
   "no-let-or-var": noLetOrVar,

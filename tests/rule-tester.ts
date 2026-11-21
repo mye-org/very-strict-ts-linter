@@ -7,10 +7,10 @@ RuleTester.describe = vitest.describe;
 RuleTester.it = vitest.it;
 RuleTester.itOnly = vitest.it.only;
 
-export const createRuleTester = (): RuleTester =>
+export const createRuleTester = () =>
   new RuleTester();
 
-export const createTypeAwareRuleTester = (): RuleTester =>
+export const createTypeAwareRuleTester = () =>
   new RuleTester({
     languageOptions: {
       parserOptions: {

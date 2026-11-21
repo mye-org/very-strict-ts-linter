@@ -1,5 +1,6 @@
 import { noAnyOrUnknown } from "../src/rules/no-any-or-unknown.js";
 import { noDomainRawPrimitives } from "../src/rules/no-domain-raw-primitives.js";
+import { noExplicitReturnType } from "../src/rules/no-explicit-return-type.js";
 import { noNullUndefined } from "../src/rules/no-null-undefined.js";
 import { preferReadonlyCollections } from "../src/rules/prefer-readonly-collections.js";
 import { preferTypeOverInterface } from "../src/rules/prefer-type-over-interface.js";
@@ -103,6 +104,57 @@ ruleTester.run("no-any-or-unknown", noAnyOrUnknown, {
     {
       code: `const bad = (x: any): unknown => x;`,
       errors: [{ messageId: "noAny" }, { messageId: "noUnknown" }],
+    },
+  ],
+});
+
+ruleTester.run("no-explicit-return-type", noExplicitReturnType, {
+  valid: [
+    `const add = (a: number, b: number) => a + b;`,
+    `function greet(name: string) { return \`Hello \${name}\` as const; }`,
+    `const fn = function (x: number) { return x * 2; };`,
+    `class Foo { bar(x: number) { return x; } }`,
+    `const obj = { bar(x: number) { return x; } };`,
+    `const isString = (x: string | number): x is string => typeof x === "string";`,
+    `type Mapper = (x: number) => string;`,
+    `declare function parse(s: string): number;`,
+    `
+      function id(x: string): string;
+      function id(x: number): number;
+      function id(x: string | number) { return x; }
+    `,
+  ],
+  invalid: [
+    {
+      code: `const add = (a: number, b: number): number => a + b;`,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `
+        type Result = { readonly kind: "ok" } | { readonly kind: "err" };
+        const ok = (): Result => ({ kind: "ok" });
+      `,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `function greet(name: string): string { return name; }`,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `const fn = function (x: number): number { return x * 2; };`,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `class Foo { bar(x: number): number { return x; } }`,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `const obj = { bar(x: number): number { return x; } };`,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `const fetchVal = async (): Promise<number> => 1;`,
+      errors: [{ messageId: "noExplicitReturnType" }],
     },
   ],
 });

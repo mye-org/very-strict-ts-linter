@@ -9,13 +9,12 @@ export type StrictFpConfigOptions = {
   readonly maxFunctionLines?: number;
 };
 
-export const strictFpRules = (
-  maxLines = 15,
-): TSESLint.FlatConfig.Rules => ({
+export const strictFpRules = (maxLines = 15) => ({
   "strict-fp/fp-ts-import-convention": "error",
   "strict-fp/max-function-lines": ["error", { maxLines }],
   "strict-fp/no-any-or-unknown": "error",
   "strict-fp/no-domain-raw-primitives": "error",
+  "strict-fp/no-explicit-return-type": "error",
   "strict-fp/no-if-else-or-switch": "error",
   "strict-fp/no-imperative-loops": "error",
   "strict-fp/no-let-or-var": "error",
@@ -30,12 +29,12 @@ export const strictFpRules = (
   // Disable overlapping @typescript-eslint rules that conflict with our custom rules
   "@typescript-eslint/consistent-type-definitions": ["error", "type"],
   "@typescript-eslint/no-explicit-any": "off",
-});
+} satisfies TSESLint.FlatConfig.Rules);
 
 export const createStrictFpConfig = (
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
-): ReadonlyArray<TSESLint.FlatConfig.Config> => {
+) => {
   const files = options.files ? [...options.files] : ["**/*.ts", "**/*.tsx"];
   const maxLines = options.maxFunctionLines ?? 15;
 

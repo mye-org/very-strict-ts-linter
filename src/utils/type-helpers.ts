@@ -5,9 +5,10 @@ import { flow, pipe } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
 import { match } from "ts-pattern";
 
-export const isUnsafeOrMustName = (name: string): boolean =>
+export const isUnsafeOrMustName = (name: string) =>
   name.endsWith("Unsafe") || name.startsWith("must");
 
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive callback
 const getEnclosingFunctionName = (node: TSESTree.Node): O.Option<string> => {
   const parent = node.parent;
   if (!parent) {
@@ -50,14 +51,14 @@ const getEnclosingFunctionName = (node: TSESTree.Node): O.Option<string> => {
     .otherwise(() => getEnclosingFunctionName(parent));
 };
 
-export const isInsideUnsafeOrMustFunction = (node: TSESTree.Node): boolean =>
+export const isInsideUnsafeOrMustFunction = (node: TSESTree.Node) =>
   pipe(
     getEnclosingFunctionName(node),
     O.exists(isUnsafeOrMustName),
   );
 
-export const isInsideNewtypeDefinition = (node: TSESTree.Node): boolean => {
-  const walkUp = (current: TSESTree.Node | undefined): boolean => {
+export const isInsideNewtypeDefinition = (node: TSESTree.Node) => {
+  const walkUp = (current: TSESTree.Node | undefined) => {
     if (!current) {
       return false;
     }
@@ -74,7 +75,7 @@ export const isInsideNewtypeDefinition = (node: TSESTree.Node): boolean => {
   return walkUp(node.parent);
 };
 
-export const isPredicateReturnType = (node: TSESTree.Node): boolean => {
+export const isPredicateReturnType = (node: TSESTree.Node) => {
   const parent = node.parent;
   if (parent?.type !== AST_NODE_TYPES.TSTypeAnnotation) {
     return false;
@@ -88,10 +89,8 @@ export const isPredicateReturnType = (node: TSESTree.Node): boolean => {
   );
 };
 
-export const isArrayLikeType = (
-  type: ts.Type,
-  checker: ts.TypeChecker,
-): boolean => {
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive callback
+export const isArrayLikeType = (type: ts.Type, checker: ts.TypeChecker): boolean => {
   if (checker.isArrayType(type) || checker.isTupleType(type)) {
     return true;
   }
@@ -105,7 +104,7 @@ export const isArrayLikeType = (
   return symbol !== undefined && (symbol.name === "Array" || symbol.name === "ReadonlyArray");
 };
 
-const isBooleanOrLiteralOrEnum = (type: ts.Type): boolean =>
+const isBooleanOrLiteralOrEnum = (type: ts.Type) =>
   Boolean(
     type.flags &
       (ts.TypeFlags.Boolean |
@@ -116,7 +115,7 @@ const isBooleanOrLiteralOrEnum = (type: ts.Type): boolean =>
         ts.TypeFlags.NumberLiteral),
   );
 
-const isDiscriminatedObject = (type: ts.Type): boolean =>
+const isDiscriminatedObject = (type: ts.Type) =>
   pipe(
     type.getProperties(),
     RA.some(
@@ -128,7 +127,7 @@ const isDiscriminatedObject = (type: ts.Type): boolean =>
     ),
   );
 
-export const isFiniteExhaustiveCandidate = (type: ts.Type): boolean => {
+export const isFiniteExhaustiveCandidate = (type: ts.Type) => {
   if (isBooleanOrLiteralOrEnum(type)) {
     return true;
   }

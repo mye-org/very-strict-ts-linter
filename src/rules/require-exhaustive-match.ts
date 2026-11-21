@@ -8,7 +8,7 @@ const TERMINATOR_METHODS = new Set(["exhaustive", "otherwise", "run"]);
 
 const findMatchChainTerminator = (
   matchCall: TSESTree.CallExpression,
-): { terminator: TSESTree.CallExpression | null; methodName: string | null } => {
+) => {
   let current: TSESTree.Node = matchCall;
   while (
     current.parent.type === AST_NODE_TYPES.MemberExpression &&
