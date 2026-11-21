@@ -16,23 +16,18 @@ export const noImperativeLoops = createRule<[], MessageIds>({
         "Avoid imperative loops. Use `RA.map`, `RA.filter`, `RA.reduce`, or recursion instead.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
-  create: (context) => ({
-    ForStatement: (node: TSESTree.ForStatement) => {
+  create: (context) => {
+    const reportLoop = (node: TSESTree.Node) => {
       context.report({ node, messageId: "noImperativeLoop" });
-    },
-    ForInStatement: (node: TSESTree.ForInStatement) => {
-      context.report({ node, messageId: "noImperativeLoop" });
-    },
-    ForOfStatement: (node: TSESTree.ForOfStatement) => {
-      context.report({ node, messageId: "noImperativeLoop" });
-    },
-    WhileStatement: (node: TSESTree.WhileStatement) => {
-      context.report({ node, messageId: "noImperativeLoop" });
-    },
-    DoWhileStatement: (node: TSESTree.DoWhileStatement) => {
-      context.report({ node, messageId: "noImperativeLoop" });
-    },
-  }),
+    };
+    return {
+      ForStatement: reportLoop,
+      ForInStatement: reportLoop,
+      ForOfStatement: reportLoop,
+      WhileStatement: reportLoop,
+      DoWhileStatement: reportLoop,
+    };
+  },
 });

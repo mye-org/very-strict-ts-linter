@@ -17,8 +17,8 @@ export const noThrowOutsideUnsafe = createRule<[], MessageIds>({
         "Avoid `throw` in pure logic. Return `Either`/`Option` or wrap the `throw` in a `*Unsafe` / `must*` helper.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
   create: (context) => ({
     ThrowStatement: (node: TSESTree.ThrowStatement) => {
       if (!isInsideUnsafeOrMustFunction(node)) {

@@ -21,28 +21,14 @@ export const noExplicitReturnType = createRule<[], MessageIds>({
         "Do not specify an explicit return type on functions; let TypeScript infer the narrowest return type from the return statement.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
   create: (context) => {
     const checkFunction = (node: FunctionNode) => {
-      if (!node.returnType) {
-        return;
+      if (node.returnType?.typeAnnotation.type !== AST_NODE_TYPES.TSTypePredicate && node.returnType) {
+        context.report({ node: node.returnType, messageId: "noExplicitReturnType" });
       }
-      if (
-        node.returnType.typeAnnotation.type === AST_NODE_TYPES.TSTypePredicate
-      ) {
-        return;
-      }
-      context.report({
-        node: node.returnType,
-        messageId: "noExplicitReturnType",
-      });
     };
-
-    return {
-      FunctionDeclaration: checkFunction,
-      FunctionExpression: checkFunction,
-      ArrowFunctionExpression: checkFunction,
-    };
+    return { FunctionDeclaration: checkFunction, FunctionExpression: checkFunction, ArrowFunctionExpression: checkFunction };
   },
 });

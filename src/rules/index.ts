@@ -11,6 +11,9 @@ import { noNullUndefined } from "./no-null-undefined.js";
 import { noThrowOutsideUnsafe } from "./no-throw-outside-unsafe.js";
 import { noUnnecessaryLocalConst } from "./no-unnecessary-local-const.js";
 import { preferFpTsArrayMethods } from "./prefer-fp-ts-array-methods.js";
+import { preferFunctionComposition } from "./prefer-function-composition.js";
+import { preferMonadicComposition } from "./prefer-monadic-composition.js";
+import { preferMonadicErrorHandling } from "./prefer-monadic-error-handling.js";
 import { preferReadonlyCollections } from "./prefer-readonly-collections.js";
 import { preferTypeOverInterface } from "./prefer-type-over-interface.js";
 import { requireExhaustiveMatch } from "./require-exhaustive-match.js";
@@ -29,6 +32,9 @@ export const rules = {
   "no-throw-outside-unsafe": noThrowOutsideUnsafe,
   "no-unnecessary-local-const": noUnnecessaryLocalConst,
   "prefer-fp-ts-array-methods": preferFpTsArrayMethods,
+  "prefer-function-composition": preferFunctionComposition,
+  "prefer-monadic-composition": preferMonadicComposition,
+  "prefer-monadic-error-handling": preferMonadicErrorHandling,
   "prefer-readonly-collections": preferReadonlyCollections,
   "prefer-type-over-interface": preferTypeOverInterface,
   "require-exhaustive-match": requireExhaustiveMatch,

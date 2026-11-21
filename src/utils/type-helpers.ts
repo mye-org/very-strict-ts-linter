@@ -3,90 +3,69 @@ import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow, pipe } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
-import { match } from "ts-pattern";
 
 export const isUnsafeOrMustName = (name: string) =>
   name.endsWith("Unsafe") || name.startsWith("must");
 
+const getNamedParentKey = (gp: TSESTree.Node) => {
+  if (gp.type === AST_NODE_TYPES.VariableDeclarator && gp.id.type === AST_NODE_TYPES.Identifier) {
+    return O.some(gp.id.name);
+  }
+  if (
+    (gp.type === AST_NODE_TYPES.Property || gp.type === AST_NODE_TYPES.MethodDefinition) &&
+    gp.key.type === AST_NODE_TYPES.Identifier
+  ) {
+    return O.some(gp.key.name);
+  }
+  return O.none;
+};
+
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive callback
 const getEnclosingFunctionName = (node: TSESTree.Node): O.Option<string> => {
-  const parent = node.parent;
-  if (!parent) {
-    return O.none;
+  if (!node.parent) { return O.none; }
+  if (node.parent.type === AST_NODE_TYPES.FunctionDeclaration) {
+    return node.parent.id ? O.some(node.parent.id.name) : O.none;
   }
-
-  return match(parent)
-    .with({ type: AST_NODE_TYPES.FunctionDeclaration }, (fn) =>
-      fn.id ? O.some(fn.id.name) : O.none,
-    )
-    .with(
-      { type: AST_NODE_TYPES.FunctionExpression },
-      { type: AST_NODE_TYPES.ArrowFunctionExpression },
-      (fn) => {
-        const gp = fn.parent;
-        if (
-          gp.type === AST_NODE_TYPES.VariableDeclarator &&
-          gp.id.type === AST_NODE_TYPES.Identifier
-        ) {
-          return O.some(gp.id.name);
-        }
-        if (
-          gp.type === AST_NODE_TYPES.Property &&
-          gp.key.type === AST_NODE_TYPES.Identifier
-        ) {
-          return O.some(gp.key.name);
-        }
-        if (
-          gp.type === AST_NODE_TYPES.MethodDefinition &&
-          gp.key.type === AST_NODE_TYPES.Identifier
-        ) {
-          return O.some(gp.key.name);
-        }
-        return O.none;
-      },
-    )
-    .with({ type: AST_NODE_TYPES.MethodDefinition }, (m) =>
-      m.key.type === AST_NODE_TYPES.Identifier ? O.some(m.key.name) : O.none,
-    )
-    .otherwise(() => getEnclosingFunctionName(parent));
+  if (node.parent.type === AST_NODE_TYPES.FunctionExpression || node.parent.type === AST_NODE_TYPES.ArrowFunctionExpression) {
+    return getNamedParentKey(node.parent.parent);
+  }
+  if (node.parent.type === AST_NODE_TYPES.MethodDefinition) {
+    return node.parent.key.type === AST_NODE_TYPES.Identifier ? O.some(node.parent.key.name) : O.none;
+  }
+  return getEnclosingFunctionName(node.parent);
 };
 
 export const isInsideUnsafeOrMustFunction = (node: TSESTree.Node) =>
-  pipe(
-    getEnclosingFunctionName(node),
-    O.exists(isUnsafeOrMustName),
-  );
+  pipe(getEnclosingFunctionName(node), O.exists(isUnsafeOrMustName));
 
-export const isInsideNewtypeDefinition = (node: TSESTree.Node) => {
-  const walkUp = (current: TSESTree.Node | undefined) => {
-    if (!current) {
-      return false;
-    }
-    if (
-      current.type === AST_NODE_TYPES.TSTypeReference &&
-      current.typeName.type === AST_NODE_TYPES.Identifier &&
-      current.typeName.name === "Newtype"
-    ) {
-      return true;
-    }
-    return walkUp(current.parent);
-  };
+const isNewtypeReference = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.TSTypeReference &&
+  node.typeName.type === AST_NODE_TYPES.Identifier &&
+  node.typeName.name === "Newtype";
 
-  return walkUp(node.parent);
-};
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
+const hasNewtypeAncestor = (node: TSESTree.Node): boolean =>
+  isNewtypeReference(node) || walkUpForNewtype(O.fromNullable(node.parent));
 
-export const isPredicateReturnType = (node: TSESTree.Node) => {
-  const parent = node.parent;
-  if (parent?.type !== AST_NODE_TYPES.TSTypeAnnotation) {
-    return false;
-  }
-  const gp = parent.parent;
-  return (
-    gp.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-    gp.type === AST_NODE_TYPES.FunctionDeclaration ||
-    gp.type === AST_NODE_TYPES.FunctionExpression ||
-    gp.type === AST_NODE_TYPES.TSFunctionType
-  );
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
+const walkUpForNewtype = (current: O.Option<TSESTree.Node>): boolean =>
+  pipe(current, O.exists(hasNewtypeAncestor));
+
+export const isInsideNewtypeDefinition = flow(
+  (node: TSESTree.Node) => O.fromNullable(node.parent),
+  walkUpForNewtype,
+);
+
+export const isPredicateReturnType = (node: TSESTree.Node) =>
+  node.parent?.type === AST_NODE_TYPES.TSTypeAnnotation &&
+  (node.parent.parent.type === AST_NODE_TYPES.ArrowFunctionExpression ||
+    node.parent.parent.type === AST_NODE_TYPES.FunctionDeclaration ||
+    node.parent.parent.type === AST_NODE_TYPES.FunctionExpression ||
+    node.parent.parent.type === AST_NODE_TYPES.TSFunctionType);
+
+const isArraySymbol = (type: ts.Type) => {
+  const name = type.getSymbol()?.name;
+  return name === "Array" || name === "ReadonlyArray";
 };
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive callback
@@ -95,13 +74,9 @@ export const isArrayLikeType = (type: ts.Type, checker: ts.TypeChecker): boolean
     return true;
   }
   if (type.isUnion()) {
-    return pipe(
-      type.types,
-      RA.every((t) => isArrayLikeType(t, checker)),
-    );
+    return pipe(type.types, RA.every((t) => isArrayLikeType(t, checker)));
   }
-  const symbol = type.getSymbol();
-  return symbol !== undefined && (symbol.name === "Array" || symbol.name === "ReadonlyArray");
+  return isArraySymbol(type);
 };
 
 const isBooleanOrLiteralOrEnum = (type: ts.Type) =>
@@ -127,12 +102,10 @@ const isDiscriminatedObject = (type: ts.Type) =>
     ),
   );
 
-export const isFiniteExhaustiveCandidate = (type: ts.Type) => {
-  if (isBooleanOrLiteralOrEnum(type)) {
-    return true;
-  }
-  if (type.isUnion()) {
-    return pipe(
+export const isFiniteExhaustiveCandidate = (type: ts.Type) =>
+  isBooleanOrLiteralOrEnum(type) ||
+  (type.isUnion() &&
+    pipe(
       type.types,
       RA.every(
         flow(
@@ -140,7 +113,4 @@ export const isFiniteExhaustiveCandidate = (type: ts.Type) => {
             isBooleanOrLiteralOrEnum(member) || isDiscriminatedObject(member),
         ),
       ),
-    );
-  }
-  return false;
-};
+    ));

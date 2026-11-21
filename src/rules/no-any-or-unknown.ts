@@ -17,8 +17,8 @@ export const noAnyOrUnknown = createRule<[], MessageIds>({
         "Avoid `unknown`. Use generic constraints or explicit union types.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
   create: (context) => ({
     TSAnyKeyword: (node: TSESTree.TSAnyKeyword) => {
       context.report({ node, messageId: "noAny" });

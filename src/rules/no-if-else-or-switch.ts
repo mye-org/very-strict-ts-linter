@@ -18,11 +18,11 @@ export const noIfElseOrSwitch = createRule<[], MessageIds>({
         "Avoid `switch` statements. Use `match(...).exhaustive()` from `ts-pattern` instead.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
   create: (context) => ({
     IfStatement: (node: TSESTree.IfStatement) => {
-      if (node.alternate !== null) {
+      if (node.alternate) {
         context.report({ node: node.alternate, messageId: "noIfElse" });
       }
     },

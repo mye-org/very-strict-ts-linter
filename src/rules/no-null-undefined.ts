@@ -1,4 +1,4 @@
-import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
+import { AST_NODE_TYPES } from "@typescript-eslint/utils";
 import { createRule } from "../utils/create-rule.js";
 
 type MessageIds = "noNullType" | "noUndefinedType" | "noNullLiteral" | "noOptionalProperty";
@@ -22,22 +22,18 @@ export const noNullUndefined = createRule<[], MessageIds>({
         "Avoid optional properties (`?:`). Use `Option<A>` from `fp-ts` instead.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
   create: (context) => ({
-    TSNullKeyword: (node: TSESTree.TSNullKeyword) => {
-      context.report({ node, messageId: "noNullType" });
-    },
-    TSUndefinedKeyword: (node: TSESTree.TSUndefinedKeyword) => {
-      context.report({ node, messageId: "noUndefinedType" });
-    },
-    TSPropertySignature: (node: TSESTree.TSPropertySignature) => {
+    TSNullKeyword: (node) => { context.report({ node, messageId: "noNullType" }); },
+    TSUndefinedKeyword: (node) => { context.report({ node, messageId: "noUndefinedType" }); },
+    TSPropertySignature: (node) => {
       if (node.optional) {
         context.report({ node, messageId: "noOptionalProperty" });
       }
     },
-    Literal: (node: TSESTree.Literal) => {
-      if (node.value === null && node.parent.type !== AST_NODE_TYPES.TSLiteralType) {
+    Literal: (node) => {
+      if (node.raw === "null" && node.parent.type !== AST_NODE_TYPES.TSLiteralType) {
         context.report({ node, messageId: "noNullLiteral" });
       }
     },

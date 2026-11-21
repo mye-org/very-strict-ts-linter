@@ -17,8 +17,8 @@ export const preferTypeOverInterface = createRule<[], MessageIds>({
         "Prefer discriminated union types over `enum` declarations.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
   create: (context) => ({
     TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => {
       context.report({ node, messageId: "preferType" });

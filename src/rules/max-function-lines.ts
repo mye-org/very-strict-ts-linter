@@ -1,13 +1,27 @@
 import { TSESTree } from "@typescript-eslint/utils";
 import { createRule } from "../utils/create-rule.js";
 
-type Options = [{ readonly maxLines: number }];
+type Options = [Record<"maxLines", number>];
 type MessageIds = "tooManyLines";
 
 type FunctionNode =
   | TSESTree.FunctionDeclaration
   | TSESTree.FunctionExpression
   | TSESTree.ArrowFunctionExpression;
+
+const getLineCount = (node: FunctionNode) =>
+  node.body.loc.end.line - node.body.loc.start.line + 1;
+
+const reportIfTooLong = (
+  node: FunctionNode,
+  maxLines: number,
+  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+) => {
+  const lineCount = getLineCount(node);
+  if (lineCount > maxLines) {
+    report({ node, messageId: "tooManyLines", data: { actual: String(lineCount), max: String(maxLines) } });
+  }
+};
 
 export const maxFunctionLines = createRule<Options, MessageIds>({
   name: "max-function-lines",
@@ -24,35 +38,20 @@ export const maxFunctionLines = createRule<Options, MessageIds>({
     schema: [
       {
         type: "object",
-        properties: {
-          maxLines: { type: "number", minimum: 1 },
-        },
+        properties: { maxLines: { type: "number", minimum: 1 } },
         additionalProperties: false,
       },
     ],
+    defaultOptions: [{ maxLines: 15 }],
   },
-  defaultOptions: [{ maxLines: 15 }],
   create: (context, [options]) => {
-    const checkFunction = (node: FunctionNode) => {
-      const startLine = node.body.loc.start.line;
-      const endLine = node.body.loc.end.line;
-      const lineCount = endLine - startLine + 1;
-      if (lineCount > options.maxLines) {
-        context.report({
-          node,
-          messageId: "tooManyLines",
-          data: {
-            actual: String(lineCount),
-            max: String(options.maxLines),
-          },
-        });
-      }
+    const check = (node: FunctionNode) => {
+      reportIfTooLong(node, options.maxLines, (d) => { context.report(d); });
     };
-
     return {
-      FunctionDeclaration: checkFunction,
-      FunctionExpression: checkFunction,
-      ArrowFunctionExpression: checkFunction,
+      FunctionDeclaration: check,
+      FunctionExpression: check,
+      ArrowFunctionExpression: check,
     };
   },
 });

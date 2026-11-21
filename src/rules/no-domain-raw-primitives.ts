@@ -1,9 +1,26 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
-import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
 import { isInsideNewtypeDefinition } from "../utils/type-helpers.js";
 
 type MessageIds = "rawStringOrNumber" | "rawBoolean";
+
+const reportPrimitiveType = (
+  typeNode: TSESTree.TypeNode,
+  reportStringOrNumber: (node: TSESTree.Node, kind: string) => void,
+  reportBoolean: (node: TSESTree.Node) => void,
+) => {
+  if (typeNode.type === AST_NODE_TYPES.TSStringKeyword) {
+    reportStringOrNumber(typeNode, "string");
+    return;
+  }
+  if (typeNode.type === AST_NODE_TYPES.TSNumberKeyword) {
+    reportStringOrNumber(typeNode, "number");
+    return;
+  }
+  if (typeNode.type === AST_NODE_TYPES.TSBooleanKeyword) {
+    reportBoolean(typeNode);
+  }
+};
 
 export const noDomainRawPrimitives = createRule<[], MessageIds>({
   name: "no-domain-raw-primitives",
@@ -20,37 +37,18 @@ export const noDomainRawPrimitives = createRule<[], MessageIds>({
         "Avoid `boolean` in domain properties. Model states as a discriminated union (e.g. `{ kind: \"a\" } | { kind: \"b\" }`).",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
   create: (context) => ({
-    TSPropertySignature: (node: TSESTree.TSPropertySignature) => {
+    TSPropertySignature: (node) => {
       const typeNode = node.typeAnnotation?.typeAnnotation;
-      if (!typeNode || isInsideNewtypeDefinition(typeNode)) {
-        return;
+      if (typeNode && !isInsideNewtypeDefinition(typeNode)) {
+        reportPrimitiveType(
+          typeNode,
+          (n, kind) => { context.report({ node: n, messageId: "rawStringOrNumber", data: { kind } }); },
+          (n) => { context.report({ node: n, messageId: "rawBoolean" }); },
+        );
       }
-
-      match(typeNode.type)
-        .with(AST_NODE_TYPES.TSStringKeyword, () => {
-          context.report({
-            node: typeNode,
-            messageId: "rawStringOrNumber",
-            data: { kind: "string" },
-          });
-        })
-        .with(AST_NODE_TYPES.TSNumberKeyword, () => {
-          context.report({
-            node: typeNode,
-            messageId: "rawStringOrNumber",
-            data: { kind: "number" },
-          });
-        })
-        .with(AST_NODE_TYPES.TSBooleanKeyword, () => {
-          context.report({
-            node: typeNode,
-            messageId: "rawBoolean",
-          });
-        })
-        .otherwise(() => undefined);
     },
   }),
 });

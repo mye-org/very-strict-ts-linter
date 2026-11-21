@@ -16,8 +16,8 @@ export const noNestedTernary = createRule<[], MessageIds>({
         "Avoid nested ternaries. Use `match(...).exhaustive()` or `pipe` with `O.fold`/`E.match`.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
   create: (context) => ({
     ConditionalExpression: (node: TSESTree.ConditionalExpression) => {
       if (

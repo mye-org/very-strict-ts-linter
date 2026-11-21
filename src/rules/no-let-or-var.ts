@@ -18,23 +18,20 @@ export const noLetOrVar = createRule<[], MessageIds>({
         "Avoid mutable assignments or `++`/`--` updates. Return new immutable values instead.",
     },
     schema: [],
+    defaultOptions: [],
   },
-  defaultOptions: [],
-  create: (context) => ({
-    VariableDeclaration: (node: TSESTree.VariableDeclaration) => {
-      if (node.kind !== "const") {
-        context.report({
-          node,
-          messageId: "noLetOrVar",
-          data: { kind: node.kind },
-        });
-      }
-    },
-    UpdateExpression: (node: TSESTree.UpdateExpression) => {
+  create: (context) => {
+    const reportMutation = (node: TSESTree.Node) => {
       context.report({ node, messageId: "noMutation" });
-    },
-    AssignmentExpression: (node: TSESTree.AssignmentExpression) => {
-      context.report({ node, messageId: "noMutation" });
-    },
-  }),
+    };
+    return {
+      VariableDeclaration: (node: TSESTree.VariableDeclaration) => {
+        if (node.kind !== "const") {
+          context.report({ node, messageId: "noLetOrVar", data: { kind: node.kind } });
+        }
+      },
+      UpdateExpression: reportMutation,
+      AssignmentExpression: reportMutation,
+    };
+  },
 });
