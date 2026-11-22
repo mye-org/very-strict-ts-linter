@@ -18,15 +18,16 @@ export const defaultStrictFpFiles = ["**/*.ts"] as const;
 export const defaultStrictFpIgnores = ["**/*.tsx", "**/*.config.ts"] as const;
 
 export type PluginRuleName = keyof typeof rules;
-export type RuleTier = LintTier | "react";
 
 export const ruleTiers = {
   // Tier 1: Architecture & DDD
   "domain-layer-purity": 1,
   "no-cross-aggregate-reference": 1,
   "no-domain-raw-primitives": 1,
+  "no-react-in-ts": 1,
   "no-unit-suffixed-primitives": 1,
   "repository-aggregate-root-only": 1,
+  "thin-react-component": 1,
   "ubiquitous-language": 1,
   "no-data-clumps": 1,
   "no-external-entity-mutation": 1,
@@ -75,17 +76,13 @@ export const ruleTiers = {
   "prefer-monadic-error-handling": 3,
   "prefer-point-free": 3,
   "single-level-of-abstraction": 3,
-
-  // React preset
-  "no-react-in-ts": "react",
-  "thin-react-component": "react",
-} as const satisfies Record<PluginRuleName, RuleTier>;
+} as const satisfies Record<PluginRuleName, LintTier>;
 
 const buildRulesForTier = (tier: LintTier) =>
   pipe(
     RR.toEntries(ruleTiers),
     RA.filter(([, ruleTier]) => ruleTier === tier),
-    RA.reduce<readonly [PluginRuleName, RuleTier], Record<string, TSESLint.FlatConfig.RuleEntry>>({}, (acc, [name]) => ({
+    RA.reduce<readonly [PluginRuleName, LintTier], Record<string, TSESLint.FlatConfig.RuleEntry>>({}, (acc, [name]) => ({
       ...acc,
       [`strict-fp/${name}`]: "error",
     })),
@@ -294,21 +291,6 @@ const createTierRuleBlock = (
   rules: buildTieredRules(maxTier, options.maxFunctionLines ?? 15, options),
 });
 
-export const createTieredConfig = (
-  plugin: TSESLint.FlatConfig.Plugin,
-  options: StrictFpConfigOptions = {},
-) => [
-  ...((options.maxTier ?? 3) >= 2 ? scopeTypeCheckedConfigs(resolveFiles(options)) : []),
-  createTierRuleBlock(plugin, options.maxTier ?? 3, resolveFiles(options), options),
-  ...createBoundaryConfig(O.fromNullable(options.boundaryFiles)),
-  ...createTestConfig(O.fromNullable(options.testFiles)),
-];
-
-export const createStrictFpConfig = (
-  plugin: TSESLint.FlatConfig.Plugin,
-  options: StrictFpConfigOptions = {},
-) => createTieredConfig(plugin, { ...options, maxTier: options.maxTier ?? 3 });
-
 export type StrictReactConfigOptions = Partial<
   Record<"tsFiles" | "tsxFiles" | "ignores", ReadonlyArray<string>>
 >;
@@ -345,9 +327,31 @@ const createReactTsxBlock = (
   name: "strict-fp/react-thin-tsx",
   files: options.tsxFiles ? [...options.tsxFiles] : ["**/*.tsx"],
   ignores: options.ignores ? [...options.ignores] : [...defaultReactTsxIgnores],
+  languageOptions: {
+    parser: tseslint.parser,
+    parserOptions: {
+      ecmaFeatures: { jsx: true },
+    },
+  },
   plugins: { "strict-fp": plugin },
   rules: reactTsxRules,
 });
+
+export const createTieredConfig = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictFpConfigOptions = {},
+) => [
+  ...((options.maxTier ?? 3) >= 2 ? scopeTypeCheckedConfigs(resolveFiles(options)) : []),
+  createTierRuleBlock(plugin, options.maxTier ?? 3, resolveFiles(options), options),
+  createReactTsxBlock(plugin, {}),
+  ...createBoundaryConfig(O.fromNullable(options.boundaryFiles)),
+  ...createTestConfig(O.fromNullable(options.testFiles)),
+];
+
+export const createStrictFpConfig = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictFpConfigOptions = {},
+) => createTieredConfig(plugin, { ...options, maxTier: options.maxTier ?? 3 });
 
 export const createStrictReactConfig = (
   plugin: TSESLint.FlatConfig.Plugin,

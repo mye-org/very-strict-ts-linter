@@ -94,4 +94,4 @@ npx strict-fp-radar [--tsconfig tsconfig.json] [--format markdown|json]
 - `maxFunctionLines` — Maximum lines per function for `max-function-lines` (default: `15`)
 - `maxTier` — `1 | 2 | 3` (default: `3`)
 
-By default, `**/*.tsx` and `**/*.config.ts` are ignored so React/Expo components and config files are not subject to strict domain/FP rules.
+By default, `**/*.tsx` and `**/*.config.ts` are excluded from strict `.ts` domain/type-safety/FP rules, while Tier 1 enforces `no-react-in-ts` on `.ts` files and `thin-react-component` on `.tsx` files (excluding `*.test.tsx`, `*.spec.tsx`, and `*.stories.tsx`).

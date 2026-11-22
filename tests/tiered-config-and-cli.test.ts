@@ -28,13 +28,17 @@ const findTierBlock = (configList: ReadonlyArray<TSESLint.FlatConfig.Config>, na
   );
 
 describe("tiered configs and React/Expo exclusions", () => {
-  it("excludes .tsx and *.config.ts by default and scopes to .ts", () => {
+  it("excludes .tsx and *.config.ts from strict .ts rules and includes thin-tsx block", () => {
     expect(defaultStrictFpFiles).toEqual(["**/*.ts"]);
     expect(defaultStrictFpIgnores).toEqual(["**/*.tsx", "**/*.config.ts"]);
 
-    const mainBlock = findTierBlock(createTieredConfig(strictFp, { maxTier: 1 }), "strict-fp/tier-1");
+    const tiered = createTieredConfig(strictFp, { maxTier: 1 });
+    const mainBlock = findTierBlock(tiered, "strict-fp/tier-1");
+    const tsxBlock = findTierBlock(tiered, "strict-fp/react-thin-tsx");
     expect(mainBlock?.files).toEqual(["**/*.ts"]);
     expect(mainBlock?.ignores).toEqual(["**/*.tsx", "**/*.config.ts"]);
+    expect(tsxBlock?.files).toEqual(["**/*.tsx"]);
+    expect(tsxBlock?.rules).toEqual({ "strict-fp/thin-react-component": "error" });
   });
 
   it("builds cumulative tier1, tier2, and tier3 presets", () => {
@@ -80,8 +84,14 @@ describe("tiered configs and React/Expo exclusions", () => {
     );
   });
 
-  it("maps every plugin rule in ruleTiers with no missing or extra entries", () => {
+  it("maps every plugin rule in ruleTiers to a numeric tier (1 | 2 | 3) with no missing or extra entries", () => {
     expect(pipe(RR.keys(ruleTiers), RA.sort(S.Ord))).toEqual(pipe(RR.keys(rules), RA.sort(S.Ord)));
+    expect(
+      pipe(
+        Object.values(ruleTiers),
+        RA.every((tier: number) => [1, 2, 3].includes(tier)),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -91,6 +101,8 @@ describe("strict-fp-lint CLI helpers and phased runner", () => {
     const t2Filter = createTierRuleFilter(2);
 
     expect(t1Filter({ ruleId: "strict-fp/domain-layer-purity" })).toBe(true);
+    expect(t1Filter({ ruleId: "strict-fp/no-react-in-ts" })).toBe(true);
+    expect(t1Filter({ ruleId: "strict-fp/thin-react-component" })).toBe(true);
     expect(t1Filter({ ruleId: "strict-fp/no-any-or-unknown" })).toBe(false);
     expect(t1Filter({ ruleId: "strict-fp/no-let-or-var" })).toBe(false);
     expect(t1Filter({ ruleId: "@typescript-eslint/no-unsafe-assignment" })).toBe(false);
@@ -119,7 +131,7 @@ describe("strict-fp-lint CLI helpers and phased runner", () => {
     });
   });
 
-  it("stops at Tier 1 on architectural error and ignores .tsx and *.config.ts", async () => {
+  it("stops at Tier 1 on architectural or React/TSX boundary errors and ignores *.config.ts", async () => {
     const tmpDir = pipe(
       os.tmpdir(),
       (dir) => path.join(dir, "strict-fp-phased-"),
@@ -141,7 +153,8 @@ export default [
 ];
 `,
       );
-      fs.writeFileSync(path.join(tmpDir, "App.tsx"), "export const App = () => { let x: any = 1; return x; };\n");
+      fs.writeFileSync(path.join(tmpDir, "App.tsx"), "export const App = () => <div />;\n");
+      fs.writeFileSync(path.join(tmpDir, "BadApp.tsx"), "const helper = (n: number) => n + 1; export const BadApp = () => <div>{helper(1)}</div>;\n");
       fs.writeFileSync(path.join(tmpDir, "app.config.ts"), "let cfg: any = { name: 'app' }; export default cfg;\n");
       fs.writeFileSync(path.join(tmpDir, "logic.ts"), "export type Retry = { readonly timeoutMs: number };\nexport const fn = () => { let count = 1; return count; };\n");
 
@@ -159,14 +172,24 @@ export default [
       expect(result.summaries).toHaveLength(1);
       expect(firstSummary?.errorCount).toBeGreaterThan(0);
 
-      const tsxOnlyResult = await runPhasedLint({
+      const cleanTsxAndConfigResult = await runPhasedLint({
         targets: ["App.tsx", "app.config.ts"],
         fix: false,
         format: "json",
         maxTier: 3,
         cwd: tmpDir,
       });
-      expect(tsxOnlyResult.passed).toBe(true);
+      expect(cleanTsxAndConfigResult.passed).toBe(true);
+
+      const badTsxResult = await runPhasedLint({
+        targets: ["BadApp.tsx"],
+        fix: false,
+        format: "json",
+        maxTier: 3,
+        cwd: tmpDir,
+      });
+      expect(badTsxResult.passed).toBe(false);
+      expect(badTsxResult.failedTier).toBe(1);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
