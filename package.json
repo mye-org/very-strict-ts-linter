@@ -12,7 +12,8 @@
     }
   },
   "bin": {
-    "strict-fp-radar": "./dist/cli/discovery-radar.js"
+    "strict-fp-radar": "./dist/cli/discovery-radar.js",
+    "strict-fp-lint": "./dist/cli/strict-fp-lint.js"
   },
   "files": [
     "dist",
@@ -26,6 +27,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint .",
+    "lint:phased": "node dist/cli/strict-fp-lint.js",
     "radar": "node dist/cli/discovery-radar.js"
   },
   "dependencies": {

@@ -1,13 +1,20 @@
 import type { TSESLint } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import tseslint from "typescript-eslint";
 import { rules } from "../rules/index.js";
 
+export type LintTier = 1 | 2 | 3;
+
 export type StrictFpConfigOptions = Partial<
   Record<"files" | "boundaryFiles" | "testFiles" | "domainFiles" | "applicationFiles", ReadonlyArray<string>> &
-    Record<"maxFunctionLines", number>
+    Record<"maxFunctionLines", number> &
+    Record<"maxTier", LintTier>
 >;
+
+export const defaultStrictFpFiles = ["**/*.ts"] as const;
+export const defaultStrictFpIgnores = ["**/*.tsx", "**/*.config.ts"] as const;
 
 export const dddBoundaryRules = {
   "strict-fp/domain-layer-purity": "error",
@@ -31,32 +38,20 @@ export const dddDiscoveryRules = {
   "strict-fp/no-train-wreck-navigation": "error",
 } as const satisfies TSESLint.FlatConfig.Rules;
 
-const baseStrictFpRules = {
+export const tier1Rules = {
   ...dddBoundaryRules,
   ...dddDiscoveryRules,
-  "strict-fp/fp-ts-import-convention": "error",
+} as const satisfies TSESLint.FlatConfig.Rules;
+
+export const tier2Rules = {
   "strict-fp/no-any-or-unknown": "error",
-  "strict-fp/no-classes": "error",
   "strict-fp/no-explicit-return-type": "error",
-  "strict-fp/no-fp-ts-chain": "error",
-  "strict-fp/no-if-else-or-switch": "error",
-  "strict-fp/no-imperative-loops": "error",
-  "strict-fp/no-let-or-var": "error",
-  "strict-fp/no-nested-pipe": "error",
-  "strict-fp/no-nested-ternary": "error",
   "strict-fp/no-null-undefined": "error",
   "strict-fp/no-optional-state-bags": "error",
-  "strict-fp/no-throw-outside-unsafe": "error",
-  "strict-fp/no-unnecessary-local-const": "error",
   "strict-fp/parse-dont-validate": "error",
   "strict-fp/prefer-const-satisfies": "error",
   "strict-fp/prefer-exhaustive-record": "error",
-  "strict-fp/prefer-fp-ts-array-methods": "error",
-  "strict-fp/prefer-function-composition": "error",
-  "strict-fp/prefer-monadic-composition": "error",
-  "strict-fp/prefer-monadic-error-handling": "error",
   "strict-fp/prefer-nonempty-tuple": "error",
-  "strict-fp/prefer-point-free": "error",
   "strict-fp/prefer-readonly-collections": "error",
   "strict-fp/prefer-template-literal-type": "error",
   "strict-fp/prefer-type-level-dispatch": "error",
@@ -66,6 +61,24 @@ const baseStrictFpRules = {
   "strict-fp/require-keyof-path": "error",
   "@typescript-eslint/consistent-type-definitions": ["error", "type"],
   "@typescript-eslint/no-explicit-any": "off",
+} as const satisfies TSESLint.FlatConfig.Rules;
+
+export const tier3Rules = {
+  "strict-fp/fp-ts-import-convention": "error",
+  "strict-fp/no-classes": "error",
+  "strict-fp/no-fp-ts-chain": "error",
+  "strict-fp/no-if-else-or-switch": "error",
+  "strict-fp/no-imperative-loops": "error",
+  "strict-fp/no-let-or-var": "error",
+  "strict-fp/no-nested-pipe": "error",
+  "strict-fp/no-nested-ternary": "error",
+  "strict-fp/no-throw-outside-unsafe": "error",
+  "strict-fp/no-unnecessary-local-const": "error",
+  "strict-fp/prefer-fp-ts-array-methods": "error",
+  "strict-fp/prefer-function-composition": "error",
+  "strict-fp/prefer-monadic-composition": "error",
+  "strict-fp/prefer-monadic-error-handling": "error",
+  "strict-fp/prefer-point-free": "error",
 } as const satisfies TSESLint.FlatConfig.Rules;
 
 const buildUbiquitousOptions = (options: StrictFpConfigOptions) =>
@@ -83,15 +96,26 @@ const buildUbiquitousOptions = (options: StrictFpConfigOptions) =>
       }
     : {};
 
-export const strictFpRules = (maxLines = 15, options: StrictFpConfigOptions = {}) =>
+const buildTier1WithOverrides = (options: StrictFpConfigOptions) =>
   ({
-    ...baseStrictFpRules,
-    "strict-fp/max-function-lines": ["error", { maxLines }],
+    ...tier1Rules,
     ...(options.domainFiles
       ? { "strict-fp/domain-layer-purity": ["error", { domainPatterns: options.domainFiles }] as TSESLint.FlatConfig.RuleEntry }
       : {}),
     ...buildUbiquitousOptions(options),
   }) satisfies TSESLint.FlatConfig.Rules;
+
+export const buildTieredRules = (maxTier: LintTier, maxLines = 15, options: StrictFpConfigOptions = {}) =>
+  ({
+    ...buildTier1WithOverrides(options),
+    ...(maxTier >= 2 ? tier2Rules : {}),
+    ...(maxTier >= 3
+      ? { ...tier3Rules, "strict-fp/max-function-lines": ["error", { maxLines }] as TSESLint.FlatConfig.RuleEntry }
+      : {}),
+  }) satisfies TSESLint.FlatConfig.Rules;
+
+export const strictFpRules = (maxLines = 15, options: StrictFpConfigOptions = {}) =>
+  buildTieredRules(options.maxTier ?? 3, maxLines, options);
 
 const boundaryOverrideRules = {
   "strict-fp/no-throw-outside-unsafe": "off",
@@ -171,13 +195,27 @@ const createTestConfig = (files: O.Option<ReadonlyArray<string>>) =>
     ),
   );
 
+const resolveFiles = (options: StrictFpConfigOptions) =>
+  options.files ? [...options.files] : [...defaultStrictFpFiles];
+
+const scopeTypeCheckedConfigs = (files: ReadonlyArray<string>) =>
+  pipe(
+    tseslint.configs.strictTypeChecked as ReadonlyArray<TSESLint.FlatConfig.Config>,
+    RA.map((cfg) => ({
+      ...cfg,
+      files: [...files],
+      ignores: [...defaultStrictFpIgnores],
+    })),
+  );
+
 export const createDddBoundaryConfig = (
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
 ) => [
   {
     name: "strict-fp/ddd-boundary",
-    files: options.files ? [...options.files] : ["**/*.ts", "**/*.tsx"],
+    files: resolveFiles(options),
+    ignores: [...defaultStrictFpIgnores],
     plugins: { "strict-fp": plugin },
     rules: dddBoundaryRules,
   },
@@ -189,26 +227,40 @@ export const createDddDiscoveryConfig = (
 ) => [
   {
     name: "strict-fp/ddd-discovery",
-    files: options.files ? [...options.files] : ["**/*.ts", "**/*.tsx"],
+    files: resolveFiles(options),
+    ignores: [...defaultStrictFpIgnores],
     plugins: { "strict-fp": plugin },
     rules: dddDiscoveryRules,
   },
 ];
 
-export const createStrictFpConfig = (
+const createTierRuleBlock = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  maxTier: LintTier,
+  targetFiles: ReadonlyArray<string>,
+  options: StrictFpConfigOptions,
+) => ({
+  name: `strict-fp/tier-${String(maxTier)}`,
+  files: [...targetFiles],
+  ignores: [...defaultStrictFpIgnores],
+  plugins: { "strict-fp": plugin },
+  rules: buildTieredRules(maxTier, options.maxFunctionLines ?? 15, options),
+});
+
+export const createTieredConfig = (
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
 ) => [
-  ...(tseslint.configs.strictTypeChecked as ReadonlyArray<TSESLint.FlatConfig.Config>),
-  {
-    name: "strict-fp/recommended",
-    files: options.files ? [...options.files] : ["**/*.ts", "**/*.tsx"],
-    plugins: { "strict-fp": plugin },
-    rules: strictFpRules(options.maxFunctionLines ?? 15, options),
-  },
+  ...((options.maxTier ?? 3) >= 2 ? scopeTypeCheckedConfigs(resolveFiles(options)) : []),
+  createTierRuleBlock(plugin, options.maxTier ?? 3, resolveFiles(options), options),
   ...createBoundaryConfig(O.fromNullable(options.boundaryFiles)),
   ...createTestConfig(O.fromNullable(options.testFiles)),
 ];
+
+export const createStrictFpConfig = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictFpConfigOptions = {},
+) => createTieredConfig(plugin, { ...options, maxTier: options.maxTier ?? 3 });
 
 export const pluginMeta = {
   name: "@mye-org/eslint-plugin-strict-fp",
