@@ -24,6 +24,7 @@ export const ruleTiers = {
   "domain-layer-purity": 1,
   "no-cross-aggregate-reference": 1,
   "no-domain-raw-primitives": 1,
+  "no-generic-utility-names": 1,
   "no-react-in-ts": 1,
   "no-unit-suffixed-primitives": 1,
   "repository-aggregate-root-only": 1,

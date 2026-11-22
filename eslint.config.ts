@@ -23,6 +23,12 @@ export default [
     },
   },
   {
+    files: ["src/utils/**/*.ts"],
+    rules: {
+      "strict-fp/no-generic-utility-names": "off",
+    },
+  },
+  {
     languageOptions: {
       parserOptions: {
         projectService: true,

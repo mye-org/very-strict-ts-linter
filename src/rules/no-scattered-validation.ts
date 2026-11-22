@@ -165,7 +165,7 @@ const checkLiteralNode = (
     .exhaustive();
 };
 
-const reportValidationHelper = (
+const reportValidationCall = (
   node: TSESTree.CallExpression,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
@@ -189,7 +189,7 @@ const checkCallNode = (
     isVal: isValidationHelperCall(node, services),
   })
     .with({ voScope: "non-vo", isNorm: true }, () => { report({ node, messageId: "scatteredNormalization" }); })
-    .with({ voScope: "non-vo", isVal: true }, () => { reportValidationHelper(node, report); })
+    .with({ voScope: "non-vo", isVal: true }, () => { reportValidationCall(node, report); })
     .with(P._, () => {})
     .exhaustive();
 };
