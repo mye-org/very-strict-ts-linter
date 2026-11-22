@@ -20,6 +20,7 @@ import { noNestedPipe } from "./no-nested-pipe.js";
 import { noNestedTernary } from "./no-nested-ternary.js";
 import { noNullUndefined } from "./no-null-undefined.js";
 import { noOptionalStateBags } from "./no-optional-state-bags.js";
+import { noReactInTs } from "./no-react-in-ts.js";
 import { noRepeatedGuardClauses } from "./no-repeated-guard-clauses.js";
 import { noScatteredValidation } from "./no-scattered-validation.js";
 import { noStringlyTypedDiscriminants } from "./no-stringly-typed-discriminants.js";
@@ -44,6 +45,7 @@ import { preferUnionOverBoolean } from "./prefer-union-over-boolean.js";
 import { repositoryAggregateRootOnly } from "./repository-aggregate-root-only.js";
 import { requireExhaustiveMatch } from "./require-exhaustive-match.js";
 import { requireKeyofPath } from "./require-keyof-path.js";
+import { thinReactComponent } from "./thin-react-component.js";
 import { ubiquitousLanguage } from "./ubiquitous-language.js";
 
 export const rules = {
@@ -69,6 +71,7 @@ export const rules = {
   "no-nested-ternary": noNestedTernary,
   "no-null-undefined": noNullUndefined,
   "no-optional-state-bags": noOptionalStateBags,
+  "no-react-in-ts": noReactInTs,
   "no-repeated-guard-clauses": noRepeatedGuardClauses,
   "no-scattered-validation": noScatteredValidation,
   "no-stringly-typed-discriminants": noStringlyTypedDiscriminants,
@@ -93,5 +96,6 @@ export const rules = {
   "repository-aggregate-root-only": repositoryAggregateRootOnly,
   "require-exhaustive-match": requireExhaustiveMatch,
   "require-keyof-path": requireKeyofPath,
+  "thin-react-component": thinReactComponent,
   "ubiquitous-language": ubiquitousLanguage,
 } as const;

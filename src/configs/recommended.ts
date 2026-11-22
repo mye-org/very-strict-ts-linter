@@ -262,6 +262,54 @@ export const createStrictFpConfig = (
   options: StrictFpConfigOptions = {},
 ) => createTieredConfig(plugin, { ...options, maxTier: options.maxTier ?? 3 });
 
+export type StrictReactConfigOptions = Partial<
+  Record<"tsFiles" | "tsxFiles" | "ignores", ReadonlyArray<string>>
+>;
+
+export const reactTsRules = {
+  "strict-fp/no-react-in-ts": "error",
+} as const satisfies TSESLint.FlatConfig.Rules;
+
+export const reactTsxRules = {
+  "strict-fp/thin-react-component": "error",
+} as const satisfies TSESLint.FlatConfig.Rules;
+
+const defaultReactTsxIgnores = [
+  "**/*.test.tsx",
+  "**/*.spec.tsx",
+  "**/*.stories.tsx",
+] as const;
+
+const createReactTsBlock = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictReactConfigOptions,
+) => ({
+  name: "strict-fp/react-ts-boundary",
+  files: options.tsFiles ? [...options.tsFiles] : ["**/*.ts"],
+  ignores: [...defaultStrictFpIgnores],
+  plugins: { "strict-fp": plugin },
+  rules: reactTsRules,
+});
+
+const createReactTsxBlock = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictReactConfigOptions,
+) => ({
+  name: "strict-fp/react-thin-tsx",
+  files: options.tsxFiles ? [...options.tsxFiles] : ["**/*.tsx"],
+  ignores: options.ignores ? [...options.ignores] : [...defaultReactTsxIgnores],
+  plugins: { "strict-fp": plugin },
+  rules: reactTsxRules,
+});
+
+export const createStrictReactConfig = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictReactConfigOptions = {},
+) => [
+  createReactTsBlock(plugin, options),
+  createReactTsxBlock(plugin, options),
+];
+
 export const pluginMeta = {
   name: "@mye-org/eslint-plugin-strict-fp",
   version: "0.1.0",

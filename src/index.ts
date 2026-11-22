@@ -3,14 +3,18 @@ import {
   createDddBoundaryConfig,
   createDddDiscoveryConfig,
   createStrictFpConfig,
+  createStrictReactConfig,
   createTieredConfig,
   pluginMeta,
   pluginRules,
+  reactTsRules,
+  reactTsxRules,
   tier1Rules,
   tier2Rules,
   tier3Rules,
   type LintTier,
   type StrictFpConfigOptions,
+  type StrictReactConfigOptions,
 } from "./configs/recommended.js";
 
 const plugin: TSESLint.FlatConfig.Plugin = {
@@ -25,6 +29,7 @@ const configs = {
   tier3: createTieredConfig(plugin, { maxTier: 3 }),
   dddBoundary: createDddBoundaryConfig(plugin),
   dddDiscovery: createDddDiscoveryConfig(plugin),
+  react: createStrictReactConfig(plugin),
 } as const;
 
 export {
@@ -32,13 +37,17 @@ export {
   createDddBoundaryConfig,
   createDddDiscoveryConfig,
   createStrictFpConfig,
+  createStrictReactConfig,
   createTieredConfig,
   pluginRules as rules,
+  reactTsRules,
+  reactTsxRules,
   tier1Rules,
   tier2Rules,
   tier3Rules,
   type LintTier,
   type StrictFpConfigOptions,
+  type StrictReactConfigOptions,
 };
 
 export default {
@@ -47,6 +56,8 @@ export default {
   configs,
   createStrictFpConfig: (options?: StrictFpConfigOptions) =>
     createStrictFpConfig(plugin, options),
+  createStrictReactConfig: (options?: StrictReactConfigOptions) =>
+    createStrictReactConfig(plugin, options),
   createTieredConfig: (options?: StrictFpConfigOptions) =>
     createTieredConfig(plugin, options),
   createDddBoundaryConfig: (options?: StrictFpConfigOptions) =>
