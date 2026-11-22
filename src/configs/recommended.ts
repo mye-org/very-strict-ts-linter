@@ -1,6 +1,7 @@
 import type { TSESLint } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { pipe } from "fp-ts/lib/function.js";
 import tseslint from "typescript-eslint";
 import { rules } from "../rules/index.js";
@@ -15,6 +16,78 @@ export type StrictFpConfigOptions = Partial<
 
 export const defaultStrictFpFiles = ["**/*.ts"] as const;
 export const defaultStrictFpIgnores = ["**/*.tsx", "**/*.config.ts"] as const;
+
+export type PluginRuleName = keyof typeof rules;
+export type RuleTier = LintTier | "react";
+
+export const ruleTiers = {
+  // Tier 1: Architecture & DDD
+  "domain-layer-purity": 1,
+  "no-cross-aggregate-reference": 1,
+  "no-domain-raw-primitives": 1,
+  "no-unit-suffixed-primitives": 1,
+  "repository-aggregate-root-only": 1,
+  "ubiquitous-language": 1,
+  "no-data-clumps": 1,
+  "no-external-entity-mutation": 1,
+  "no-inline-infra-side-effects": 1,
+  "no-lifecycle-flag-clusters": 1,
+  "no-model-polysemy": 1,
+  "no-multi-repo-orchestration": 1,
+  "no-repeated-guard-clauses": 1,
+  "no-scattered-validation": 1,
+  "no-stringly-typed-discriminants": 1,
+  "no-train-wreck-navigation": 1,
+
+  // Tier 2: Type Safety & Correctness
+  "no-any-or-unknown": 2,
+  "no-explicit-return-type": 2,
+  "no-null-undefined": 2,
+  "no-optional-state-bags": 2,
+  "parse-dont-validate": 2,
+  "prefer-const-satisfies": 2,
+  "prefer-exhaustive-record": 2,
+  "prefer-nonempty-tuple": 2,
+  "prefer-readonly-collections": 2,
+  "prefer-template-literal-type": 2,
+  "prefer-type-level-dispatch": 2,
+  "prefer-type-over-interface": 2,
+  "prefer-union-over-boolean": 2,
+  "require-exhaustive-match": 2,
+  "require-keyof-path": 2,
+
+  // Tier 3: FP & Style
+  "fp-ts-import-convention": 3,
+  "max-function-lines": 3,
+  "no-classes": 3,
+  "no-fp-ts-chain": 3,
+  "no-if-else-or-switch": 3,
+  "no-imperative-loops": 3,
+  "no-let-or-var": 3,
+  "no-nested-pipe": 3,
+  "no-nested-ternary": 3,
+  "no-throw-outside-unsafe": 3,
+  "no-unnecessary-local-const": 3,
+  "prefer-fp-ts-array-methods": 3,
+  "prefer-function-composition": 3,
+  "prefer-monadic-composition": 3,
+  "prefer-monadic-error-handling": 3,
+  "prefer-point-free": 3,
+
+  // React preset
+  "no-react-in-ts": "react",
+  "thin-react-component": "react",
+} as const satisfies Record<PluginRuleName, RuleTier>;
+
+const buildRulesForTier = (tier: LintTier) =>
+  pipe(
+    RR.toEntries(ruleTiers),
+    RA.filter(([, ruleTier]) => ruleTier === tier),
+    RA.reduce<readonly [PluginRuleName, RuleTier], Record<string, TSESLint.FlatConfig.RuleEntry>>({}, (acc, [name]) => ({
+      ...acc,
+      [`strict-fp/${name}`]: "error",
+    })),
+  );
 
 export const dddBoundaryRules = {
   "strict-fp/domain-layer-purity": "error",
@@ -38,48 +111,15 @@ export const dddDiscoveryRules = {
   "strict-fp/no-train-wreck-navigation": "error",
 } as const satisfies TSESLint.FlatConfig.Rules;
 
-export const tier1Rules = {
-  ...dddBoundaryRules,
-  ...dddDiscoveryRules,
-} as const satisfies TSESLint.FlatConfig.Rules;
+export const tier1Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(1);
 
-export const tier2Rules = {
-  "strict-fp/no-any-or-unknown": "error",
-  "strict-fp/no-explicit-return-type": "error",
-  "strict-fp/no-null-undefined": "error",
-  "strict-fp/no-optional-state-bags": "error",
-  "strict-fp/parse-dont-validate": "error",
-  "strict-fp/prefer-const-satisfies": "error",
-  "strict-fp/prefer-exhaustive-record": "error",
-  "strict-fp/prefer-nonempty-tuple": "error",
-  "strict-fp/prefer-readonly-collections": "error",
-  "strict-fp/prefer-template-literal-type": "error",
-  "strict-fp/prefer-type-level-dispatch": "error",
-  "strict-fp/prefer-type-over-interface": "error",
-  "strict-fp/prefer-union-over-boolean": "error",
-  "strict-fp/require-exhaustive-match": "error",
-  "strict-fp/require-keyof-path": "error",
+export const tier2Rules: TSESLint.FlatConfig.Rules = {
+  ...buildRulesForTier(2),
   "@typescript-eslint/consistent-type-definitions": ["error", "type"],
   "@typescript-eslint/no-explicit-any": "off",
-} as const satisfies TSESLint.FlatConfig.Rules;
+};
 
-export const tier3Rules = {
-  "strict-fp/fp-ts-import-convention": "error",
-  "strict-fp/no-classes": "error",
-  "strict-fp/no-fp-ts-chain": "error",
-  "strict-fp/no-if-else-or-switch": "error",
-  "strict-fp/no-imperative-loops": "error",
-  "strict-fp/no-let-or-var": "error",
-  "strict-fp/no-nested-pipe": "error",
-  "strict-fp/no-nested-ternary": "error",
-  "strict-fp/no-throw-outside-unsafe": "error",
-  "strict-fp/no-unnecessary-local-const": "error",
-  "strict-fp/prefer-fp-ts-array-methods": "error",
-  "strict-fp/prefer-function-composition": "error",
-  "strict-fp/prefer-monadic-composition": "error",
-  "strict-fp/prefer-monadic-error-handling": "error",
-  "strict-fp/prefer-point-free": "error",
-} as const satisfies TSESLint.FlatConfig.Rules;
+export const tier3Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(3);
 
 const buildUbiquitousOptions = (options: StrictFpConfigOptions) =>
   options.domainFiles || options.applicationFiles

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import { ESLint } from "eslint";
-import { tier1Rules, tier2Rules, type LintTier } from "../configs/recommended.js";
+import { ruleTiers, type LintTier, type PluginRuleName } from "../configs/recommended.js";
 
 export type PhasedLintOptions = {
   readonly targets: ReadonlyArray<string>;
@@ -25,9 +25,6 @@ export type PhasedLintResult = {
   readonly summaries: ReadonlyArray<TierRunSummary>;
 };
 
-const tier1RuleIds = new Set(Object.keys(tier1Rules));
-const tier2RuleIds = new Set(Object.keys(tier2Rules));
-
 const tierLabels: Record<LintTier, string> = {
   1: "Tier 1 (Architecture & DDD)",
   2: "Tier 2 (Type Safety & Correctness)",
@@ -41,15 +38,13 @@ export const createTierRuleFilter =
       return true;
     }
     if (ruleId.startsWith("strict-fp/")) {
-      if (tier === 1) {
-        return tier1RuleIds.has(ruleId);
-      }
-      return tier1RuleIds.has(ruleId) || tier2RuleIds.has(ruleId);
+      const shortName = ruleId.slice("strict-fp/".length);
+      const ruleTier = Object.prototype.hasOwnProperty.call(ruleTiers, shortName)
+        ? ruleTiers[shortName as PluginRuleName]
+        : undefined;
+      return typeof ruleTier === "number" && ruleTier <= tier;
     }
-    if (tier === 1) {
-      return false;
-    }
-    return true;
+    return tier > 1;
   };
 
 const parseTier = (raw: string | undefined) => {

@@ -12,6 +12,7 @@
     }
   },
   "bin": {
+    "strict-fp-init": "./dist/cli/strict-fp-init.js",
     "strict-fp-radar": "./dist/cli/discovery-radar.js",
     "strict-fp-lint": "./dist/cli/strict-fp-lint.js"
   },

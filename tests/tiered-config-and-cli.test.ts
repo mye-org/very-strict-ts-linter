@@ -4,11 +4,15 @@ import path from "node:path";
 import type { TSESLint } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { pipe } from "fp-ts/lib/function.js";
+import * as S from "fp-ts/lib/string.js";
 import { describe, expect, it } from "vitest";
 import strictFp, {
   configs,
   createTieredConfig,
+  rules,
+  ruleTiers,
   tier1Rules,
   tier2Rules,
   tier3Rules,
@@ -74,6 +78,10 @@ describe("tiered configs and React/Expo exclusions", () => {
         expect(t3Rules?.[ruleId]).toBeDefined();
       }),
     );
+  });
+
+  it("maps every plugin rule in ruleTiers with no missing or extra entries", () => {
+    expect(pipe(RR.keys(ruleTiers), RA.sort(S.Ord))).toEqual(pipe(RR.keys(rules), RA.sort(S.Ord)));
   });
 });
 
