@@ -45,6 +45,7 @@ import { preferUnionOverBoolean } from "./prefer-union-over-boolean.js";
 import { repositoryAggregateRootOnly } from "./repository-aggregate-root-only.js";
 import { requireExhaustiveMatch } from "./require-exhaustive-match.js";
 import { requireKeyofPath } from "./require-keyof-path.js";
+import { singleLevelOfAbstraction } from "./single-level-of-abstraction.js";
 import { thinReactComponent } from "./thin-react-component.js";
 import { ubiquitousLanguage } from "./ubiquitous-language.js";
 
@@ -96,6 +97,7 @@ export const rules = {
   "repository-aggregate-root-only": repositoryAggregateRootOnly,
   "require-exhaustive-match": requireExhaustiveMatch,
   "require-keyof-path": requireKeyofPath,
+  "single-level-of-abstraction": singleLevelOfAbstraction,
   "thin-react-component": thinReactComponent,
   "ubiquitous-language": ubiquitousLanguage,
 } as const;

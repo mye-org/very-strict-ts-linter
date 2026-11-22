@@ -73,6 +73,7 @@ export const ruleTiers = {
   "prefer-monadic-composition": 3,
   "prefer-monadic-error-handling": 3,
   "prefer-point-free": 3,
+  "single-level-of-abstraction": 3,
 
   // React preset
   "no-react-in-ts": "react",
@@ -169,6 +170,7 @@ const boundaryOverrideRules = {
   "strict-fp/prefer-monadic-composition": "off",
   "strict-fp/prefer-monadic-error-handling": "off",
   "strict-fp/prefer-point-free": "off",
+  "strict-fp/single-level-of-abstraction": "off",
   "strict-fp/no-nested-pipe": "off",
   "strict-fp/no-fp-ts-chain": "off",
   "strict-fp/no-null-undefined": "off",
@@ -213,6 +215,7 @@ const testOverrideRules = {
   "strict-fp/no-let-or-var": "off",
   "strict-fp/prefer-monadic-error-handling": "off",
   "strict-fp/require-keyof-path": "off",
+  "strict-fp/single-level-of-abstraction": "off",
 } as const satisfies TSESLint.FlatConfig.Rules;
 
 const createBoundaryConfig = (files: O.Option<ReadonlyArray<string>>) =>
@@ -274,13 +277,15 @@ export const createDddDiscoveryConfig = (
   },
 ];
 
+const formatTierName = (maxTier: LintTier) => `strict-fp/tier-${String(maxTier)}`;
+
 const createTierRuleBlock = (
   plugin: TSESLint.FlatConfig.Plugin,
   maxTier: LintTier,
   targetFiles: ReadonlyArray<string>,
   options: StrictFpConfigOptions,
 ) => ({
-  name: `strict-fp/tier-${String(maxTier)}`,
+  name: formatTierName(maxTier),
   files: [...targetFiles],
   ignores: [...defaultStrictFpIgnores],
   plugins: { "strict-fp": plugin },

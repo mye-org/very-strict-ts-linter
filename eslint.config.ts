@@ -13,6 +13,7 @@ export default [
     rules: {
       "strict-fp/no-train-wreck-navigation": "off",
       "strict-fp/no-stringly-typed-discriminants": "off",
+      "strict-fp/single-level-of-abstraction": "off",
     },
   },
   {
