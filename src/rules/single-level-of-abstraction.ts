@@ -5,7 +5,7 @@ import * as S from "fp-ts/lib/string.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
-import { getEstreeChildNodes, isPipeCallExpression } from "../utils/type-helpers.js";
+import { getEstreeChildNodes, isFlowCallExpression, isPipeCallExpression } from "../utils/type-helpers.js";
 
 // eslint-disable-next-line strict-fp/no-domain-raw-primitives -- ESLint rule schema requires boolean options
 type Options = [Partial<Readonly<{ ignoreTrivialProjections: boolean; checkPipeSteps: boolean }>>];
@@ -126,11 +126,8 @@ const isFunctionNode = (node: TSESTree.Node): node is FunctionNode =>
   node.type === AST_NODE_TYPES.FunctionExpression ||
   node.type === AST_NODE_TYPES.ArrowFunctionExpression;
 
-const isFlowCall = (node: TSESTree.CallExpression) =>
-  node.callee.type === AST_NODE_TYPES.Identifier && node.callee.name === "flow";
-
 const isPipeOrFlowCall = (node: TSESTree.CallExpression) =>
-  isPipeCallExpression(node) || isFlowCall(node);
+  isPipeCallExpression(node) || isFlowCallExpression(node);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive parent walk
 const hasEnclosingFunction = (node: TSESTree.Node): boolean =>
@@ -326,7 +323,7 @@ const checkFlowNode = (
   config: AnalysisConfig,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  match(config.pipeSteps === "check" && isFlowCall(node) && !hasEnclosingFunction(node))
+  match(config.pipeSteps === "check" && isFlowCallExpression(node) && !hasEnclosingFunction(node))
     .with(true, () => { reportIfMixed(node, classifyPipeCall(node, config.trivialProjections), report); })
     .with(false, () => {})
     .exhaustive();

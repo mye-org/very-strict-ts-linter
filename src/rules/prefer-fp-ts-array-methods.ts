@@ -70,7 +70,7 @@ export const preferFpTsArrayMethods = createRule<[], MessageIds>({
     },
     messages: {
       preferFpTsArray:
-        "Use `RA.{{method}}` (or `pipe(..., RA.{{method}}(...))`) from `fp-ts/lib/ReadonlyArray` instead of native `.{{method}}()`.",
+        "Use `RA.{{method}}` (or `flow(..., RA.{{method}}(...))`) from `fp-ts/lib/ReadonlyArray` instead of native `.{{method}}()`.",
     },
     schema: [],
     defaultOptions: [],

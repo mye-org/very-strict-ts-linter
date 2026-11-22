@@ -68,11 +68,11 @@ export const noUnnecessaryLocalConst = createRule<[], MessageIds>({
     type: "suggestion",
     docs: {
       description:
-        "Flag single-use intermediate `const` variables inside function bodies that can be inlined into `pipe(...)` or an expression.",
+        "Flag single-use intermediate `const` variables inside function bodies that can be inlined into `flow(...)` or an expression.",
     },
     messages: {
       unnecessaryLocalConst:
-        "Intermediate variable `{{name}}` is only used once. Inline it into `pipe(...)` or the return expression.",
+        "Intermediate variable `{{name}}` is only used once. Inline it into `flow(...)` or the return expression.",
     },
     schema: [],
     defaultOptions: [],

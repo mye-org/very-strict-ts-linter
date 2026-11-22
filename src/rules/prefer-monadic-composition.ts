@@ -5,7 +5,7 @@ import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
-import { isEsTreeAnonymousFunctionNode, isPipeCallExpression } from "../utils/type-helpers.js";
+import { isEsTreeAnonymousFunctionNode, isFlowCallExpression, isPipeCallExpression } from "../utils/type-helpers.js";
 
 type MessageIds =
   | "nestedChain"
@@ -125,12 +125,15 @@ const isMapThenFlattenPair = (
     O.exists(({ c, n }) => c.namespace === n.namespace && c.method === "map" && n.method === "flatten"),
   );
 
-const findMapThenFlattenTargets = (args: ReadonlyArray<TSESTree.CallExpressionArgument>) =>
+const findMapThenFlattenTargets = (
+  args: ReadonlyArray<TSESTree.CallExpressionArgument>,
+  startIndex: number,
+) =>
   pipe(
     args,
     RA.filterMapWithIndex((i, arg) => {
       const next = args[i + 1];
-      return i >= 1 && next && isMapThenFlattenPair(arg, next) ? O.some(next) : O.none;
+      return i >= startIndex && next && isMapThenFlattenPair(arg, next) ? O.some(next) : O.none;
     }),
   );
 
@@ -169,22 +172,45 @@ const classifyMemberCall = (
     .with({ isImperativeGuard: true }, () => makeReport("imperativeMonadCheck", { guard: `${namespace}.${method}` }))
     .otherwise(() => O.none);
 
+const getPipelineStartIndex = (node: TSESTree.CallExpression) =>
+  match([isPipeCallExpression(node), isFlowCallExpression(node)] as const)
+    .with([true, false], () => O.some(1))
+    .with([false, true], () => O.some(0))
+    .otherwise(() => O.none);
+
+const reportMemberCall = (
+  node: TSESTree.CallExpression,
+  report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
+) => {
+  pipe(
+    getMemberCallInfo(node),
+    O.flatMap(({ namespace, method }) => classifyMemberCall(node, namespace, method)),
+    O.map(([messageId, data]) => { report(node, messageId, data); }),
+  );
+};
+
+const reportPipelineCall = (
+  node: TSESTree.CallExpression,
+  startIndex: number,
+  report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
+) => {
+  pipe(
+    findMapThenFlattenTargets(node.arguments, startIndex),
+    RA.map((target) => { report(target, "mapThenFlatten", {}); }),
+  );
+};
+
 const checkCallNode = (
   node: TSESTree.CallExpression,
   report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
 ) => {
-  match(isPipeCallExpression(node))
-    .with(true, () => {
-      pipe(findMapThenFlattenTargets(node.arguments), RA.map((target) => { report(target, "mapThenFlatten", {}); }));
-    })
-    .with(false, () => {
-      pipe(
-        getMemberCallInfo(node),
-        O.flatMap(({ namespace, method }) => classifyMemberCall(node, namespace, method)),
-        O.map(([messageId, data]) => { report(node, messageId, data); }),
-      );
-    })
-    .exhaustive();
+  pipe(
+    getPipelineStartIndex(node),
+    O.match(
+      () => { reportMemberCall(node, report); },
+      (startIndex) => { reportPipelineCall(node, startIndex, report); },
+    ),
+  );
 };
 
 export const preferMonadicComposition = createRule<[], MessageIds>({

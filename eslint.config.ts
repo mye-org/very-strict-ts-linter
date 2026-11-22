@@ -9,6 +9,12 @@ export default [
     testFiles: ["tests/**/*.ts"],
   }),
   {
+    files: ["src/**/*.ts", "tests/**/*.ts"],
+    rules: {
+      "strict-fp/no-fp-ts-pipe": "off",
+    },
+  },
+  {
     files: ["src/rules/**/*.ts", "src/utils/**/*.ts", "src/analyzers/**/*.ts"],
     rules: {
       "strict-fp/no-train-wreck-navigation": "off",

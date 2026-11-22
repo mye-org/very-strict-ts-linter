@@ -1,4 +1,5 @@
 import { noFpTsChain } from "../src/rules/no-fp-ts-chain.js";
+import { noFpTsPipe } from "../src/rules/no-fp-ts-pipe.js";
 import { noNestedPipe } from "../src/rules/no-nested-pipe.js";
 import { preferFunctionComposition } from "../src/rules/prefer-function-composition.js";
 import { preferMonadicComposition } from "../src/rules/prefer-monadic-composition.js";
@@ -11,21 +12,21 @@ const typeAwareRuleTester = createTypeAwareRuleTester();
 
 ruleTester.run("prefer-function-composition", preferFunctionComposition, {
   valid: [
-    `const y = pipe(x, h, g, f);`,
+    `const y = flow(h, g, f)(x);`,
     `const fn = flow(g, f);`,
     `const y = f(g(x));`,
     `const fn = (x: number) => f(x);`,
-    `const y = pipe(x, O.map((n) => n + 1));`,
+    `const fn = flow(O.map((n) => n + 1));`,
   ],
   invalid: [
     {
       code: `const y = f(g(h(x)));`,
-      errors: [{ messageId: "preferPipe" }],
+      errors: [{ messageId: "preferFlowComposition" }],
     },
     {
       code: `const y = f(g(x));`,
       options: [{ maxNestingDepth: 1 }],
-      errors: [{ messageId: "preferPipe" }],
+      errors: [{ messageId: "preferFlowComposition" }],
     },
     {
       code: `const fn = (x: number) => f(g(x));`,
@@ -129,6 +130,8 @@ ruleTester.run("prefer-monadic-composition", preferMonadicComposition, {
     `const r = pipe(a, O.match(() => 0, (x) => x + 1));`,
     // Type guard passed as predicate to filter
     `const r = pipe(xs, RA.filter(O.isSome));`,
+    // flow with map + flatMap
+    `const fn = flow(O.map(f), O.flatMap(g));`,
   ],
   invalid: [
     {
@@ -155,6 +158,10 @@ ruleTester.run("prefer-monadic-composition", preferMonadicComposition, {
     },
     {
       code: `const r = pipe(a, O.map(f), O.flatten);`,
+      errors: [{ messageId: "mapThenFlatten" }],
+    },
+    {
+      code: `const fn = flow(O.map(f), O.flatten);`,
       errors: [{ messageId: "mapThenFlatten" }],
     },
     {
@@ -533,6 +540,131 @@ ruleTester.run("no-fp-ts-chain (ast fallback)", noFpTsChain, {
         const res = pipe(x, bindEither((a) => E.right(a)));
       `,
       errors: [{ messageId: "noFpTsChain" }],
+    },
+  ],
+});
+
+typeAwareRuleTester.run("no-fp-ts-pipe", noFpTsPipe, {
+  valid: [
+    // Idiomatic flow composition
+    `
+      import * as O from "fp-ts/lib/Option.js";
+      import { flow } from "fp-ts/lib/function.js";
+      const fn = flow(O.some, O.map((x: number) => x + 1));
+    `,
+    `
+      import * as F from "fp-ts/lib/function.js";
+      const fn = F.flow((x: number) => x + 1, (x: number) => x * 2);
+    `,
+    // Non-fp-ts pipe functions or methods are allowed
+    `
+      const pipe = (x: number) => x + 1;
+      const res = pipe(1);
+    `,
+    `
+      const stream = { pipe: (x: number) => x + 1 };
+      const res = stream.pipe(1);
+    `,
+    // Shadowed parameter named F with non-fp-ts pipe
+    `
+      import * as F from "fp-ts/lib/function.js";
+      const shadowed = (F: { pipe: (x: number) => number }) => F.pipe(1);
+      const ok = F.flow((x: number) => x + 1);
+    `,
+    // Type-only import or typeof query should not fail
+    `
+      import type * as F from "fp-ts/lib/function.js";
+      type PipeFn = typeof F.pipe;
+    `,
+  ],
+  invalid: [
+    {
+      code: `
+        import * as O from "fp-ts/lib/Option.js";
+        import { pipe } from "fp-ts/lib/function.js";
+        const res = pipe(O.some(1), O.map((x) => x + 1));
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `
+        import { pipe } from "fp-ts/function";
+        const res = pipe(1, (x) => x + 1);
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `
+        import { pipe as p } from "fp-ts/lib/function.js";
+        const res = p(1, (x) => x + 1);
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `
+        import * as F from "fp-ts/lib/function.js";
+        const res = F.pipe(1, (x) => x + 1);
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `
+        import * as F from "fp-ts/lib/function.js";
+        const fn = F.pipe;
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `
+        import { pipe } from "fp-ts/lib/function.js";
+        const fn = pipe;
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `export { pipe } from "fp-ts/lib/function.js";`,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `import { pipe } from "fp-ts/lib/function.js";`,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+  ],
+});
+
+ruleTester.run("no-fp-ts-pipe (ast fallback)", noFpTsPipe, {
+  valid: [
+    `
+      import * as O from "fp-ts/lib/Option.js";
+      import { flow } from "fp-ts/lib/function.js";
+      const fn = flow(O.some, O.map((x: number) => x + 1));
+    `,
+    `
+      const stream = { pipe: (x: number) => x + 1 };
+      const res = stream.pipe(1);
+    `,
+  ],
+  invalid: [
+    {
+      code: `
+        import { pipe } from "fp-ts/lib/function.js";
+        const res = pipe(1, (x) => x + 1);
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `
+        import * as F from "fp-ts/function";
+        const res = F.pipe(1, (x) => x + 1);
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `
+        import { pipe as p } from "fp-ts/function";
+        const res = p(1, (x) => x + 1);
+      `,
+      errors: [{ messageId: "noFpTsPipe" }],
     },
   ],
 });

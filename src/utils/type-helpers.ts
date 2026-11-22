@@ -277,6 +277,9 @@ export const hasFunctionInit = (declarator: TSESTree.VariableDeclarator) =>
 export const isPipeCallExpression = (node: TSESTree.CallExpression) =>
   node.callee.type === AST_NODE_TYPES.Identifier && node.callee.name === "pipe";
 
+export const isFlowCallExpression = (node: TSESTree.CallExpression) =>
+  node.callee.type === AST_NODE_TYPES.Identifier && node.callee.name === "flow";
+
 export const hasStrictSuffix = (name: string, suffix: string) =>
   name.length > suffix.length && name.endsWith(suffix);
 

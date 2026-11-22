@@ -4,15 +4,16 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
+import { isFlowCallExpression, isPipeCallExpression } from "../utils/type-helpers.js";
 
 type Options = [Partial<Record<"maxNestingDepth", number>>];
-type MessageIds = "preferPipe" | "preferFlow";
+type MessageIds = "preferFlowComposition" | "preferFlow";
 
 const isPipeOrFlowName = (name: string) => name === "pipe" || name === "flow";
 
 const isPipeOrFlowCall = (node: TSESTree.CallExpression) =>
-  (node.callee.type === AST_NODE_TYPES.Identifier &&
-    isPipeOrFlowName(node.callee.name)) ||
+  isFlowCallExpression(node) ||
+  isPipeCallExpression(node) ||
   (node.callee.type === AST_NODE_TYPES.MemberExpression &&
     node.callee.property.type === AST_NODE_TYPES.Identifier &&
     isPipeOrFlowName(node.callee.property.name));
@@ -70,7 +71,7 @@ const isDirectReturnBodyOfFlowCandidate = (node: TSESTree.CallExpression) =>
   isArrowExprFlowCandidate(node, node.parent) ||
   isArrowBlockFlowCandidate(node, node.parent);
 
-const isReportablePipeCall = (node: TSESTree.CallExpression, maxNestingDepth: number) =>
+const isReportableNestedCall = (node: TSESTree.CallExpression, maxNestingDepth: number) =>
   !isPipeOrFlowCall(node) &&
   !(node.parent.type === AST_NODE_TYPES.CallExpression && !isPipeOrFlowCall(node.parent)) &&
   !isDirectReturnBodyOfFlowCandidate(node) &&
@@ -93,13 +94,13 @@ const checkFlowArrow = (
     .exhaustive();
 };
 
-const checkPipeCall = (
+const checkNestedCall = (
   node: TSESTree.CallExpression,
   maxNestingDepth: number,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
-  match(isReportablePipeCall(node, maxNestingDepth))
-    .with(true, () => { report({ node, messageId: "preferPipe", data: { depth: String(getMaxCallNestingDepth(node)) } }); })
+  match(isReportableNestedCall(node, maxNestingDepth))
+    .with(true, () => { report({ node, messageId: "preferFlowComposition", data: { depth: String(getMaxCallNestingDepth(node)) } }); })
     .with(false, () => {})
     .exhaustive();
 };
@@ -110,10 +111,10 @@ export const preferFunctionComposition = createRule<Options, MessageIds>({
     type: "suggestion",
     docs: {
       description:
-        "Encourage function composition with `pipe` and `flow` over deeply nested calls and wrapper arrow functions.",
+        "Encourage function composition with `flow` over deeply nested calls and wrapper arrow functions.",
     },
     messages: {
-      preferPipe: "Avoid deeply nested function calls (depth {{depth}}). Compose them with `pipe(...)`.",
+      preferFlowComposition: "Avoid deeply nested function calls (depth {{depth}}). Compose them with `flow(...)`.",
       preferFlow: "Avoid wrapping nested function calls in an arrow function. Use `flow(...)` instead.",
     },
     schema: [
@@ -123,6 +124,6 @@ export const preferFunctionComposition = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => ({
     ArrowFunctionExpression: (node) => { checkFlowArrow(node, (d) => { context.report(d); }); },
-    CallExpression: (node) => { checkPipeCall(node, options.maxNestingDepth ?? 2, (d) => { context.report(d); }); },
+    CallExpression: (node) => { checkNestedCall(node, options.maxNestingDepth ?? 2, (d) => { context.report(d); }); },
   }),
 });
