@@ -40,7 +40,7 @@ npx strict-fp-lint
 
 Running raw `eslint .` evaluates all 3 tiers at once, which can drown out structural and type-safety issues in style diagnostics. `strict-fp-lint` runs ESLint in **phased tiers**, stopping at the first tier with errors:
 
-1. **Tier 1 (Architecture & DDD)** — Domain layer purity, aggregate boundaries, value objects, ubiquitous language, and discovery rules.
+1. **Tier 1 (Architecture & DDD)** — Domain layer purity, functional core / imperative shell boundaries (`functional-core-boundary`), module cohesion (`module-cohesion`), encapsulation (`no-single-caller-export`), common reuse cohesion (`common-reuse-cohesion`), aggregate boundaries, value objects, ubiquitous language, and discovery rules.
 2. **Tier 2 (Type Safety & Correctness)** — No `any`/`unknown`, no `null`/`undefined`, exhaustive matching, readonly collections, `@typescript-eslint/strict-type-checked`.
 3. **Tier 3 (FP & Style)** — `fp-ts` conventions, no `let`/`var`, no imperative loops, no `if`/`else`/`switch`, point-free & monadic composition, max function lines.
 
@@ -87,10 +87,11 @@ npx strict-fp-radar [--tsconfig tsconfig.json] [--format markdown|json]
 `strictFp.createStrictFpConfig(options)` accepts:
 
 - `files` — Target glob patterns (default: `["**/*.ts"]`)
-- `boundaryFiles` — Imperative shell / CLI / infrastructure globs where boundary-specific rules are relaxed
-- `testFiles` — Test file globs where test-ergonomic relaxations apply
+- `boundaryFiles` — Imperative shell / CLI / infrastructure globs where boundary-specific rules (including `functional-core-boundary`) are relaxed
+- `testFiles` — Test file globs where test-ergonomic relaxations apply (also forwarded as `testPatterns` to `no-single-caller-export` and `common-reuse-cohesion`)
 - `domainFiles` — Domain layer globs for `domain-layer-purity` and `ubiquitous-language`
 - `applicationFiles` — Application layer globs for `ubiquitous-language`
+- `entryPoints` — Public API entry point globs forwarded to `no-single-caller-export` so transitively re-exported symbols are exempt from single-caller checks
 - `maxFunctionLines` — Maximum lines per function for `max-function-lines` (default: `15`)
 - `maxTier` — `1 | 2 | 3` (default: `3`)
 

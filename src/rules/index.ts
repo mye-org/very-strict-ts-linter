@@ -1,6 +1,9 @@
+import { commonReuseCohesion } from "./common-reuse-cohesion.js";
 import { domainLayerPurity } from "./domain-layer-purity.js";
 import { fpTsImportConvention } from "./fp-ts-import-convention.js";
+import { functionalCoreBoundary } from "./functional-core-boundary.js";
 import { maxFunctionLines } from "./max-function-lines.js";
+import { moduleCohesion } from "./module-cohesion.js";
 import { noAnyOrUnknown } from "./no-any-or-unknown.js";
 import { noAsyncAwait } from "./no-async-await.js";
 import { noClasses } from "./no-classes.js";
@@ -26,6 +29,7 @@ import { noOptionalStateBags } from "./no-optional-state-bags.js";
 import { noReactInTs } from "./no-react-in-ts.js";
 import { noRepeatedGuardClauses } from "./no-repeated-guard-clauses.js";
 import { noScatteredValidation } from "./no-scattered-validation.js";
+import { noSingleCallerExport } from "./no-single-caller-export.js";
 import { noStringlyTypedDiscriminants } from "./no-stringly-typed-discriminants.js";
 import { noThrowOutsideUnsafe } from "./no-throw-outside-unsafe.js";
 import { noTrainWreckNavigation } from "./no-train-wreck-navigation.js";
@@ -53,9 +57,12 @@ import { thinReactComponent } from "./thin-react-component.js";
 import { ubiquitousLanguage } from "./ubiquitous-language.js";
 
 export const rules = {
+  "common-reuse-cohesion": commonReuseCohesion,
   "domain-layer-purity": domainLayerPurity,
   "fp-ts-import-convention": fpTsImportConvention,
+  "functional-core-boundary": functionalCoreBoundary,
   "max-function-lines": maxFunctionLines,
+  "module-cohesion": moduleCohesion,
   "no-any-or-unknown": noAnyOrUnknown,
   "no-async-await": noAsyncAwait,
   "no-classes": noClasses,
@@ -81,6 +88,7 @@ export const rules = {
   "no-react-in-ts": noReactInTs,
   "no-repeated-guard-clauses": noRepeatedGuardClauses,
   "no-scattered-validation": noScatteredValidation,
+  "no-single-caller-export": noSingleCallerExport,
   "no-stringly-typed-discriminants": noStringlyTypedDiscriminants,
   "no-throw-outside-unsafe": noThrowOutsideUnsafe,
   "no-train-wreck-navigation": noTrainWreckNavigation,

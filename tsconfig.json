@@ -18,5 +18,5 @@
     "rootDir": "."
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "eslint.config.ts", "vitest.config.ts"],
-  "exclude": ["dist", "node_modules", "tests/fixtures", "tests/ddd-sample"]
+  "exclude": ["dist", "node_modules", "tests/fixtures", "tests/ddd-sample", "tests/ts-unit-sample"]
 }

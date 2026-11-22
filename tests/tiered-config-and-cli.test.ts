@@ -93,6 +93,39 @@ describe("tiered configs and React/Expo exclusions", () => {
       ),
     ).toBe(true);
   });
+
+  it("enables all 4 ts-unit architectural rules as error in Tier 1 with entryPoints, boundaryFiles, and testFiles overrides", () => {
+    const tiered = createTieredConfig(strictFp, {
+      maxTier: 1,
+      entryPoints: ["src/index.ts"],
+      boundaryFiles: ["src/cli/**"],
+      testFiles: ["tests/**/*.ts"],
+    });
+    const mainBlock = findTierBlock(tiered, "strict-fp/tier-1");
+    const boundaryBlock = findTierBlock(tiered, "strict-fp/boundary-overrides");
+    const testBlock = findTierBlock(tiered, "strict-fp/test-overrides");
+
+    const mainRules = mainBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    expect(mainRules?.["strict-fp/module-cohesion"]).toBe("error");
+    expect(mainRules?.["strict-fp/functional-core-boundary"]).toBe("error");
+    expect(mainRules?.["strict-fp/no-single-caller-export"]).toEqual([
+      "error",
+      { entryPoints: ["src/index.ts"], testPatterns: ["tests/**/*.ts"] },
+    ]);
+    expect(mainRules?.["strict-fp/common-reuse-cohesion"]).toEqual([
+      "error",
+      { testPatterns: ["tests/**/*.ts"] },
+    ]);
+
+    const boundaryRules = boundaryBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    expect(boundaryRules?.["strict-fp/functional-core-boundary"]).toBe("off");
+
+    const testRules = testBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    expect(testRules?.["strict-fp/module-cohesion"]).toBe("off");
+    expect(testRules?.["strict-fp/functional-core-boundary"]).toBe("off");
+    expect(testRules?.["strict-fp/no-single-caller-export"]).toBe("off");
+    expect(testRules?.["strict-fp/common-reuse-cohesion"]).toBe("off");
+  });
 });
 
 describe("strict-fp-lint CLI helpers and phased runner", () => {

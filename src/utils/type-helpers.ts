@@ -196,15 +196,22 @@ export const getTsTypeDeclarationFile = (type: ts.Type) =>
 const WRAPPER_CONTAINER_NAMES = new Set([
   "Array",
   "ReadonlyArray",
+  "Readonly",
+  "Partial",
+  "Required",
   "Set",
   "ReadonlySet",
   "Option",
+  "Result",
   "Promise",
   "Task",
   "IO",
+  "IOEither",
   "Either",
   "TaskEither",
   "ReaderTaskEither",
+  "Effect",
+  "Observable",
 ]);
 
 const getContainerTypeArgs = (type: ts.Type, checker: ts.TypeChecker) => {

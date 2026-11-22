@@ -29,3 +29,13 @@ export const createDddSampleRuleTester = () =>
       },
     },
   });
+
+export const createTsUnitSampleRuleTester = () =>
+  new RuleTester({
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: path.resolve(import.meta.dirname, "ts-unit-sample"),
+      },
+    },
+  });

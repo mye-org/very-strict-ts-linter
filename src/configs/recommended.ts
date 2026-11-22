@@ -9,7 +9,10 @@ import { rules } from "../rules/index.js";
 export type LintTier = 1 | 2 | 3;
 
 export type StrictFpConfigOptions = Partial<
-  Record<"files" | "boundaryFiles" | "testFiles" | "domainFiles" | "applicationFiles", ReadonlyArray<string>> &
+  Record<
+    "files" | "boundaryFiles" | "testFiles" | "domainFiles" | "applicationFiles" | "entryPoints",
+    ReadonlyArray<string>
+  > &
     Record<"maxFunctionLines", number> &
     Record<"maxTier", LintTier>
 >;
@@ -21,11 +24,15 @@ export type PluginRuleName = keyof typeof rules;
 
 export const ruleTiers = {
   // Tier 1: Architecture & DDD
+  "common-reuse-cohesion": 1,
   "domain-layer-purity": 1,
+  "functional-core-boundary": 1,
+  "module-cohesion": 1,
   "no-cross-aggregate-reference": 1,
   "no-domain-raw-primitives": 1,
   "no-generic-utility-names": 1,
   "no-react-in-ts": 1,
+  "no-single-caller-export": 1,
   "no-unit-suffixed-primitives": 1,
   "repository-aggregate-root-only": 1,
   "thin-react-component": 1,
@@ -137,6 +144,28 @@ const buildUbiquitousOptions = (options: StrictFpConfigOptions) =>
       }
     : {};
 
+const buildModuleArchitectureOptions = (options: StrictFpConfigOptions) => ({
+  ...(options.entryPoints || options.testFiles
+    ? {
+        "strict-fp/no-single-caller-export": [
+          "error",
+          {
+            ...(options.entryPoints ? { entryPoints: options.entryPoints } : {}),
+            ...(options.testFiles ? { testPatterns: options.testFiles } : {}),
+          },
+        ] as TSESLint.FlatConfig.RuleEntry,
+      }
+    : {}),
+  ...(options.testFiles
+    ? {
+        "strict-fp/common-reuse-cohesion": [
+          "error",
+          { testPatterns: options.testFiles },
+        ] as TSESLint.FlatConfig.RuleEntry,
+      }
+    : {}),
+});
+
 const buildTier1WithOverrides = (options: StrictFpConfigOptions) =>
   ({
     ...tier1Rules,
@@ -144,6 +173,7 @@ const buildTier1WithOverrides = (options: StrictFpConfigOptions) =>
       ? { "strict-fp/domain-layer-purity": ["error", { domainPatterns: options.domainFiles }] as TSESLint.FlatConfig.RuleEntry }
       : {}),
     ...buildUbiquitousOptions(options),
+    ...buildModuleArchitectureOptions(options),
   }) satisfies TSESLint.FlatConfig.Rules;
 
 export const buildTieredRules = (maxTier: LintTier, maxLines = 15, options: StrictFpConfigOptions = {}) =>
@@ -159,6 +189,7 @@ export const strictFpRules = (maxLines = 15, options: StrictFpConfigOptions = {}
   buildTieredRules(options.maxTier ?? 3, maxLines, options);
 
 const boundaryOverrideRules = {
+  "strict-fp/functional-core-boundary": "off",
   "strict-fp/no-throw-outside-unsafe": "off",
   "strict-fp/no-if-else-or-switch": "off",
   "strict-fp/no-imperative-loops": "off",
@@ -196,6 +227,10 @@ const boundaryOverrideRules = {
 } as const satisfies TSESLint.FlatConfig.Rules;
 
 const testOverrideRules = {
+  "strict-fp/common-reuse-cohesion": "off",
+  "strict-fp/functional-core-boundary": "off",
+  "strict-fp/module-cohesion": "off",
+  "strict-fp/no-single-caller-export": "off",
   "strict-fp/max-function-lines": "off",
   "strict-fp/no-domain-raw-primitives": "off",
   "strict-fp/no-unit-suffixed-primitives": "off",
