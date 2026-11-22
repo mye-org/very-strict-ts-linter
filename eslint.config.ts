@@ -2,32 +2,20 @@ import strictFp from "./dist/index.js";
 
 export default [
   {
-    ignores: ["dist/**", "node_modules/**", "tests/fixtures/**", "tests/ddd-sample/**"],
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "tests/fixtures/**",
+      "tests/ddd-sample/**",
+      "tests/ts-unit-sample/**",
+    ],
   },
   ...strictFp.createStrictFpConfig({
     boundaryFiles: ["src/cli/**"],
-    testFiles: ["tests/**/*.ts"],
+    testFiles: ["**/tests/**/*.ts"],
+    domainFiles: ["**/src/**"],
+    entryPoints: ["**/src/index.ts"],
   }),
-  {
-    files: ["src/**/*.ts", "tests/**/*.ts"],
-    rules: {
-      "strict-fp/no-fp-ts-pipe": "off",
-    },
-  },
-  {
-    files: ["src/rules/**/*.ts", "src/utils/**/*.ts", "src/analyzers/**/*.ts"],
-    rules: {
-      "strict-fp/no-train-wreck-navigation": "off",
-      "strict-fp/no-stringly-typed-discriminants": "off",
-      "strict-fp/single-level-of-abstraction": "off",
-    },
-  },
-  {
-    files: ["src/utils/**/*.ts"],
-    rules: {
-      "strict-fp/no-generic-utility-names": "off",
-    },
-  },
   {
     languageOptions: {
       parserOptions: {
