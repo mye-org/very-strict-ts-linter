@@ -60,6 +60,7 @@ export const ruleTiers = {
   // Tier 3: FP & Style
   "fp-ts-import-convention": 3,
   "max-function-lines": 3,
+  "no-async-await": 3,
   "no-classes": 3,
   "no-fp-ts-chain": 3,
   "no-fp-ts-pipe": 3,
@@ -167,6 +168,7 @@ const boundaryOverrideRules = {
   "strict-fp/prefer-function-composition": "off",
   "strict-fp/prefer-monadic-composition": "off",
   "strict-fp/prefer-monadic-error-handling": "off",
+  "strict-fp/no-async-await": "off",
   "strict-fp/prefer-point-free": "off",
   "strict-fp/single-level-of-abstraction": "off",
   "strict-fp/no-nested-pipe": "off",
@@ -213,6 +215,7 @@ const testOverrideRules = {
   "strict-fp/no-throw-outside-unsafe": "off",
   "strict-fp/no-let-or-var": "off",
   "strict-fp/prefer-monadic-error-handling": "off",
+  "strict-fp/no-async-await": "off",
   "strict-fp/require-keyof-path": "off",
   "strict-fp/single-level-of-abstraction": "off",
 } as const satisfies TSESLint.FlatConfig.Rules;

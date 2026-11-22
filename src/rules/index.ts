@@ -2,6 +2,7 @@ import { domainLayerPurity } from "./domain-layer-purity.js";
 import { fpTsImportConvention } from "./fp-ts-import-convention.js";
 import { maxFunctionLines } from "./max-function-lines.js";
 import { noAnyOrUnknown } from "./no-any-or-unknown.js";
+import { noAsyncAwait } from "./no-async-await.js";
 import { noClasses } from "./no-classes.js";
 import { noCrossAggregateReference } from "./no-cross-aggregate-reference.js";
 import { noDataClumps } from "./no-data-clumps.js";
@@ -55,6 +56,7 @@ export const rules = {
   "fp-ts-import-convention": fpTsImportConvention,
   "max-function-lines": maxFunctionLines,
   "no-any-or-unknown": noAnyOrUnknown,
+  "no-async-await": noAsyncAwait,
   "no-classes": noClasses,
   "no-cross-aggregate-reference": noCrossAggregateReference,
   "no-data-clumps": noDataClumps,

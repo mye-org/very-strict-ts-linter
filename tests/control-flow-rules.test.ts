@@ -1,3 +1,4 @@
+import { noAsyncAwait } from "../src/rules/no-async-await.js";
 import { noIfElseOrSwitch } from "../src/rules/no-if-else-or-switch.js";
 import { noImperativeLoops } from "../src/rules/no-imperative-loops.js";
 import { noLetOrVar } from "../src/rules/no-let-or-var.js";
@@ -130,6 +131,49 @@ ruleTester.run("no-throw-outside-unsafe", noThrowOutsideUnsafe, {
     {
       code: `const compute = (x: number): number => { throw new Error("nope"); };`,
       errors: [{ messageId: "noThrow" }],
+    },
+  ],
+});
+
+ruleTester.run("no-async-await", noAsyncAwait, {
+  valid: [
+    `const load = (): Promise<number> => Promise.resolve(1);`,
+    `const loadTask = (): T.Task<number> => T.of(1);`,
+    `const run = (p: Promise<number>): Promise<number> => p.then((x) => x + 1);`,
+    `function fetchValue(): Promise<string> { return new Promise((resolve) => resolve("ok")); }`,
+  ],
+  invalid: [
+    {
+      code: `async function load(): Promise<number> { return 1; }`,
+      errors: [{ messageId: "noAsync" }],
+    },
+    {
+      code: `const load = async (): Promise<number> => 1;`,
+      errors: [{ messageId: "noAsync" }],
+    },
+    {
+      code: `const load = async function () { return 1; };`,
+      errors: [{ messageId: "noAsync" }],
+    },
+    {
+      code: `const svc = { async load() { return 1; } };`,
+      errors: [{ messageId: "noAsync" }],
+    },
+    {
+      code: `const x = await Promise.resolve(1);`,
+      errors: [{ messageId: "noAwait" }],
+    },
+    {
+      code: `async function load(): Promise<number> { return await Promise.resolve(1); }`,
+      errors: [{ messageId: "noAsync" }, { messageId: "noAwait" }],
+    },
+    {
+      code: `async function readAll(stream: AsyncIterable<number>) { for await (const item of stream) { void item; } }`,
+      errors: [{ messageId: "noAsync" }, { messageId: "noAwait" }],
+    },
+    {
+      code: `async function withResource(res: AsyncDisposable) { await using r = res; return r; }`,
+      errors: [{ messageId: "noAsync" }, { messageId: "noAwait" }],
     },
   ],
 });
