@@ -1,59 +1,74 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
-import { pipe } from "fp-ts/lib/function.js";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { isFiniteExhaustiveCandidate } from "../utils/type-helpers.js";
+import { isFiniteExhaustiveCandidate } from "../lib/finite-types.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "unterminatedMatch" | "preferExhaustive";
 
-const TERMINATOR_METHODS = new Set(["exhaustive", "otherwise", "run"]);
+const TERMINATOR_METHODS: ReadonlySet<string> = new Set(["exhaustive", "otherwise", "run"]);
+const MATCH_CALLEE_NAMES: ReadonlySet<string> = new Set(["match"]);
 
-const getTerminatorPropName = (member: TSESTree.MemberExpression) =>
+const extractTerminatorMethodName = (member: TSESTree.MemberExpression) =>
   !member.computed &&
   member.property.type === AST_NODE_TYPES.Identifier &&
   TERMINATOR_METHODS.has(member.property.name)
     ? O.some(member.property.name)
     : O.none;
 
-const getParentMemberCall = (current: TSESTree.Node) =>
-  current.parent?.type === AST_NODE_TYPES.MemberExpression &&
-  current.parent.object === current &&
-  current.parent.parent.type === AST_NODE_TYPES.CallExpression &&
-  current.parent.parent.callee === current.parent
-    ? O.some([current.parent, current.parent.parent] as const)
+const resolveCallOfMember = (member: TSESTree.MemberExpression, child: TSESTree.Node) =>
+  member.object === child &&
+  member.parent.type === AST_NODE_TYPES.CallExpression &&
+  member.parent.callee === member
+    ? O.some([member, member.parent] as const)
+    : O.none;
+
+const resolveParentMemberCall = (current: TSESTree.Node) =>
+  current.parent?.type === AST_NODE_TYPES.MemberExpression
+    ? resolveCallOfMember(current.parent, current)
     : O.none;
 
 const resolveTerminatorFromStep = (
   [member, parentCall]: readonly [TSESTree.MemberExpression, TSESTree.CallExpression],
 ) =>
-  pipe(
-    getTerminatorPropName(member),
+  flow(
+    extractTerminatorMethodName,
     O.map((methodName) => [parentCall, methodName] as const),
     O.alt(() => findMatchChainTerminator(parentCall)),
-  );
+  )(member);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
 const findMatchChainTerminator = (current: TSESTree.Node): O.Option<readonly [TSESTree.CallExpression, string]> =>
-  pipe(
-    getParentMemberCall(current),
+  flow(
+    resolveParentMemberCall,
     O.flatMap(resolveTerminatorFromStep),
-  );
+  )(current);
 
 const isMatchCall = (node: TSESTree.CallExpression) =>
   node.callee.type === AST_NODE_TYPES.Identifier &&
-  node.callee.name === "match" &&
+  MATCH_CALLEE_NAMES.has(node.callee.name) &&
   node.arguments.length === 1;
 
 const isExhaustiveCandidateArg = (
   targetArg: TSESTree.CallExpressionArgument,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
-    services.esTreeNodeToTSNodeMap.get(targetArg),
+  flow(
+    (arg: TSESTree.CallExpressionArgument) => services.esTreeNodeToTSNodeMap.get(arg),
     (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
     isFiniteExhaustiveCandidate,
-  );
+  )(targetArg);
+
+const hasFiniteFirstArg = (
+  args: ReadonlyArray<TSESTree.CallExpressionArgument>,
+  services: ParserServicesWithTypeInformation,
+) =>
+  flow(
+    RA.head<TSESTree.CallExpressionArgument>,
+    O.exists((arg) => isExhaustiveCandidateArg(arg, services)),
+  )(args);
 
 const checkTerminator = (
   node: TSESTree.CallExpression,
@@ -64,7 +79,7 @@ const checkTerminator = (
 ) => {
   match({
     methodName,
-    isFinite: Boolean(node.arguments[0] && isExhaustiveCandidateArg(node.arguments[0], services)),
+    isFinite: hasFiniteFirstArg(node.arguments, services),
   })
     .with({ methodName: "otherwise", isFinite: true }, () => { report(terminator, "preferExhaustive"); })
     .with({ methodName: "run", isFinite: true }, () => { report(terminator, "preferExhaustive"); })
@@ -79,13 +94,13 @@ const checkMatchCall = (
   match(isMatchCall(node))
     .with(false, () => {})
     .with(true, () => {
-      pipe(
-        findMatchChainTerminator(node),
+      flow(
+        findMatchChainTerminator,
         O.match(
           () => { report(node, "unterminatedMatch"); },
           ([terminator, methodName]) => { checkTerminator(node, terminator, methodName, services, report); },
         ),
-      );
+      )(node);
     })
     .exhaustive();
 };
@@ -107,14 +122,11 @@ export const requireExhaustiveMatch = createRule<[], MessageIds>({
     schema: [],
     defaultOptions: [],
   },
-  create: (context) => {
-    const services = ESLintUtils.getParserServices(context);
-    return {
-      CallExpression: (node) => {
-        checkMatchCall(node, services, (n, messageId) => {
-          context.report({ node: n, messageId });
-        });
-      },
-    };
-  },
+  create: (context) => ({
+    CallExpression: (node) => {
+      checkMatchCall(node, ESLintUtils.getParserServices(context), (n, messageId) => {
+        context.report({ node: n, messageId });
+      });
+    },
+  }),
 });

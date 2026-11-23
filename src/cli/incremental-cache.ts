@@ -59,8 +59,11 @@ const safeRealpath = (targetPath: string) => {
   }
 };
 
+const isNonEmptyString = (value: string | undefined): value is string =>
+  value !== undefined && value.trim().length > 0;
+
 export const resolveCacheDir = (cwd: string, customLocation?: string) => {
-  if (customLocation && customLocation.trim().length > 0) {
+  if (isNonEmptyString(customLocation)) {
     return path.resolve(cwd, customLocation);
   }
   const nodeModulesDir = path.join(cwd, "node_modules");
@@ -70,11 +73,23 @@ export const resolveCacheDir = (cwd: string, customLocation?: string) => {
   return path.join(os.tmpdir(), "strict-fp-cache", hashShort(safeRealpath(cwd)));
 };
 
-export const resolveTsConfigPath = (cwd: string, tsconfig?: string) => {
-  if (tsconfig && tsconfig.trim().length > 0) {
-    return path.resolve(cwd, tsconfig);
+export const buildEslintCacheOptions = (
+  enabled: boolean | undefined,
+  cacheDir: string | undefined,
+) =>
+  enabled === true && isNonEmptyString(cacheDir)
+    ? {
+        cache: true,
+        cacheStrategy: "content" as const,
+        cacheLocation: path.join(cacheDir, "eslint-cache.json"),
+      }
+    : {};
+
+export const resolveTsConfigPath = (workspaceDir: string, configPath?: string) => {
+  if (isNonEmptyString(configPath)) {
+    return path.resolve(workspaceDir, configPath);
   }
-  return ts.findConfigFile(cwd, (filePath) => ts.sys.fileExists(filePath), "tsconfig.json");
+  return ts.findConfigFile(workspaceDir, (filePath) => ts.sys.fileExists(filePath), "tsconfig.json");
 };
 
 export const loadParsedTsConfig = (tsconfigPath: string) => {
@@ -138,30 +153,35 @@ const hashSelfBuildSignature = (hash: crypto.Hash) => {
   }
 };
 
-const hashTsConfigChain = (hash: crypto.Hash, tsconfigPath: string, visited: Set<string>) => {
-  const resolved = path.resolve(tsconfigPath);
-  if (visited.has(resolved)) {
-    return;
-  }
-  visited.add(resolved);
-  hashFileIfExists(hash, `tsconfig:${resolved}`, resolved);
-  const configFile = ts.readConfigFile(resolved, (filePath) => ts.sys.readFile(filePath));
-  if (configFile.error) {
-    return;
-  }
-  const configObj = configFile.config as Readonly<Record<string, unknown>>;
-  const rawExtends = configObj["extends"];
-  const extendsList =
-    typeof rawExtends === "string"
-      ? [rawExtends]
-      : Array.isArray(rawExtends)
-        ? rawExtends.filter((entry): entry is string => typeof entry === "string")
-        : [];
-  for (const ext of extendsList) {
-    if (ext.startsWith(".")) {
-      const candidate = path.resolve(path.dirname(resolved), ext);
-      const extPath = fs.existsSync(candidate) ? candidate : `${candidate}.json`;
-      hashTsConfigChain(hash, extPath, visited);
+const hashTsConfigChain = (hash: crypto.Hash, entryTsconfigPath: string) => {
+  const visited = new Set<string>();
+  let queue: ReadonlyArray<string> = [path.resolve(entryTsconfigPath)];
+  while (queue.length > 0) {
+    const [resolved, ...rest] = queue;
+    queue = rest;
+    if (!resolved || visited.has(resolved)) {
+      continue;
+    }
+    visited.add(resolved);
+    hashFileIfExists(hash, `tsconfig:${resolved}`, resolved);
+    const configFile = ts.readConfigFile(resolved, (filePath) => ts.sys.readFile(filePath));
+    if (configFile.error) {
+      continue;
+    }
+    const configObj = configFile.config as Readonly<Record<string, unknown>>;
+    const rawExtends = configObj["extends"];
+    const extendsList =
+      typeof rawExtends === "string"
+        ? [rawExtends]
+        : Array.isArray(rawExtends)
+          ? rawExtends.filter((entry): entry is string => typeof entry === "string")
+          : [];
+    for (const ext of extendsList) {
+      if (ext.startsWith(".")) {
+        const candidate = path.resolve(path.dirname(resolved), ext);
+        const extPath = fs.existsSync(candidate) ? candidate : `${candidate}.json`;
+        queue = [...queue, extPath];
+      }
     }
   }
 };
@@ -180,45 +200,52 @@ export const computeConfigFingerprint = (cwd: string, tsconfigPath: string | und
     hashFileStatIfExists(hash, `lock:${lockName}`, path.join(cwd, lockName));
   }
   if (tsconfigPath) {
-    hashTsConfigChain(hash, tsconfigPath, new Set());
+    hashTsConfigChain(hash, tsconfigPath);
   }
 
   return hash.digest("hex");
 };
 
-const collectDirectorySourceFiles = (dirPath: string, out: Set<string>) => {
-  let entries: ReadonlyArray<fs.Dirent>;
-  try {
-    entries = fs.readdirSync(dirPath, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (!IGNORED_SCAN_DIRS.has(entry.name)) {
-        collectDirectorySourceFiles(path.join(dirPath, entry.name), out);
+const collectDirectorySourceFiles = (entryDirPath: string) => {
+  const collected = new Set<string>();
+  let queue: ReadonlyArray<string> = [entryDirPath];
+  while (queue.length > 0) {
+    const [dirPath, ...rest] = queue;
+    queue = rest;
+    if (!dirPath) {
+      continue;
+    }
+    let entries: ReadonlyArray<fs.Dirent>;
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!IGNORED_SCAN_DIRS.has(entry.name)) {
+          queue = [...queue, path.join(dirPath, entry.name)];
+        }
+        continue;
       }
-      continue;
-    }
-    if (!entry.isFile()) {
-      continue;
-    }
-    if (entry.name.endsWith(".tsbuildinfo")) {
-      continue;
-    }
-    if (TRACKED_SOURCE_EXTS.has(path.extname(entry.name))) {
-      out.add(path.resolve(dirPath, entry.name));
+      if (!entry.isFile() || entry.name.endsWith(".tsbuildinfo")) {
+        continue;
+      }
+      if (TRACKED_SOURCE_EXTS.has(path.extname(entry.name))) {
+        collected.add(path.resolve(dirPath, entry.name));
+      }
     }
   }
+  return [...collected];
 };
 
 const collectTargetSourceFiles = (
-  cwd: string,
-  targets: ReadonlyArray<string>,
-  out: Set<string>,
+  baseDir: string,
+  targetPaths: ReadonlyArray<string>,
 ) => {
-  for (const target of targets) {
-    const resolved = path.resolve(cwd, target);
+  const collected = new Set<string>();
+  for (const target of targetPaths) {
+    const resolved = path.resolve(baseDir, target);
     let stat: fs.Stats;
     try {
       stat = fs.statSync(resolved);
@@ -226,11 +253,14 @@ const collectTargetSourceFiles = (
       continue;
     }
     if (stat.isFile()) {
-      out.add(resolved);
+      collected.add(resolved);
     } else if (stat.isDirectory()) {
-      collectDirectorySourceFiles(resolved, out);
+      for (const filePath of collectDirectorySourceFiles(resolved)) {
+        collected.add(filePath);
+      }
     }
   }
+  return [...collected];
 };
 
 export const computeProjectFingerprint = (input: ProjectFingerprintInput) => {
@@ -249,7 +279,9 @@ export const computeProjectFingerprint = (input: ProjectFingerprintInput) => {
     }
   }
   if (input.targets && input.targets.length > 0) {
-    collectTargetSourceFiles(input.cwd, input.targets, trackedFiles);
+    for (const filePath of collectTargetSourceFiles(input.cwd, input.targets)) {
+      trackedFiles.add(filePath);
+    }
   }
 
   const sortedFiles = Array.from(trackedFiles).sort();
@@ -262,15 +294,15 @@ export const computeProjectFingerprint = (input: ProjectFingerprintInput) => {
   return hash.digest("hex");
 };
 
-const resolveArtifactPath = (cacheDir: string, namespace: string, cacheKey: string) =>
-  path.join(cacheDir, `${namespace}-${hashShort(cacheKey)}.json`);
+const resolveArtifactPath = (dir: string, scope: string, key: string) =>
+  path.join(dir, `${scope}-${hashShort(key)}.json`);
 
 export const readCachedArtifact = <T>(
   cacheDir: string,
   namespace: string,
   cacheKey: string,
   fingerprint: string,
-): T | undefined => {
+) => {
   const filePath = resolveArtifactPath(cacheDir, namespace, cacheKey);
   try {
     const raw = fs.readFileSync(filePath, "utf8");

@@ -1,13 +1,27 @@
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import * as R from "fp-ts/lib/Record.js";
+import * as RNEA from "fp-ts/lib/ReadonlyNonEmptyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import * as S from "fp-ts/lib/string.js";
-import { flow, pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
-import { getProjectSourceFiles, memoizeByProgram, memoizeByProgramAndKey } from "../utils/program-cache.js";
-import { collectTsNodes, getTsNodeLocation, makeLocationKey, TsLocation } from "../utils/ts-ast-helpers.js";
-import { getBarePrimitiveKind, getTsTypeName } from "../utils/type-helpers.js";
+import { collectProjectSourceFiles } from "../lib/source-paths.js";
+import { memoizeByProgram, memoizeByProgramAndKey } from "../lib/program-memo.js";
+import { collectTsNodes } from "../lib/ts-node-traversal.js";
+import { makeLocationKey, resolveTsNodeLocation, TsLocation } from "../lib/ts-node-location.js";
+import { isBrandedOrNewtypeTsType } from "../lib/ts-primitive-types.js";
+import { resolveTsTypeName } from "../lib/ts-type-name.js";
+
+const classifyBarePrimitiveKind = (type: ts.Type) =>
+  match({
+    branded: isBrandedOrNewtypeTsType(type),
+    isString: (type.flags & ts.TypeFlags.String) !== 0,
+    isNumber: (type.flags & ts.TypeFlags.Number) !== 0,
+  })
+    .with({ branded: false, isString: true }, () => O.some("string" as const))
+    .with({ branded: false, isNumber: true }, () => O.some("number" as const))
+    .otherwise(() => O.none as O.Option<"string" | "number">);
 
 export type DiscriminantOccurrence = Readonly<
   Record<"targetKey" | "displayKey" | "literalValue", string> & {
@@ -22,9 +36,22 @@ export type DiscriminantCluster = Readonly<
   }
 >;
 
+type TargetDescriptor = Readonly<Record<"targetKey" | "displayKey", string>>;
+
+type SubjectLiteralSite = Readonly<{
+  readonly subject: ts.Expression;
+  readonly literalNode: ts.Expression;
+  readonly locNode: ts.Node;
+  readonly sf: ts.SourceFile;
+  readonly checker: ts.TypeChecker;
+}>;
+
 const discriminantCache = new WeakMap<ts.Program, ReadonlyArray<DiscriminantOccurrence>>();
 
-const TRIVIAL_NUMBER_LITERALS = new Set(["0", "1", "-1"]);
+const TRIVIAL_NUMBER_LITERALS: ReadonlySet<string> = new Set(["0", "1", "-1"]);
+const IGNORED_PROP_NAMES: ReadonlySet<string> = new Set(["length", "size"]);
+const MATCH_CALL_NAMES: ReadonlySet<string> = new Set(["match"]);
+const WITH_METHOD_NAMES: ReadonlySet<string> = new Set(["with"]);
 
 const isEqualityToken = (kind: ts.SyntaxKind) =>
   kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
@@ -32,9 +59,11 @@ const isEqualityToken = (kind: ts.SyntaxKind) =>
   kind === ts.SyntaxKind.EqualsEqualsToken ||
   kind === ts.SyntaxKind.ExclamationEqualsToken;
 
+const quoteStringLiteral = (text: string) => `"${text}"`;
+
 const extractStringLiteral = (expr: ts.Expression) =>
   (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) && expr.text.length > 0
-    ? O.some(`"${expr.text}"`)
+    ? O.some(quoteStringLiteral(expr.text))
     : O.none;
 
 const extractNumberLiteral = (expr: ts.Expression) =>
@@ -43,106 +72,141 @@ const extractNumberLiteral = (expr: ts.Expression) =>
     : O.none;
 
 const extractLiteralValue = (expr: ts.Expression) =>
-  pipe(
-    extractStringLiteral(expr),
+  flow(
+    extractStringLiteral,
     O.alt(() => extractNumberLiteral(expr)),
+  )(expr);
+
+const formatQualifiedPropertyKey = (propName: string) =>
+  O.match(
+    () => propName,
+    (owner: string) => `${owner}.${propName}`,
   );
 
-const getQualifiedPropertyKey = (
+const resolveExprTypeName = flow(
+  (expr: ts.Expression, checker: ts.TypeChecker) => checker.getTypeAtLocation(expr),
+  resolveTsTypeName,
+);
+
+const resolveQualifiedPropertyKey = (
   expr: ts.PropertyAccessExpression,
   checker: ts.TypeChecker,
 ) =>
-  expr.name.text === "length" || expr.name.text === "size"
+  IGNORED_PROP_NAMES.has(expr.name.text)
     ? O.none
-    : O.some({
-        targetKey: pipe(
-          getTsTypeName(checker.getTypeAtLocation(expr.expression)),
-          O.match(
-            () => expr.name.text,
-            (owner) => `${owner}.${expr.name.text}`,
-          ),
-        ),
+    : O.some<TargetDescriptor>({
+        targetKey: flow(
+          resolveExprTypeName,
+          formatQualifiedPropertyKey(expr.name.text),
+        )(expr.expression, checker),
         displayKey: expr.name.text,
       });
 
+const formatIdentifierKey = (fileName: string, text: string) => `${fileName}#${text}`;
+
 const extractIdentifierTargetKey = (expr: ts.Expression, sf: ts.SourceFile) =>
   ts.isIdentifier(expr)
-    ? O.some({ targetKey: `${sf.fileName}#${expr.text}`, displayKey: expr.text })
+    ? O.some<TargetDescriptor>({
+        targetKey: formatIdentifierKey(sf.fileName, expr.text),
+        displayKey: expr.text,
+      })
     : O.none;
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive unwrap
-const unwrapParenExpr = (expr: ts.Expression): ts.Expression => ts.isParenthesizedExpression(expr) ? unwrapParenExpr(expr.expression) : expr;
+const unwrapParenExpr = (expr: ts.Expression): ts.Expression =>
+  ts.isParenthesizedExpression(expr) ? unwrapParenExpr(expr.expression) : expr;
 
-const resolveNonParenTargetKey = (expr: ts.Expression, sf: ts.SourceFile, checker: ts.TypeChecker) =>
-  ts.isPropertyAccessExpression(expr)
-    ? getQualifiedPropertyKey(expr, checker)
-    : extractIdentifierTargetKey(expr, sf);
-
-const getTargetKeyInfo = (expr: ts.Expression, sf: ts.SourceFile, checker: ts.TypeChecker) =>
-  resolveNonParenTargetKey(unwrapParenExpr(expr), sf, checker);
-
-const isBarePrimitiveSubject = flow(
-  (expr: ts.Expression, checker: ts.TypeChecker) => checker.getTypeAtLocation(expr),
-  getBarePrimitiveKind,
-  O.isSome,
-);
-
-const extractBinaryPair = (
-  subject: ts.Expression,
-  literalNode: ts.Expression,
-  node: ts.Node,
+const resolveNonParenTargetKey = (
+  expr: ts.Expression,
   sf: ts.SourceFile,
   checker: ts.TypeChecker,
 ) =>
+  ts.isPropertyAccessExpression(expr)
+    ? resolveQualifiedPropertyKey(expr, checker)
+    : extractIdentifierTargetKey(expr, sf);
+
+const resolveTargetDescriptor = (
+  expr: ts.Expression,
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+) => resolveNonParenTargetKey(unwrapParenExpr(expr), sf, checker);
+
+const isBarePrimitiveSubject = flow(
+  (expr: ts.Expression, checker: ts.TypeChecker) => checker.getTypeAtLocation(expr),
+  classifyBarePrimitiveKind,
+  O.isSome,
+);
+
+const extractSubjectLiteralOccurrence = ({
+  subject,
+  literalNode,
+  locNode,
+  sf,
+  checker,
+}: SubjectLiteralSite) =>
   isBarePrimitiveSubject(subject, checker)
-    ? pipe(
-        O.Do,
-        O.apS("keyInfo", getTargetKeyInfo(subject, sf, checker)),
+    ? flow(
+        () => O.Do,
+        O.apS("target", resolveTargetDescriptor(subject, sf, checker)),
         O.apS("literalValue", extractLiteralValue(literalNode)),
-        O.map(({ keyInfo, literalValue }) => ({
-          targetKey: keyInfo.targetKey,
-          displayKey: keyInfo.displayKey,
+        O.map(({ target, literalValue }) => ({
+          targetKey: target.targetKey,
+          displayKey: target.displayKey,
           literalValue,
-          location: getTsNodeLocation(node, sf),
+          location: resolveTsNodeLocation(locNode, sf),
         })),
-      )
+      )()
     : O.none;
+
+const extractBinaryDirection = (
+  node: ts.BinaryExpression,
+  pair: readonly [ts.Expression, ts.Expression],
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+) =>
+  extractSubjectLiteralOccurrence({
+    subject: pair[0],
+    literalNode: pair[1],
+    locNode: node,
+    sf,
+    checker,
+  });
+
+const extractBinaryPair = (
+  node: ts.BinaryExpression,
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+) =>
+  flow(
+    () => extractBinaryDirection(node, [node.left, node.right], sf, checker),
+    O.alt(() => extractBinaryDirection(node, [node.right, node.left], sf, checker)),
+  )();
 
 const extractBinaryOccurrence = (
   node: ts.BinaryExpression,
   sf: ts.SourceFile,
   checker: ts.TypeChecker,
-) =>
-  isEqualityToken(node.operatorToken.kind)
-    ? pipe(
-        extractBinaryPair(node.left, node.right, node, sf, checker),
-        O.alt(() => extractBinaryPair(node.right, node.left, node, sf, checker)),
-      )
-    : O.none;
+) => (isEqualityToken(node.operatorToken.kind) ? extractBinaryPair(node, sf, checker) : O.none);
 
 const extractCaseClauseOcc = (
   clause: ts.CaseOrDefaultClause,
-  keyInfo: Readonly<Record<"targetKey" | "displayKey", string>>,
+  target: TargetDescriptor,
   sf: ts.SourceFile,
 ) =>
   ts.isCaseClause(clause)
-    ? pipe(
-        extractLiteralValue(clause.expression),
-        O.map((literalValue) => ({
-          targetKey: keyInfo.targetKey,
-          displayKey: keyInfo.displayKey,
-          literalValue,
-          location: getTsNodeLocation(clause, sf),
-        })),
-      )
+    ? O.map((literalValue: string) => ({
+        targetKey: target.targetKey,
+        displayKey: target.displayKey,
+        literalValue,
+        location: resolveTsNodeLocation(clause, sf),
+      }))(extractLiteralValue(clause.expression))
     : O.none;
 
 const collectSwitchCaseClauses = (
   clauses: ts.NodeArray<ts.CaseOrDefaultClause>,
-  keyInfo: Readonly<Record<"targetKey" | "displayKey", string>>,
+  target: TargetDescriptor,
   sf: ts.SourceFile,
-) =>
-  pipe(clauses, RA.filterMap((clause) => extractCaseClauseOcc(clause, keyInfo, sf)));
+) => RA.filterMap((clause: ts.CaseOrDefaultClause) => extractCaseClauseOcc(clause, target, sf))(clauses);
 
 const extractSwitchCaseOccurrences = (
   node: ts.SwitchStatement,
@@ -150,22 +214,21 @@ const extractSwitchCaseOccurrences = (
   checker: ts.TypeChecker,
 ) =>
   isBarePrimitiveSubject(node.expression, checker)
-    ? pipe(
-        getTargetKeyInfo(node.expression, sf, checker),
-        O.match(
-          () => [] as ReadonlyArray<DiscriminantOccurrence>,
-          (keyInfo) => collectSwitchCaseClauses(node.caseBlock.clauses, keyInfo, sf),
-        ),
-      )
+    ? O.match(
+        () => [] as ReadonlyArray<DiscriminantOccurrence>,
+        (target: TargetDescriptor) => collectSwitchCaseClauses(node.caseBlock.clauses, target, sf),
+      )(resolveTargetDescriptor(node.expression, sf, checker))
     : [];
 
 const isMatchIdentifierCall = (expr: ts.CallExpression) =>
   ts.isIdentifier(expr.expression) &&
-  expr.expression.text === "match" &&
+  MATCH_CALL_NAMES.has(expr.expression.text) &&
   expr.arguments.length === 1;
 
 const unwrapMatchChainExpr = (expr: ts.CallExpression) =>
-  ts.isPropertyAccessExpression(expr.expression) ? findRootMatchSubject(expr.expression.expression) : O.none;
+  ts.isPropertyAccessExpression(expr.expression)
+    ? findRootMatchSubject(expr.expression.expression)
+    : O.none;
 
 const matchCallSubject = (expr: ts.CallExpression) =>
   isMatchIdentifierCall(expr) ? O.fromNullable(expr.arguments[0]) : unwrapMatchChainExpr(expr);
@@ -174,112 +237,134 @@ const matchCallSubject = (expr: ts.CallExpression) =>
 const findRootMatchSubject = (expr: ts.Expression): O.Option<ts.Expression> =>
   ts.isCallExpression(expr) ? matchCallSubject(expr) : O.none;
 
-const isWithChainCall = (node: ts.CallExpression) =>
-  ts.isPropertyAccessExpression(node.expression) &&
-  node.expression.name.text === "with" &&
-  node.arguments.length >= 1;
+const isWithPropAccess = (expr: ts.Expression): expr is ts.PropertyAccessExpression =>
+  ts.isPropertyAccessExpression(expr) && WITH_METHOD_NAMES.has(expr.name.text);
 
-const toMatchWithOccurrence = (
-  arg0: ts.Expression,
-  subject: ts.Expression,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
-  pipe(
-    O.Do,
-    O.filter(() => isBarePrimitiveSubject(subject, checker)),
-    O.apS("keyInfo", getTargetKeyInfo(subject, sf, checker)),
-    O.apS("literalValue", extractLiteralValue(arg0)),
-    O.map(({ keyInfo, literalValue }) => ({
-      targetKey: keyInfo.targetKey,
-      displayKey: keyInfo.displayKey,
-      literalValue,
-      location: getTsNodeLocation(arg0, sf),
-    })),
-  );
+const extractMatchArgOccurrence =
+  (sf: ts.SourceFile, checker: ts.TypeChecker) =>
+  ({ arg0, subject }: Readonly<{ readonly arg0: ts.Expression; readonly subject: ts.Expression }>) =>
+    extractSubjectLiteralOccurrence({ subject, literalNode: arg0, locNode: arg0, sf, checker });
 
 const extractMatchWithOccurrence = (
   node: ts.CallExpression,
   sf: ts.SourceFile,
   checker: ts.TypeChecker,
 ) =>
-  isWithChainCall(node) && ts.isPropertyAccessExpression(node.expression)
-    ? pipe(
-        O.Do,
+  isWithPropAccess(node.expression) && node.arguments.length >= 1
+    ? flow(
+        () => O.Do,
         O.apS("arg0", O.fromNullable(node.arguments[0])),
         O.apS("subject", findRootMatchSubject(node.expression.expression)),
-        O.flatMap(({ arg0, subject }) => toMatchWithOccurrence(arg0, subject, sf, checker)),
-      )
+        O.flatMap(extractMatchArgOccurrence(sf, checker)),
+      )()
     : O.none;
+
+const collectBinaryOccurrences = (
+  nodes: ReadonlyArray<ts.Node>,
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+) =>
+  flow(
+    RA.filter(ts.isBinaryExpression),
+    RA.filterMap((n) => extractBinaryOccurrence(n, sf, checker)),
+  )(nodes);
+
+const collectSwitchOccurrences = (
+  nodes: ReadonlyArray<ts.Node>,
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+) =>
+  flow(
+    RA.filter(ts.isSwitchStatement),
+    RA.flatMap((n) => extractSwitchCaseOccurrences(n, sf, checker)),
+  )(nodes);
+
+const collectMatchOccurrences = (
+  nodes: ReadonlyArray<ts.Node>,
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+) =>
+  flow(
+    RA.filter(ts.isCallExpression),
+    RA.filterMap((n) => extractMatchWithOccurrence(n, sf, checker)),
+  )(nodes);
 
 const extractFileOccurrences = (sf: ts.SourceFile, checker: ts.TypeChecker) => {
   const nodes = collectTsNodes(sf, sf);
   return [
-    ...pipe(nodes, RA.filter(ts.isBinaryExpression), RA.filterMap((n) => extractBinaryOccurrence(n, sf, checker))),
-    ...pipe(nodes, RA.filter(ts.isSwitchStatement), RA.flatMap((n) => extractSwitchCaseOccurrences(n, sf, checker))),
-    ...pipe(nodes, RA.filter(ts.isCallExpression), RA.filterMap((n) => extractMatchWithOccurrence(n, sf, checker))),
+    ...collectBinaryOccurrences(nodes, sf, checker),
+    ...collectSwitchOccurrences(nodes, sf, checker),
+    ...collectMatchOccurrences(nodes, sf, checker),
   ];
 };
 
-const extractWithChecker = (checker: ts.TypeChecker) => (sf: ts.SourceFile) =>
-  extractFileOccurrences(sf, checker);
-
-const collectFilesOccurrences = (checker: ts.TypeChecker) => (files: ReadonlyArray<ts.SourceFile>) =>
-  pipe(files, RA.flatMap(extractWithChecker(checker)));
+const extractProgramFiles = (checker: ts.TypeChecker) =>
+  RA.flatMap((sf: ts.SourceFile) => extractFileOccurrences(sf, checker));
 
 const extractOccurrencesForProgram = (program: ts.Program) =>
-  pipe(getProjectSourceFiles(program), collectFilesOccurrences(program.getTypeChecker()));
+  flow(collectProjectSourceFiles, extractProgramFiles(program.getTypeChecker()))(program);
 
-const getProgramOccurrences = (program: ts.Program) =>
+const collectProgramOccurrences = (program: ts.Program) =>
   memoizeByProgram(program, discriminantCache, extractOccurrencesForProgram);
 
-const extractOccLocations = (occs: ReadonlyArray<DiscriminantOccurrence>) =>
-  pipe(occs, RA.map((o) => o.location));
+const extractOccLocations = RA.map((o: DiscriminantOccurrence) => o.location);
 
-const buildCluster = (occs: ReadonlyArray<DiscriminantOccurrence>, literals: ReadonlyArray<string>) =>
-  pipe(
-    O.fromNullable(occs[0]),
-    O.map((first) => ({
-      targetKey: first.displayKey,
-      literals,
-      locations: extractOccLocations(occs),
-    })),
-  );
+const buildCluster = (
+  occs: ReadonlyArray<DiscriminantOccurrence>,
+  literals: ReadonlyArray<string>,
+) =>
+  O.map((first: DiscriminantOccurrence) => ({
+    targetKey: first.displayKey,
+    literals,
+    locations: extractOccLocations(occs),
+  }))(O.fromNullable(occs[0]));
+
+const extractSortedLiterals = flow(
+  RA.map((o: DiscriminantOccurrence) => o.literalValue),
+  RA.uniq(S.Eq),
+  RA.sort(S.Ord),
+);
 
 const toCluster = (occs: ReadonlyArray<DiscriminantOccurrence>, minBranches: number) => {
-  const literals = pipe(occs, RA.map((o) => o.literalValue), RA.uniq(S.Eq), RA.sort(S.Ord));
+  const literals = extractSortedLiterals(occs);
   return match(literals.length >= minBranches)
     .with(true, () => buildCluster(occs, literals))
     .with(false, () => O.none as O.Option<DiscriminantCluster>)
     .exhaustive();
 };
 
-const groupAllByTargetKey = (occurrences: ReadonlyArray<DiscriminantOccurrence>) => {
-  const map: Record<string, Array<DiscriminantOccurrence>> = {};
-  for (const occ of occurrences) {
-    const list = map[occ.targetKey] ?? [];
-    list.push(occ);
-    map[occ.targetKey] = list;
-  }
-  return map as Readonly<Record<string, ReadonlyArray<DiscriminantOccurrence>>>;
-};
+const groupAllByTargetKey = RNEA.groupBy((occ: DiscriminantOccurrence) => occ.targetKey);
 
-const indexByLocation = (clusters: ReadonlyArray<DiscriminantCluster>) => {
-  const map: Record<string, DiscriminantCluster> = {};
-  for (const cluster of clusters) {
-    for (const loc of cluster.locations) {
-      map[makeLocationKey(loc)] = cluster;
-    }
-  }
-  return map as Readonly<Record<string, DiscriminantCluster>>;
-};
+const expandClusterLocations = (cluster: DiscriminantCluster) =>
+  RA.map((loc: TsLocation) => [makeLocationKey(loc), cluster] as const)(cluster.locations);
+
+const indexByLocation = flow(RA.flatMap(expandClusterLocations), RR.fromEntries);
 
 type DiscriminantIndex = Readonly<{
   readonly clusters: ReadonlyArray<DiscriminantCluster>;
   readonly byLocation: Readonly<Record<string, DiscriminantCluster>>;
 }>;
 
-const discriminantIndexCache = new WeakMap<ts.Program, Readonly<Record<string, DiscriminantIndex>>>();
+const discriminantIndexCache = new WeakMap<
+  ts.Program,
+  Readonly<Record<string, DiscriminantIndex>>
+>();
+
+const buildDiscriminantIndex = (clusters: ReadonlyArray<DiscriminantCluster>) => ({
+  clusters,
+  byLocation: indexByLocation(clusters),
+});
+
+const computeDiscriminantIndex = (program: ts.Program, minBranches: number) =>
+  flow(
+    collectProgramOccurrences,
+    groupAllByTargetKey,
+    RR.toEntries,
+    RA.filterMap(([, occs]) => toCluster(occs, minBranches)),
+    buildDiscriminantIndex,
+  )(program);
+
+const makeDiscriminantCacheKey = (minBranches: number) => String(minBranches);
 
 export const analyzeStringlyTypedDiscriminants = (
   program: ts.Program,
@@ -287,14 +372,7 @@ export const analyzeStringlyTypedDiscriminants = (
 ) =>
   memoizeByProgramAndKey(
     program,
-    String(minBranches),
+    makeDiscriminantCacheKey(minBranches),
     discriminantIndexCache,
-    (p) =>
-      pipe(
-        getProgramOccurrences(p),
-        groupAllByTargetKey,
-        R.toEntries,
-        RA.filterMap(([, occs]) => toCluster(occs, minBranches)),
-        (clusters) => ({ clusters, byLocation: indexByLocation(clusters) }),
-      ),
+    (p) => computeDiscriminantIndex(p, minBranches),
   );

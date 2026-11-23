@@ -6,17 +6,13 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import {
-  hasMatchingEnclosingFunctionName,
-  isInsideUnsafeOrMustFunction,
-  isOptionTsType,
-  isTsParameterSymbol,
-  isUnsafeOrMustName,
-} from "../utils/type-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isOptionTsType } from "../lib/ts-option-type.js";
+import { isTsParameterSymbol } from "../lib/ts-parameter-symbol.js";
+import { hasMatchingEnclosingFunctionName, isInsideUnsafeOrMustFunction, isUnsafeOrMustName } from "../lib/unsafe-function-scope.js";
 
 type MessageIds = "parseDontValidateFunction" | "noShotgunValidation";
 
@@ -29,72 +25,103 @@ const VALIDATE_NAME_RE = /^(validate|verify|assertValid|checkValid)(?=$|[A-Z0-9_
 const IS_VALID_NAME_RE = /^isValid(?=$|[A-Z0-9_])/;
 const EXEMPT_DOMAIN_FN_RE = /^(parse|decode|from|make|create|is|has|can|should|validate|verify|assert|check)(?=$|[A-Z0-9_])/;
 const SHOTGUN_RANGE_OPS = new Set(["<", "<=", ">", ">="]);
+const INCLUDES_METHODS: ReadonlySet<string> = new Set(["includes"]);
+const TEST_METHODS: ReadonlySet<string> = new Set(["test"]);
 
-const getFunctionName = (node: FunctionNode) =>
-  match(node)
-    .with({ type: AST_NODE_TYPES.FunctionDeclaration }, (f) => O.fromNullable(f.id?.name))
-    .with({ parent: { type: AST_NODE_TYPES.VariableDeclarator, id: { type: AST_NODE_TYPES.Identifier } } }, (f) =>
-      O.some(f.parent.id.name),
+const resolveParentBindingName = (parent: TSESTree.Node) =>
+  match(parent)
+    .with({ type: AST_NODE_TYPES.VariableDeclarator, id: { type: AST_NODE_TYPES.Identifier } }, (p) =>
+      O.some(p.id.name),
     )
-    .with({ parent: { type: AST_NODE_TYPES.Property, key: { type: AST_NODE_TYPES.Identifier } } }, (f) =>
-      O.some(f.parent.key.name),
+    .with({ type: AST_NODE_TYPES.Property, key: { type: AST_NODE_TYPES.Identifier } }, (p) =>
+      O.some(p.key.name),
     )
     .with(P._, () => O.none)
     .exhaustive();
+
+const resolveFunctionName = (node: FunctionNode) =>
+  node.type === AST_NODE_TYPES.FunctionDeclaration
+    ? O.fromNullable(node.id?.name)
+    : O.flatMap(resolveParentBindingName)(O.fromNullable(node.parent));
+
+const isStringOrNumberFlag = (flags: ts.TypeFlags) =>
+  Boolean(flags & (ts.TypeFlags.String | ts.TypeFlags.Number));
+
+const isBooleanOrVoidFlag = (flags: ts.TypeFlags) =>
+  Boolean(
+    flags &
+      (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral | ts.TypeFlags.Void | ts.TypeFlags.Undefined),
+  );
 
 const isPrimitiveParam = (
   param: TSESTree.Parameter,
   services: ParserServicesWithTypeInformation,
 ) =>
-  Boolean(
+  isStringOrNumberFlag(
     services.program
       .getTypeChecker()
-      .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(param)).flags &
-      (ts.TypeFlags.String | ts.TypeFlags.Number),
+      .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(param)).flags,
   );
 
 const isBooleanVoidOrOption = (ret: ts.Type) =>
-  Boolean(ret.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral | ts.TypeFlags.Void | ts.TypeFlags.Undefined)) ||
-  isOptionTsType(ret);
+  isBooleanOrVoidFlag(ret.flags) || isOptionTsType(ret);
+
+const isTypePredicateAnnotation = O.exists(
+  (r: TSESTree.TSTypeAnnotation) => r.typeAnnotation.type === AST_NODE_TYPES.TSTypePredicate,
+);
+
+const isInvalidValidateSignature = (sig: ts.Signature, checker: ts.TypeChecker) =>
+  isBooleanVoidOrOption(checker.getReturnTypeOfSignature(sig));
+
+const resolveFunctionSignature = (
+  node: FunctionNode,
+  services: ParserServicesWithTypeInformation,
+  checker: ts.TypeChecker,
+) =>
+  O.fromNullable(
+    checker.getSignatureFromDeclaration(
+      services.esTreeNodeToTSNodeMap.get(node) as ts.SignatureDeclaration,
+    ),
+  );
 
 const isInvalidValidateReturn = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
-) =>
-  node.returnType?.typeAnnotation.type !== AST_NODE_TYPES.TSTypePredicate &&
-  pipe(
-    services.program
-      .getTypeChecker()
-      .getSignatureFromDeclaration(services.esTreeNodeToTSNodeMap.get(node) as ts.SignatureDeclaration),
-    O.fromNullable,
-    O.map((sig) => services.program.getTypeChecker().getReturnTypeOfSignature(sig)),
-    O.exists(isBooleanVoidOrOption),
+) => {
+  const checker = services.program.getTypeChecker();
+  return (
+    !isTypePredicateAnnotation(O.fromNullable(node.returnType)) &&
+    O.exists((sig: ts.Signature) => isInvalidValidateSignature(sig, checker))(
+      resolveFunctionSignature(node, services, checker),
+    )
   );
+};
 
 const hasPrimitiveParam = (
   params: ReadonlyArray<TSESTree.Parameter>,
   services: ParserServicesWithTypeInformation,
-) => pipe(params, RA.some((p) => isPrimitiveParam(p, services)));
+) => RA.some((p: TSESTree.Parameter) => isPrimitiveParam(p, services))(params);
+
+const isValidateFnName = (name: string) => VALIDATE_NAME_RE.test(name);
+const isIsValidFnName = (name: string) => IS_VALID_NAME_RE.test(name);
+const isExemptDomainFnName = (name: string) => EXEMPT_DOMAIN_FN_RE.test(name);
 
 const isValidateWithoutParse = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
-    getFunctionName(node),
-    O.exists(
-      (name) =>
-        (VALIDATE_NAME_RE.test(name) ||
-          (IS_VALID_NAME_RE.test(name) && hasPrimitiveParam(node.params, services))) &&
-        isInvalidValidateReturn(node, services),
-    ),
-  );
+  O.exists(
+    (name: string) =>
+      (isValidateFnName(name) ||
+        (isIsValidFnName(name) && hasPrimitiveParam(node.params, services))) &&
+      isInvalidValidateReturn(node, services),
+  )(resolveFunctionName(node));
 
 const isShotgunEligibleContext = (node: TSESTree.Node) =>
   !isInsideUnsafeOrMustFunction(node) &&
   !hasMatchingEnclosingFunctionName(
     node,
-    (name) => isUnsafeOrMustName(name) || EXEMPT_DOMAIN_FN_RE.test(name),
+    (name) => isUnsafeOrMustName(name) || isExemptDomainFnName(name),
   );
 
 const isRawPrimitiveParamId = (
@@ -105,8 +132,12 @@ const isRawPrimitiveParamId = (
   const tsNode = services.esTreeNodeToTSNodeMap.get(expr);
   return (
     expr.type === AST_NODE_TYPES.Identifier &&
-    pipe(O.fromNullable(checker.getSymbolAtLocation(tsNode)), O.exists(isTsParameterSymbol)) &&
-    Boolean(checker.getTypeAtLocation(tsNode).flags & (ts.TypeFlags.String | ts.TypeFlags.Number))
+    flow(
+      (n: ts.Node) => checker.getSymbolAtLocation(n),
+      O.fromNullable,
+      O.exists(isTsParameterSymbol),
+    )(tsNode) &&
+    isStringOrNumberFlag(checker.getTypeAtLocation(tsNode).flags)
   );
 };
 
@@ -121,21 +152,26 @@ const isShotgunRangeCheck = (
   ((isRawPrimitiveParamId(b.left, services) && isZeroLiteral(b.right)) ||
     (isRawPrimitiveParamId(b.right, services) && isZeroLiteral(b.left)));
 
+const isStringLiteralArg = (a: TSESTree.CallExpressionArgument) =>
+  a.type === AST_NODE_TYPES.Literal && typeof a.value === "string";
+
 const isShotgunMemberCall = (
   callee: TSESTree.MemberExpression,
   arg0: O.Option<TSESTree.CallExpressionArgument>,
   services: ParserServicesWithTypeInformation,
 ) =>
   callee.property.type === AST_NODE_TYPES.Identifier &&
-  match(callee.property.name)
-    .with("includes", () =>
-      isRawPrimitiveParamId(callee.object, services) &&
-      pipe(arg0, O.exists((a) => a.type === AST_NODE_TYPES.Literal && typeof a.value === "string")),
+  match({
+    isIncludes: INCLUDES_METHODS.has(callee.property.name),
+    isTest: TEST_METHODS.has(callee.property.name),
+  })
+    .with({ isIncludes: true }, () =>
+      isRawPrimitiveParamId(callee.object, services) && O.exists(isStringLiteralArg)(arg0),
     )
-    .with("test", () =>
+    .with({ isTest: true }, () =>
       callee.object.type === AST_NODE_TYPES.Literal &&
       "regex" in callee.object &&
-      pipe(arg0, O.exists((a) => isRawPrimitiveParamId(a, services))),
+      O.exists((a: TSESTree.CallExpressionArgument) => isRawPrimitiveParamId(a, services))(arg0),
     )
     .otherwise(() => false);
 
@@ -151,7 +187,7 @@ const reportOpt = (
   msg: O.Option<MessageIds>,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
 ) => {
-  pipe(msg, O.map((messageId) => { report({ node, messageId }); }));
+  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
 };
 
 export const parseDontValidate = createRule<[], MessageIds>({

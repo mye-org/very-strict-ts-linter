@@ -1,9 +1,9 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { analyzeGuardClauses, GuardCluster } from "../analyzers/guard-clause-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsNodeOwnLocation, makeLocationKey } from "../utils/ts-ast-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
 type Options = [Readonly<Record<"minClauses" | "minOccurrences", number>>];
 type MessageIds = "repeatedGuardClause";
@@ -15,10 +15,15 @@ const isTopLevelLogical = (node: TSESTree.LogicalExpression) =>
     (node.parent.operator === "&&" || node.parent.operator === "||")
   );
 
-const getLogicalLocationKey = (
+const resolveLogicalLocationKey = (
   node: TSESTree.LogicalExpression,
   services: ParserServicesWithTypeInformation,
-) => pipe(services.esTreeNodeToTSNodeMap.get(node), getTsNodeOwnLocation, makeLocationKey);
+) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
+
+const formatClusterFields = (cluster: GuardCluster) => ({
+  count: String(cluster.locations.length),
+  preview: cluster.preview,
+});
 
 const reportRepeatedGuard = (
   node: TSESTree.LogicalExpression,
@@ -26,16 +31,13 @@ const reportRepeatedGuard = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(byLocation[getLogicalLocationKey(node, services)]?.[0]),
-    O.map((cluster) => {
-      report({
-        node,
-        messageId: "repeatedGuardClause",
-        data: { count: String(cluster.locations.length), preview: cluster.preview },
-      });
-    }),
-  );
+  O.map((cluster: GuardCluster) => {
+    report({
+      node,
+      messageId: "repeatedGuardClause",
+      data: formatClusterFields(cluster),
+    });
+  })(O.fromNullable(byLocation[resolveLogicalLocationKey(node, services)]?.[0]));
 };
 
 const checkLogicalExpr = (
@@ -44,9 +46,8 @@ const checkLogicalExpr = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.some(node),
-    O.filter(isTopLevelLogical),
+  flow(
+    O.fromPredicate(isTopLevelLogical),
     O.map((n) => {
       reportRepeatedGuard(
         n,
@@ -55,10 +56,10 @@ const checkLogicalExpr = (
         report,
       );
     }),
-  );
+  )(node);
 };
 
-const createGuardListeners = (
+const buildGuardListeners = (
   options: Options[0],
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -93,5 +94,5 @@ export const noRepeatedGuardClauses = createRule<Options, MessageIds>({
     defaultOptions: [{ minClauses: 2, minOccurrences: 2 }],
   },
   create: (context, [options]) =>
-    createGuardListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    buildGuardListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
 });

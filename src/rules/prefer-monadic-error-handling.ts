@@ -1,19 +1,16 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as Pred from "fp-ts/lib/Predicate.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import {
-  getDirectFunctionName,
-  isEsTreeFunctionNode,
-  isInsideUnsafeOrMustFunction,
-  isUnsafeOrMustName,
-} from "../utils/type-helpers.js";
+import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isInsideUnsafeOrMustFunction, isUnsafeOrMustName, resolveDirectFunctionName } from "../lib/unsafe-function-scope.js";
 
 type MessageIds = "noTryCatch" | "noAsyncAwait" | "noRawPromise";
 
+const PROMISE_CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set(["Promise"]);
 const PROMISE_TERMINAL_METHODS = new Set(["then", "catch", "finally"]);
 const PROMISE_STATIC_METHODS = new Set([
   "resolve",
@@ -26,7 +23,7 @@ const PROMISE_STATIC_METHODS = new Set([
 
 const isExemptFunction = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
-  pipe(getDirectFunctionName(node), O.exists(isUnsafeOrMustName));
+  O.exists(isUnsafeOrMustName)(resolveDirectFunctionName(node));
 
 const isAsyncFunctionNode = (node: TSESTree.Node) =>
   isEsTreeFunctionNode(node) && node.async;
@@ -39,7 +36,7 @@ const isInsideAsyncFunction = (node: TSESTree.Node): boolean =>
 
 const isPromiseStaticCall = (object: TSESTree.Expression, propName: string) =>
   object.type === AST_NODE_TYPES.Identifier &&
-  object.name === "Promise" &&
+  PROMISE_CONSTRUCTOR_NAMES.has(object.name) &&
   PROMISE_STATIC_METHODS.has(propName);
 
 const isPromiseSymbol = (
@@ -97,7 +94,7 @@ const checkCallExpression = (
 
 const isRawNewPromise = (node: TSESTree.NewExpression) =>
   node.callee.type === AST_NODE_TYPES.Identifier &&
-  node.callee.name === "Promise" &&
+  PROMISE_CONSTRUCTOR_NAMES.has(node.callee.name) &&
   !isInsideUnsafeOrMustFunction(node);
 
 const reportWhen = <N extends TSESTree.Node>(
@@ -105,7 +102,25 @@ const reportWhen = <N extends TSESTree.Node>(
   predicate: Pred.Predicate<N>,
   onMatch: (n: N) => void,
 ) => {
-  pipe(O.some(node), O.filter(predicate), O.map(onMatch));
+  flow(O.fromPredicate(predicate), O.map(onMatch))(node);
+};
+
+const buildErrorHandlingListeners = (
+  services: ParserServicesWithTypeInformation,
+  report: (node: TSESTree.Node, messageId: MessageIds) => void,
+) => {
+  const checkAsync = (node: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression) => {
+    reportWhen(node, (n) => n.async && !isExemptFunction(n), (n) => { report(n, "noAsyncAwait"); });
+  };
+  return {
+    TryStatement: (node: TSESTree.TryStatement) => { reportWhen(node, (n) => !isInsideUnsafeOrMustFunction(n), (n) => { report(n, "noTryCatch"); }); },
+    FunctionDeclaration: checkAsync,
+    FunctionExpression: checkAsync,
+    ArrowFunctionExpression: checkAsync,
+    AwaitExpression: (node: TSESTree.AwaitExpression) => { reportWhen(node, (n) => !isInsideAsyncFunction(n) && !isInsideUnsafeOrMustFunction(n), (n) => { report(n, "noAsyncAwait"); }); },
+    NewExpression: (node: TSESTree.NewExpression) => { reportWhen(node, isRawNewPromise, (n) => { report(n, "noRawPromise"); }); },
+    CallExpression: (node: TSESTree.CallExpression) => { checkCallExpression(node, services, report); },
+  };
 };
 
 export const preferMonadicErrorHandling = createRule<[], MessageIds>({
@@ -125,18 +140,9 @@ export const preferMonadicErrorHandling = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const services = ESLintUtils.getParserServices(context);
-    const checkAsync = (node: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression) => {
-      reportWhen(node, (n) => n.async && !isExemptFunction(n), (n) => { context.report({ node: n, messageId: "noAsyncAwait" }); });
+    const report = (node: TSESTree.Node, messageId: MessageIds) => {
+      context.report({ node, messageId });
     };
-    return {
-      TryStatement: (node) => { reportWhen(node, (n) => !isInsideUnsafeOrMustFunction(n), (n) => { context.report({ node: n, messageId: "noTryCatch" }); }); },
-      FunctionDeclaration: checkAsync,
-      FunctionExpression: checkAsync,
-      ArrowFunctionExpression: checkAsync,
-      AwaitExpression: (node) => { reportWhen(node, (n) => !isInsideAsyncFunction(n) && !isInsideUnsafeOrMustFunction(n), (n) => { context.report({ node: n, messageId: "noAsyncAwait" }); }); },
-      NewExpression: (node) => { reportWhen(node, isRawNewPromise, (n) => { context.report({ node: n, messageId: "noRawPromise" }); }); },
-      CallExpression: (node) => { checkCallExpression(node, services, (n, id) => { context.report({ node: n, messageId: id }); }); },
-    };
+    return buildErrorHandlingListeners(ESLintUtils.getParserServices(context), report);
   },
 });

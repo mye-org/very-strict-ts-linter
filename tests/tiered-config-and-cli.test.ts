@@ -8,12 +8,14 @@ import { ESLint } from "eslint";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow, pipe } from "fp-ts/lib/function.js";
 import * as S from "fp-ts/lib/string.js";
 import { afterAll, describe, expect, it } from "vitest";
 import strictFp, {
   configs,
   createTieredConfig,
+  defaultStrictFpFiles,
+  defaultStrictFpIgnores,
   rules,
   ruleTiers,
   tier0TypeChecker,
@@ -21,7 +23,6 @@ import strictFp, {
   tier2Rules,
   tier3Rules,
 } from "../src/index.js";
-import { defaultStrictFpFiles, defaultStrictFpIgnores } from "../src/configs/recommended.js";
 import {
   classifyMessageTier,
   classifyRuleTier,
@@ -30,6 +31,7 @@ import {
   parseCliArgs,
   runPhasedLint,
   sliceLintResultsForTier,
+  type TierRunSummary,
 } from "../src/cli/strict-fp-lint.js";
 
 const findTierBlock = (configList: ReadonlyArray<TSESLint.FlatConfig.Config>, name: string) =>
@@ -39,25 +41,46 @@ const findTierBlock = (configList: ReadonlyArray<TSESLint.FlatConfig.Config>, na
     O.toUndefined,
   );
 
-const createTempProjectDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "strict-fp-phased-"));
+const tmpRoot = os.tmpdir();
+
+const createTempProjectDir = () =>
+  flow(
+    (prefix: string) => path.join(tmpRoot, prefix),
+    (dirPath) => fs.mkdtempSync(dirPath),
+  )("strict-fp-phased-");
+
+const readProjectFile = (dir: string, name: string) =>
+  fs.readFileSync(path.join(dir, name), "utf8");
+
+const extractSummaryTiers = RA.map((s: TierRunSummary) => s.tier);
+
+const extractFixFlags = RA.map((c: ESLint.Options) => c.fix);
 
 const createTrackingEslint = () => {
-  const ctorCalls: Array<ESLint.Options> = [];
-  const lintFilesCalls: Array<string | Array<string>> = [];
+  let ctorCalls: ReadonlyArray<ESLint.Options> = [];
+  let lintFilesCalls: ReadonlyArray<Parameters<ESLint["lintFiles"]>[0]> = [];
 
   class TrackingESLint extends ESLint {
     constructor(options?: ESLint.Options) {
       super(options);
-      ctorCalls.push(options ?? {});
+      ctorCalls = RA.append(options ?? {})(ctorCalls);
     }
 
-    override lintFiles(patterns: string | Array<string>) {
-      lintFilesCalls.push(patterns);
+    override lintFiles(patterns: Parameters<ESLint["lintFiles"]>[0]) {
+      lintFilesCalls = RA.append(patterns)(lintFilesCalls);
       return super.lintFiles(patterns);
     }
   }
 
-  return { TrackingESLint, ctorCalls, lintFilesCalls };
+  return {
+    TrackingESLint,
+    get ctorCalls() {
+      return ctorCalls;
+    },
+    get lintFilesCalls() {
+      return lintFilesCalls;
+    },
+  };
 };
 
 describe("tiered configs and React/Expo exclusions", () => {
@@ -591,7 +614,7 @@ export default [
         { ESLintClass: cleanTracker.TrackingESLint },
       );
       expect(cleanResult.passed).toBe(true);
-      expect(cleanResult.summaries.map((s) => s.tier)).toEqual([0, 1, 2, 3]);
+      expect(extractSummaryTiers(cleanResult.summaries)).toEqual([0, 1, 2, 3]);
       expect(cleanTracker.ctorCalls).toHaveLength(1);
       expect(cleanTracker.lintFilesCalls).toHaveLength(1);
 
@@ -603,7 +626,7 @@ export default [
       );
       expect(t1Fail.passed).toBe(false);
       expect(t1Fail.failedTier).toBe(1);
-      expect(t1Fail.summaries.map((s) => s.tier)).toEqual([0, 1]);
+      expect(extractSummaryTiers(t1Fail.summaries)).toEqual([0, 1]);
       expect(t1Fail.summaries[1]?.output).toContain("strict-fp/no-any-or-unknown");
       expect(t1Fail.summaries[1]?.output).not.toContain("strict-fp/no-unit-suffixed-primitives");
       expect(t1Fail.summaries[1]?.output).not.toContain("strict-fp/no-let-or-var");
@@ -618,7 +641,7 @@ export default [
       );
       expect(t2Fail.passed).toBe(false);
       expect(t2Fail.failedTier).toBe(2);
-      expect(t2Fail.summaries.map((s) => s.tier)).toEqual([0, 1, 2]);
+      expect(extractSummaryTiers(t2Fail.summaries)).toEqual([0, 1, 2]);
       expect(t2Fail.summaries[1]?.errorCount).toBe(0);
       expect(t2Fail.summaries[2]?.errorCount).toBeGreaterThan(0);
       expect(t2Fail.summaries[2]?.output).toContain("strict-fp/no-unit-suffixed-primitives");
@@ -706,7 +729,7 @@ export default [
       });
       expect(warnResult.passed).toBe(false);
       expect(warnResult.failedTier, JSON.stringify(warnResult.summaries)).toBe(2);
-      expect(warnResult.summaries.map((s) => s.tier)).toEqual([0, 1, 2]);
+      expect(extractSummaryTiers(warnResult.summaries)).toEqual([0, 1, 2]);
       expect(warnResult.summaries[1]?.errorCount).toBe(0);
       expect(warnResult.summaries[1]?.warningCount).toBeGreaterThan(0);
       expect(warnResult.summaries[2]?.errorCount).toBeGreaterThan(0);
@@ -721,7 +744,7 @@ export default [
       });
       expect(fatalFullRun.passed).toBe(false);
       expect(fatalFullRun.failedTier).toBe(1);
-      expect(fatalFullRun.summaries.map((s) => s.tier)).toEqual([0, 1]);
+      expect(extractSummaryTiers(fatalFullRun.summaries)).toEqual([0, 1]);
       expect(fatalFullRun.summaries[1]?.errorCount).toBeGreaterThan(0);
       expect(fatalFullRun.summaries[1]?.output).toContain("Parsing error");
 
@@ -828,9 +851,9 @@ export default [
         { ESLintClass: cleanFixTracker.TrackingESLint },
       );
       expect(cleanFix.passed, JSON.stringify(cleanFix.summaries)).toBe(true);
-      expect(cleanFix.summaries.map((s) => s.tier)).toEqual([0, 1, 2, 3]);
+      expect(extractSummaryTiers(cleanFix.summaries)).toEqual([0, 1, 2, 3]);
       expect(cleanFixTracker.ctorCalls).toHaveLength(3);
-      expect(cleanFixTracker.ctorCalls.every((c) => c.fix === true)).toBe(true);
+      expect(RA.every((c: ESLint.Options) => c.fix === true)(cleanFixTracker.ctorCalls)).toBe(true);
 
       // 2. Unfixable Tier 1 error halts immediately at Tier 1 without running Tier 2 or Tier 3
       const haltTracker = createTrackingEslint();
@@ -840,10 +863,10 @@ export default [
       );
       expect(haltResult.passed).toBe(false);
       expect(haltResult.failedTier).toBe(1);
-      expect(haltResult.summaries.map((s) => s.tier)).toEqual([0, 1]);
+      expect(extractSummaryTiers(haltResult.summaries)).toEqual([0, 1]);
       expect(haltTracker.ctorCalls).toHaveLength(1);
       // Tier 3 autofix must not have run
-      expect(fs.readFileSync(path.join(tmpDir, "unfixable-t1.ts"), "utf8")).toContain("oldName");
+      expect(readProjectFile(tmpDir, "unfixable-t1.ts")).toContain("oldName");
 
       // 3. Fixable Tier 3 issue writes fix to disk, triggers 1 non-fix re-verification pass for Tiers 1..2
       const mutatePassTracker = createTrackingEslint();
@@ -852,11 +875,11 @@ export default [
         { ESLintClass: mutatePassTracker.TrackingESLint },
       );
       expect(mutatePass.passed).toBe(true);
-      expect(mutatePass.summaries.map((s) => s.tier)).toEqual([0, 1, 2, 3]);
-      expect(fs.readFileSync(path.join(tmpDir, "fixable-clean.ts"), "utf8")).toContain("newName");
+      expect(extractSummaryTiers(mutatePass.summaries)).toEqual([0, 1, 2, 3]);
+      expect(readProjectFile(tmpDir, "fixable-clean.ts")).toContain("newName");
       // 3 fix passes (T1, T2, T3) + 1 read-only re-verification pass after Tier 3 mutated
       expect(mutatePassTracker.ctorCalls).toHaveLength(4);
-      expect(mutatePassTracker.ctorCalls.map((c) => c.fix)).toEqual([true, true, true, false]);
+      expect(extractFixFlags(mutatePassTracker.ctorCalls)).toEqual([true, true, true, false]);
 
       // 4. Tier 3 autofix that introduces a Tier 2 violation is caught by mutation-aware re-verification
       const regressTracker = createTrackingEslint();
@@ -866,12 +889,12 @@ export default [
       );
       expect(regressResult.passed).toBe(false);
       expect(regressResult.failedTier).toBe(2);
-      expect(fs.readFileSync(path.join(tmpDir, "fixable-regresses-t2.ts"), "utf8")).toContain("orderHelper");
+      expect(readProjectFile(tmpDir, "fixable-regresses-t2.ts")).toContain("orderHelper");
       const lastSummary = regressResult.summaries[regressResult.summaries.length - 1];
       expect(lastSummary?.tier).toBe(2);
       expect(lastSummary?.output).toContain("strict-fp/no-generic-utility-names");
       // T1 fix pass + T2 fix pass + T3 fix pass + read-only re-verification pass
-      expect(regressTracker.ctorCalls.map((c) => c.fix)).toEqual([true, true, true, false]);
+      expect(extractFixFlags(regressTracker.ctorCalls)).toEqual([true, true, true, false]);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

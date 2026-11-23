@@ -1,14 +1,10 @@
 import { TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as Pred from "fp-ts/lib/Predicate.js";
-import { pipe } from "fp-ts/lib/function.js";
-import { createRule } from "../utils/create-rule.js";
+import { flow } from "fp-ts/lib/function.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isInsideUnsafeOrMustFunction, isUnsafeOrMustName, resolveDirectFunctionName } from "../lib/unsafe-function-scope.js";
 
-import {
-  getDirectFunctionName,
-  isInsideUnsafeOrMustFunction,
-  isUnsafeOrMustName,
-} from "../utils/type-helpers.js";
 
 type MessageIds = "noAsync" | "noAwait";
 
@@ -19,31 +15,36 @@ type AnyFunctionNode =
 
 const isExemptAsyncFn = (node: AnyFunctionNode) =>
   isInsideUnsafeOrMustFunction(node) ||
-  pipe(getDirectFunctionName(node), O.exists(isUnsafeOrMustName));
+  flow(resolveDirectFunctionName, O.exists(isUnsafeOrMustName))(node);
 
 const reportWhen = <N extends TSESTree.Node>(
   node: N,
   predicate: Pred.Predicate<N>,
   onMatch: (n: N) => void,
 ) => {
-  pipe(O.some(node), O.filter(predicate), O.map(onMatch));
+  flow(O.fromPredicate(predicate), O.map(onMatch))(node);
 };
 
-const createVisitors = (
+const makeAsyncFnChecker =
+  (reportAsync: (n: AnyFunctionNode) => void) => (node: AnyFunctionNode) => {
+    reportWhen(node, (n) => n.async && !isExemptAsyncFn(n), reportAsync);
+  };
+
+const makeAwaitChecker =
+  (reportAwait: (n: TSESTree.Node) => void) => (node: TSESTree.Node) => {
+    reportWhen(node, (n) => !isInsideUnsafeOrMustFunction(n), reportAwait);
+  };
+
+const buildVisitors = (
   reportAsync: (n: AnyFunctionNode) => void,
   reportAwait: (n: TSESTree.Node) => void,
 ) => {
-  const checkAsyncFn = (node: AnyFunctionNode) => {
-    reportWhen(node, (n) => n.async && !isExemptAsyncFn(n), reportAsync);
-  };
-  const checkAwaitNode = (node: TSESTree.Node) => {
-    reportWhen(node, (n) => !isInsideUnsafeOrMustFunction(n), reportAwait);
-  };
+  const checkAsyncFn = makeAsyncFnChecker(reportAsync);
   return {
     FunctionDeclaration: checkAsyncFn,
     FunctionExpression: checkAsyncFn,
     ArrowFunctionExpression: checkAsyncFn,
-    AwaitExpression: checkAwaitNode,
+    AwaitExpression: makeAwaitChecker(reportAwait),
     ForOfStatement: (node: TSESTree.ForOfStatement) => {
       reportWhen(node, (n) => n.await && !isInsideUnsafeOrMustFunction(n), reportAwait);
     },
@@ -71,7 +72,7 @@ export const noAsyncAwait = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) =>
-    createVisitors(
+    buildVisitors(
       (node) => { context.report({ node, messageId: "noAsync" }); },
       (node) => { context.report({ node, messageId: "noAwait" }); },
     ),

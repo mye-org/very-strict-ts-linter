@@ -6,22 +6,22 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import {
   analyzeContextDrilling,
   ContextDrillingFinding,
 } from "../analyzers/context-drilling-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsNodeOwnLocation, makeLocationKey } from "../utils/ts-ast-helpers.js";
-import { hasFunctionInit } from "../utils/type-helpers.js";
+import { hasFunctionInit } from "../lib/estree-function-nodes.js";
+import { createRule } from "../lib/rule-factory.js";
+import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
 type Options = [Readonly<Record<"minDepth", number>>];
 type MessageIds = "contextDrilling";
 
-const getNodeLocationKey = (
+const resolveNodeLocationKey = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) => pipe(services.esTreeNodeToTSNodeMap.get(node), getTsNodeOwnLocation, makeLocationKey);
+) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
 
 const toDrillingDescriptor = (node: TSESTree.Node, finding: ContextDrillingFinding) => ({
   node,
@@ -40,10 +40,15 @@ const reportDrillingFindings = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(locationIndex[getNodeLocationKey(node, services)]),
-    O.map(RA.map((finding) => { report(toDrillingDescriptor(node, finding)); })),
-  );
+  flow(
+    (n: TSESTree.Node) => locationIndex[resolveNodeLocationKey(n, services)],
+    O.fromNullable,
+    O.map(
+      RA.map((finding) => {
+        report(toDrillingDescriptor(node, finding));
+      }),
+    ),
+  )(node);
 };
 
 const checkNamedFnNode = (
@@ -60,7 +65,7 @@ const checkNamedFnNode = (
   );
 };
 
-const createDrillingListeners = (
+const buildDrillingListeners = (
   minDepth: number,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -69,10 +74,10 @@ const createDrillingListeners = (
     checkNamedFnNode(node, minDepth, services, report);
   },
   VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
-    pipe(
-      O.fromPredicate(hasFunctionInit)(node),
+    flow(
+      O.fromPredicate(hasFunctionInit),
       O.map((n) => { checkNamedFnNode(n, minDepth, services, report); }),
-    );
+    )(node);
   },
 });
 
@@ -100,7 +105,7 @@ export const preferReaderOverContextDrilling = createRule<Options, MessageIds>({
     defaultOptions: [{ minDepth: 3 }],
   },
   create: (context, [options]) =>
-    createDrillingListeners(options.minDepth, ESLintUtils.getParserServices(context), (d) => {
+    buildDrillingListeners(options.minDepth, ESLintUtils.getParserServices(context), (d) => {
       context.report(d);
     }),
 });

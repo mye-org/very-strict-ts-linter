@@ -1,5 +1,5 @@
 import { TSESTree } from "@typescript-eslint/utils";
-import { createRule } from "../utils/create-rule.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "noAny" | "noUnknown";
 

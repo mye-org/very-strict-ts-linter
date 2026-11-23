@@ -1,10 +1,11 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow, pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
+import { match } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import { isCalleeOfCallExpression } from "../utils/type-helpers.js";
+import { isCalleeOfCallExpression } from "../lib/call-callee.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type Options = [Readonly<Record<"maxHops", number>>];
 type MessageIds = "trainWreckNavigation";
@@ -26,13 +27,12 @@ const isNamespaceSymbol = (
   expr: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
-    services.esTreeNodeToTSNodeMap.get(expr),
-    (tsNode) => services.program.getTypeChecker().getSymbolAtLocation(tsNode),
+  flow(
+    (tsNode: ts.Node) => services.program.getTypeChecker().getSymbolAtLocation(tsNode),
     O.fromNullable,
     O.flatMap((sym) => O.fromNullable(sym.declarations)),
     O.exists(RA.some(isNamespaceDecl)),
-  );
+  )(services.esTreeNodeToTSNodeMap.get(expr));
 
 const isHopRoot = (
   expr: TSESTree.MemberExpression,
@@ -50,26 +50,52 @@ const countMemberHops = (
   services: ParserServicesWithTypeInformation,
 ) => (isHopRoot(expr, services) ? 0 : 1 + countPropertyHops(expr.object, services));
 
+const formatHopFields = (hops: number, maxHops: number) => ({
+  hops: String(hops),
+  max: String(maxHops),
+});
+
+const reportIfExceedsMaxHops = (
+  node: TSESTree.MemberExpression,
+  hops: number,
+  maxHops: number,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  match(hops > maxHops)
+    .with(true, () => {
+      report({
+        node,
+        messageId: "trainWreckNavigation",
+        data: formatHopFields(hops, maxHops),
+      });
+    })
+    .with(false, () => {})
+    .exhaustive();
+};
+
 const checkMemberChain = (
   node: TSESTree.MemberExpression,
   maxHops: number,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.some(node),
-    O.filter(isOutermostPropertyChain),
-    O.map(flow((n) => countPropertyHops(n, services))),
-    O.filter((h) => h > maxHops),
-    O.map((h) => {
-      report({
-        node,
-        messageId: "trainWreckNavigation",
-        data: { hops: String(h), max: String(maxHops) },
-      });
-    }),
-  );
+  match(isOutermostPropertyChain(node))
+    .with(true, () => {
+      reportIfExceedsMaxHops(node, countPropertyHops(node, services), maxHops, report);
+    })
+    .with(false, () => {})
+    .exhaustive();
 };
+
+const buildTrainWreckListeners = (
+  maxHops: number,
+  services: ParserServicesWithTypeInformation,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => ({
+  MemberExpression: (node: TSESTree.MemberExpression) => {
+    checkMemberChain(node, maxHops, services, report);
+  },
+});
 
 export const noTrainWreckNavigation = createRule<Options, MessageIds>({
   name: "no-train-wreck-navigation",
@@ -92,17 +118,8 @@ export const noTrainWreckNavigation = createRule<Options, MessageIds>({
     ],
     defaultOptions: [{ maxHops: 2 }],
   },
-  create: (context, [options]) => {
-    const services = ESLintUtils.getParserServices(context);
-    return {
-      MemberExpression: (node) => {
-        checkMemberChain(
-          node,
-          options.maxHops,
-          services,
-          (d) => { context.report(d); },
-        );
-      },
-    };
-  },
+  create: (context, [options]) =>
+    buildTrainWreckListeners(options.maxHops, ESLintUtils.getParserServices(context), (d) => {
+      context.report(d);
+    }),
 });

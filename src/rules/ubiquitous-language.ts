@@ -3,18 +3,15 @@ import { AST_NODE_TYPES, ESLintUtils, TSESLint, TSESTree } from "@typescript-esl
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as S from "fp-ts/lib/string.js";
-import { flow, pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import {
-  getProjectSourceFiles,
-  memoizeByProgram,
-  normalizeFilePath,
-  shouldLintDomainFile,
-} from "../utils/program-cache.js";
-import { collectTsNodes } from "../utils/ts-ast-helpers.js";
-import { hasStrictSuffix, isEsTreeAnonymousFunctionNode } from "../utils/type-helpers.js";
+import { isEsTreeAnonymousFunctionNode } from "../lib/estree-function-nodes.js";
+import { memoizeByProgram } from "../lib/program-memo.js";
+import { createRule } from "../lib/rule-factory.js";
+import { collectProjectSourceFiles, normalizeFilePath, shouldLintDomainFile } from "../lib/source-paths.js";
+import { hasStrictSuffix } from "../lib/string-suffix.js";
+import { collectTsNodes } from "../lib/ts-node-traversal.js";
 
 // eslint-disable-next-line strict-fp/prefer-union-over-boolean -- ESLint rule JSON schema boolean option
 type ScopeFlag = boolean;
@@ -33,6 +30,7 @@ type Options = [
 type MessageIds = "genericSuffix" | "crudVerb" | "synonymCollision";
 type SymbolKind = "function" | "type";
 type RepoKind = "repo" | "non-repo";
+type ContextTermsByDir = Readonly<Record<string, ReadonlySet<string>>>;
 
 const DEFAULT_DOMAIN_PATTERNS = ["**/domain/**", "**/domains/**", "**/application/**"];
 const DEFAULT_GENERIC_SUFFIXES = ["Manager", "Helper", "Processor", "Utils", "Util", "Data", "Info", "Handler"];
@@ -45,7 +43,7 @@ const DEFAULT_SYNONYM_GROUPS = [
 const REPO_PATH_RE = /(repository|repositories|repo|adapter|infra)/i;
 const PASCAL_TOKEN_RE = /[A-Z][a-z0-9]+/g;
 
-const contextTermCache = new WeakMap<ts.Program, Readonly<Record<string, ReadonlySet<string>>>>();
+const contextTermCache = new WeakMap<ts.Program, ContextTermsByDir>();
 
 const extractPascalTokens = (name: string) => name.match(PASCAL_TOKEN_RE) ?? [];
 
@@ -63,41 +61,40 @@ const isNamedTsDecl = (
   ts.isFunctionDeclaration(node) ||
   ts.isVariableDeclaration(node);
 
-const getDeclaredNameFromTsNode = (node: ts.Node) =>
+const extractDeclaredTsName = (node: ts.Node) =>
   isNamedTsDecl(node) && node.name && ts.isIdentifier(node.name)
     ? O.some(node.name.text)
     : O.none;
 
-const getContextDir = flow(path.dirname, normalizeFilePath);
+const resolveContextDir = flow(path.dirname, normalizeFilePath);
 
 const extractSfTokens = (sf: ts.SourceFile) =>
-  pipe(collectTsNodes(sf, sf), RA.filterMap(getDeclaredNameFromTsNode), RA.flatMap(extractPascalTokens));
+  flow(collectTsNodes, RA.filterMap(extractDeclaredTsName), RA.flatMap(extractPascalTokens))(sf, sf);
 
-const getProgramContextTerms = (program: ts.Program) =>
-  memoizeByProgram(program, contextTermCache, (p) => {
-    const byDir: Record<string, Set<string>> = {};
-    for (const sf of getProjectSourceFiles(p)) {
-      const dir = getContextDir(sf.fileName);
-      const set = byDir[dir] ?? new Set<string>();
-      for (const token of extractSfTokens(sf)) {
-        set.add(token);
-      }
-      byDir[dir] = set;
-    }
-    return byDir as Readonly<Record<string, ReadonlySet<string>>>;
-  });
+const mergeSourceFileTerms = (acc: ContextTermsByDir, sf: ts.SourceFile) => {
+  const dir = resolveContextDir(sf.fileName);
+  return {
+    ...acc,
+    [dir]: new Set([...(acc[dir] ?? []), ...extractSfTokens(sf)]),
+  };
+};
+
+const buildContextTermsByDir = flow(
+  collectProjectSourceFiles,
+  RA.reduce<ts.SourceFile, ContextTermsByDir>({}, mergeSourceFileTerms),
+);
+
+const indexProgramContextTerms = (program: ts.Program) =>
+  memoizeByProgram(program, contextTermCache, buildContextTermsByDir);
 
 const findGenericSuffix = (name: string, suffixes: ReadonlyArray<string>) =>
-  pipe(suffixes, RA.findFirst((s) => hasStrictSuffix(name, s)));
+  RA.findFirst((s: string) => hasStrictSuffix(name, s))(suffixes);
 
 const findCrudVerb = (name: string, verbs: ReadonlyArray<string>) =>
-  pipe(
-    verbs,
-    RA.findFirst((v) => {
-      const nextChar = name.charAt(v.length);
-      return name.startsWith(v) && nextChar >= "A" && nextChar <= "Z";
-    }),
-  );
+  RA.findFirst((v: string) => {
+    const nextChar = name.charAt(v.length);
+    return name.startsWith(v) && nextChar >= "A" && nextChar <= "Z";
+  })(verbs);
 
 type SynonymContext = Readonly<{
   readonly contextTerms: ReadonlySet<string>;
@@ -105,46 +102,54 @@ type SynonymContext = Readonly<{
   readonly allowed: ReadonlySet<string>;
 }>;
 
+const formatConflictingTerms = (token: string) =>
+  RA.match(
+    () => O.none,
+    (nonEmpty: ReadonlyArray<string>) => O.some({ token, conflicting: nonEmpty.join(", ") }),
+  );
+
 const findGroupConflict = (
   token: string,
   ownTokens: ReadonlySet<string>,
   group: ReadonlyArray<string>,
   ctx: SynonymContext,
 ) =>
-  pipe(
-    group,
+  flow(
     RA.filter(
-      (term) =>
+      (term: string) =>
         term !== token &&
         !ownTokens.has(term) &&
         ctx.contextTerms.has(term) &&
         !ctx.allowed.has(term),
     ),
     RA.uniq(S.Eq),
-    (conflicting) =>
-      conflicting.length > 0 ? O.some({ token, conflicting: conflicting.join(", ") }) : O.none,
-  );
+    formatConflictingTerms(token),
+  )(group);
 
 const matchTokenGroupConflict = (
   token: string,
   ownTokens: ReadonlySet<string>,
   ctx: SynonymContext,
 ) =>
-  pipe(
-    ctx.synonymGroups,
-    RA.findFirst((group) => group.includes(token)),
+  flow(
+    RA.findFirst((group: ReadonlyArray<string>) => group.includes(token)),
     O.flatMap((group) => findGroupConflict(token, ownTokens, group, ctx)),
-  );
+  )(ctx.synonymGroups);
+
+const findCollisionForTokens = (
+  tokens: ReadonlyArray<string>,
+  ownTokens: ReadonlySet<string>,
+  ctx: SynonymContext,
+) =>
+  flow(
+    RA.filter((token: string) => !ctx.allowed.has(token)),
+    RA.filterMap((token) => matchTokenGroupConflict(token, ownTokens, ctx)),
+    RA.head,
+  )(tokens);
 
 const findSynonymCollision = (name: string, ctx: SynonymContext) => {
   const tokens = extractPascalTokens(name);
-  const ownTokens = new Set(tokens);
-  return pipe(
-    tokens,
-    RA.filter((token) => !ctx.allowed.has(token)),
-    RA.filterMap((token) => matchTokenGroupConflict(token, ownTokens, ctx)),
-    RA.head,
-  );
+  return findCollisionForTokens(tokens, new Set(tokens), ctx);
 };
 
 const reportGenericAndCrud = (
@@ -154,16 +159,14 @@ const reportGenericAndCrud = (
   options: Options[0],
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    findGenericSuffix(id.name, options.genericSuffixes),
-    O.map((suffix) => { report({ node: id, messageId: "genericSuffix", data: { name: id.name, suffix } }); }),
-  );
+  O.map((suffix: string) => {
+    report({ node: id, messageId: "genericSuffix", data: { name: id.name, suffix } });
+  })(findGenericSuffix(id.name, options.genericSuffixes));
   match({ symbolKind, repoKind })
     .with({ symbolKind: "function", repoKind: "non-repo" }, () => {
-      pipe(
-        findCrudVerb(id.name, options.crudVerbs),
-        O.map((verb) => { report({ node: id, messageId: "crudVerb", data: { name: id.name, verb } }); }),
-      );
+      O.map((verb: string) => {
+        report({ node: id, messageId: "crudVerb", data: { name: id.name, verb } });
+      })(findCrudVerb(id.name, options.crudVerbs));
     })
     .otherwise(() => {});
 };
@@ -181,21 +184,23 @@ const checkIdentifier = (
     .with(true, () => {})
     .with(false, () => {
       reportGenericAndCrud(id, symbolKind, repoKind, options, report);
-      pipe(
-        findSynonymCollision(id.name, { contextTerms, synonymGroups: options.synonymGroups, allowed }),
-        O.map(({ token, conflicting }) => {
-          report({ node: id, messageId: "synonymCollision", data: { term: token, conflicting } });
-        }),
-      );
+      O.map(({ token, conflicting }: Readonly<Record<"token" | "conflicting", string>>) => {
+        report({ node: id, messageId: "synonymCollision", data: { term: token, conflicting } });
+      })(findSynonymCollision(id.name, { contextTerms, synonymGroups: options.synonymGroups, allowed }));
     })
     .exhaustive();
 };
 
-const getDeclaratorKind = (init: O.Option<TSESTree.Expression>) =>
-  pipe(init, O.exists(isEsTreeAnonymousFunctionNode)) ? ("function" as const) : ("type" as const);
+const resolveDeclaratorKind = (node: TSESTree.VariableDeclarator) =>
+  O.exists(isEsTreeAnonymousFunctionNode)(O.fromNullable(node.init))
+    ? ("function" as const)
+    : ("type" as const);
 
-const getDeclaratorIdentifier = (node: TSESTree.VariableDeclarator) =>
+const extractDeclaratorIdentifier = (node: TSESTree.VariableDeclarator) =>
   node.id.type === AST_NODE_TYPES.Identifier ? O.some(node.id) : O.none;
+
+const classifyRepoKind = (fileName: string) =>
+  REPO_PATH_RE.test(fileName) ? ("repo" as const) : ("non-repo" as const);
 
 const buildListenerMap = (run: (id: O.Option<TSESTree.Identifier>, symbolKind: SymbolKind) => void) => ({
   TSTypeAliasDeclaration: (node: TSESTree.TSTypeAliasDeclaration) => { run(O.some(node.id), "type"); },
@@ -203,7 +208,7 @@ const buildListenerMap = (run: (id: O.Option<TSESTree.Identifier>, symbolKind: S
   ClassDeclaration: (node: TSESTree.ClassDeclaration) => { run(O.fromNullable(node.id), "type"); },
   FunctionDeclaration: (node: TSESTree.FunctionDeclaration) => { run(O.fromNullable(node.id), "function"); },
   VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
-    pipe(O.fromNullable(node.init), getDeclaratorKind, (kind) => { run(getDeclaratorIdentifier(node), kind); });
+    run(extractDeclaratorIdentifier(node), resolveDeclaratorKind(node));
   },
 });
 
@@ -214,12 +219,9 @@ const buildListeners = (
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) =>
   buildListenerMap((id, symbolKind) => {
-    pipe(
-      id,
-      O.map((node) => {
-        checkIdentifier(node, symbolKind, REPO_PATH_RE.test(fileName) ? "repo" : "non-repo", contextTerms, options, report);
-      }),
-    );
+    O.map((node: TSESTree.Identifier) => {
+      checkIdentifier(node, symbolKind, classifyRepoKind(fileName), contextTerms, options, report);
+    })(id);
   });
 
 export const ubiquitousLanguage = createRule<Options, MessageIds>({
@@ -270,8 +272,8 @@ export const ubiquitousLanguage = createRule<Options, MessageIds>({
       options.domainPatterns,
     )
       ? buildListeners(
-          getProgramContextTerms(ESLintUtils.getParserServices(context).program)[
-            getContextDir(context.filename)
+          indexProgramContextTerms(ESLintUtils.getParserServices(context).program)[
+            resolveContextDir(context.filename)
           ] ?? new Set<string>(),
           context.filename,
           options,

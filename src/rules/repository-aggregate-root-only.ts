@@ -2,12 +2,13 @@ import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLin
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as S from "fp-ts/lib/string.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { analyzeAggregateGraph } from "../analyzers/aggregate-graph-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsTypeName, unwrapContainerTsTypes } from "../utils/type-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { unwrapContainerTsTypes } from "../lib/ts-container-types.js";
+import { resolveTsTypeName } from "../lib/ts-type-name.js";
 
 type Options = [
   Readonly<{
@@ -17,117 +18,126 @@ type Options = [
   }>,
 ];
 type MessageIds = "nonAggregateRepository";
+type AggregateGraph = ReturnType<typeof analyzeAggregateGraph>;
 
 const hasRepoSuffix = (name: string) =>
   name.endsWith("Repository") || name.endsWith("Repo");
 
-const getPropCallSigs = (prop: ts.Symbol, checker: ts.TypeChecker) =>
-  pipe(
-    O.fromNullable(prop.valueDeclaration ?? prop.declarations?.[0]),
-    O.map((d) => checker.getTypeOfSymbolAtLocation(prop, d).getCallSignatures()),
+const resolvePropCallSigs = (prop: ts.Symbol, checker: ts.TypeChecker) =>
+  flow(
+    O.map((d: ts.Declaration) => checker.getTypeOfSymbolAtLocation(prop, d).getCallSignatures()),
     O.getOrElse(() => [] as ReadonlyArray<ts.Signature>),
+  )(O.fromNullable(prop.valueDeclaration ?? prop.declarations?.[0]));
+
+const resolveDeclTypes = (param: ts.Symbol, checker: ts.TypeChecker) =>
+  flow(
+    (decl: ts.Declaration) => checker.getTypeOfSymbolAtLocation(param, decl),
+    (t) => unwrapContainerTsTypes(t, checker),
   );
 
-const resolveDeclTypes = (param: ts.Symbol, checker: ts.TypeChecker) => (decl: ts.Declaration) =>
-  pipe(checker.getTypeOfSymbolAtLocation(param, decl), (t) => unwrapContainerTsTypes(t, checker));
+const extractSymbolDeclaration = (sym: ts.Symbol) =>
+  O.fromNullable(sym.valueDeclaration ?? sym.declarations?.[0]);
 
 const resolveSingleParamTypes = (checker: ts.TypeChecker) => (p: ts.Symbol) =>
-  pipe(
-    O.fromNullable(p.valueDeclaration ?? p.declarations?.[0]),
+  flow(
+    extractSymbolDeclaration,
     O.map(resolveDeclTypes(p, checker)),
     O.getOrElse(() => [] as ReadonlyArray<ts.Type>),
-  );
+  )(p);
 
-const getParamTypesFromSig = (sig: ts.Signature, checker: ts.TypeChecker) =>
-  pipe(
-    sig.getParameters(),
-    RA.flatMap(resolveSingleParamTypes(checker)),
-  );
+const extractParamTypesFromSig = (sig: ts.Signature, checker: ts.TypeChecker) =>
+  RA.flatMap(resolveSingleParamTypes(checker))(sig.getParameters());
 
 const extractEntityNamesFromDecl = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
 ) => {
   const checker = services.program.getTypeChecker();
-  return pipe(
-    services.esTreeNodeToTSNodeMap.get(node),
-    (tsNode) => checker.getTypeAtLocation(tsNode).getProperties(),
-    RA.flatMap((prop) => getPropCallSigs(prop, checker)),
+  return flow(
+    (tsNode: ts.Node) => checker.getTypeAtLocation(tsNode).getProperties(),
+    RA.flatMap((prop) => resolvePropCallSigs(prop, checker)),
     RA.flatMap((sig) => [
       ...unwrapContainerTsTypes(checker.getReturnTypeOfSignature(sig), checker),
-      ...getParamTypesFromSig(sig, checker),
+      ...extractParamTypesFromSig(sig, checker),
     ]),
-    RA.filterMap(getTsTypeName),
+    RA.filterMap(resolveTsTypeName),
     RA.uniq(S.Eq),
-  );
+  )(services.esTreeNodeToTSNodeMap.get(node));
 };
 
 const resolveManagedEntities = (
   reportNode: TSESTree.Node,
   repoName: string,
-  graph: ReturnType<typeof analyzeAggregateGraph>,
+  graph: AggregateGraph,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
-    graph.repos,
-    RA.findFirst((r) => r.repoName === repoName),
+  flow(
+    RA.findFirst((r: AggregateGraph["repos"][number]) => r.repoName === repoName),
     O.map((r) => r.entityTypes),
     O.getOrElse(() => extractEntityNamesFromDecl(reportNode, services)),
-  );
+  )(graph.repos);
 
-const resolveChildEntityInfo = (
-  entity: string,
-  childSet: ReadonlySet<string>,
-  graph: ReturnType<typeof analyzeAggregateGraph>,
-) =>
-  childSet.has(entity)
-    ? O.some({ entity, parent: "parent Aggregate Root" })
-    : pipe(graph.isChildEntity(entity), O.map((parents) => ({ entity, parent: parents.join(", ") })));
+const joinParentNames = (parents: ReadonlyArray<string>) => parents.join(", ");
 
-const findNonAggregateWithSets = (
-  managedEntities: ReadonlyArray<string>,
-  childSet: ReadonlySet<string>,
-  explicitAggs: ReadonlySet<string>,
-  graph: ReturnType<typeof analyzeAggregateGraph>,
-) =>
-  pipe(
-    managedEntities,
-    RA.filter((entity) => !explicitAggs.has(entity)),
-    RA.filterMap((entity) => resolveChildEntityInfo(entity, childSet, graph)),
-    RA.head,
-  );
+const resolveChildOwnership =
+  (childSet: ReadonlySet<string>, graph: AggregateGraph) => (entity: string) =>
+    childSet.has(entity)
+      ? O.some({ entity, parent: "parent Aggregate Root" })
+      : O.map((parents: ReadonlyArray<string>) => ({ entity, parent: joinParentNames(parents) }))(
+          graph.isChildEntity(entity),
+        );
+
+const excludeExplicitAggregates = (explicitAggs: ReadonlySet<string>) =>
+  RA.filter((entity: string) => !explicitAggs.has(entity));
 
 const findNonAggregateTarget = (
   managedEntities: ReadonlyArray<string>,
   options: Options[0],
-  graph: ReturnType<typeof analyzeAggregateGraph>,
+  graph: AggregateGraph,
 ) =>
-  findNonAggregateWithSets(
-    managedEntities,
-    new Set(options.childEntities),
-    new Set(options.aggregateRoots),
-    graph,
-  );
+  flow(
+    excludeExplicitAggregates(new Set(options.aggregateRoots)),
+    RA.filterMap(resolveChildOwnership(new Set(options.childEntities), graph)),
+    RA.head,
+  )(managedEntities);
 
 const checkRepoDeclaration = (
   reportNode: TSESTree.Node,
   repoName: string,
   options: Options[0],
-  graph: ReturnType<typeof analyzeAggregateGraph>,
+  graph: AggregateGraph,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   match(hasRepoSuffix(repoName))
     .with(false, () => {})
     .with(true, () => {
-      pipe(
-        findNonAggregateTarget(resolveManagedEntities(reportNode, repoName, graph, services), options, graph),
+      flow(
+        (n: TSESTree.Node) => resolveManagedEntities(n, repoName, graph, services),
+        (entities) => findNonAggregateTarget(entities, options, graph),
         O.map(({ entity, parent }) => {
           report({ node: reportNode, messageId: "nonAggregateRepository", data: { repo: repoName, entity, parent } });
         }),
-      );
+      )(reportNode);
     })
     .exhaustive();
+};
+
+const inspectNamedRepo = (
+  node: TSESTree.Node,
+  name: string,
+  options: Options[0],
+  services: ParserServicesWithTypeInformation,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  checkRepoDeclaration(
+    node,
+    name,
+    options,
+    analyzeAggregateGraph(services.program, options.aggregateRoots, options.aggregatePathPatterns),
+    services,
+    report,
+  );
 };
 
 const makeRepoNodeChecker =
@@ -137,23 +147,13 @@ const makeRepoNodeChecker =
     report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
   ) =>
   (node: TSESTree.Node, name: O.Option<string>) => {
-    pipe(
-      name,
+    flow(
       O.filter(hasRepoSuffix),
-      O.map((n) => {
-        checkRepoDeclaration(
-          node,
-          n,
-          options,
-          analyzeAggregateGraph(services.program, options.aggregateRoots, options.aggregatePathPatterns),
-          services,
-          report,
-        );
-      }),
-    );
+      O.map((n) => { inspectNamedRepo(node, n, options, services, report); }),
+    )(name);
   };
 
-const createRepoListeners = (
+const buildRepoListeners = (
   options: Options[0],
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -201,5 +201,5 @@ export const repositoryAggregateRootOnly = createRule<Options, MessageIds>({
     ],
   },
   create: (context, [options]) =>
-    createRepoListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    buildRepoListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
 });

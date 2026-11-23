@@ -2,10 +2,10 @@ import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { shouldLintDomainFile } from "../utils/program-cache.js";
+import { createRule } from "../lib/rule-factory.js";
+import { shouldLintDomainFile } from "../lib/source-paths.js";
 
 // eslint-disable-next-line strict-fp/prefer-union-over-boolean -- ESLint rule JSON schema boolean option
 type ScopeFlag = boolean;
@@ -62,28 +62,28 @@ const IMPURE_MEMBER_METHODS = {
   crypto: new Set(["randomUUID"]),
 } as const satisfies Readonly<Record<string, ReadonlySet<string>>>;
 
-const IMPURE_DIRECT_CALLS = new Set(["fetch"]);
+const IMPURE_DIRECT_CALLS: ReadonlySet<string> = new Set(["fetch"]);
+const PROCESS_GLOBAL_NAMES: ReadonlySet<string> = new Set(["process"]);
+const ENV_PROPERTY_NAMES: ReadonlySet<string> = new Set(["env"]);
+const DATE_CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set(["Date"]);
 
 const isForbiddenImportSource = (
   source: string,
   forbiddenImports: ReadonlyArray<string>,
 ) =>
-  pipe(
-    forbiddenImports,
-    RA.some((pattern) =>
-      pattern.endsWith("/")
-        ? source.startsWith(pattern)
-        : source === pattern || source.startsWith(`${pattern}/`),
-    ),
-  );
+  RA.some((pattern: string) =>
+    pattern.endsWith("/")
+      ? source.startsWith(pattern)
+      : source === pattern || source.startsWith(`${pattern}/`),
+  )(forbiddenImports);
 
 const isImpureConsoleCall = (objName: string) => objName === "console";
 
 const hasImpureMemberMethod = (objName: string, propName: string) =>
-  pipe(
-    RR.lookup(objName, IMPURE_MEMBER_METHODS),
+  flow(
+    (name: string) => RR.lookup(name, IMPURE_MEMBER_METHODS),
     O.exists((methods) => methods.has(propName)),
-  );
+  )(objName);
 
 const isImpureMemberCall = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.MemberExpression &&
@@ -97,13 +97,13 @@ const isImpureDirectCall = (callee: TSESTree.Expression) =>
 
 const isProcessEnvAccess = (node: TSESTree.MemberExpression) =>
   node.object.type === AST_NODE_TYPES.Identifier &&
-  node.object.name === "process" &&
+  PROCESS_GLOBAL_NAMES.has(node.object.name) &&
   node.property.type === AST_NODE_TYPES.Identifier &&
-  node.property.name === "env";
+  ENV_PROPERTY_NAMES.has(node.property.name);
 
 const isZeroArgNewDate = (node: TSESTree.NewExpression) =>
   node.callee.type === AST_NODE_TYPES.Identifier &&
-  node.callee.name === "Date" &&
+  DATE_CONSTRUCTOR_NAMES.has(node.callee.name) &&
   node.arguments.length === 0;
 
 const checkImportNode = (
@@ -125,11 +125,12 @@ const checkWhenImpure = (
   predicate: () => boolean,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.some(target),
-    O.filter(predicate),
-    O.map((node) => { report({ node, messageId: "impureDomainRuntime", data: { expr } }); }),
-  );
+  match(predicate())
+    .with(true, () => {
+      report({ node: target, messageId: "impureDomainRuntime", data: { expr } });
+    })
+    .with(false, () => {})
+    .exhaustive();
 };
 
 const buildPurityListeners = (

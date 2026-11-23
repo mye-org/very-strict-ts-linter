@@ -1,17 +1,24 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { analyzeStringlyTypedDiscriminants, DiscriminantCluster } from "../analyzers/stringly-typed-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsNodeOwnLocation, makeLocationKey } from "../utils/ts-ast-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
 type Options = [Readonly<Record<"minBranches", number>>];
 type MessageIds = "stringlyTypedDiscriminant";
 
-const getNodeLocationKey = (
+const WITH_METHOD_NAMES: ReadonlySet<string> = new Set(["with"]);
+
+const resolveNodeLocationKey = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) => pipe(services.esTreeNodeToTSNodeMap.get(node), getTsNodeOwnLocation, makeLocationKey);
+) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
+
+const formatDiscriminantFields = (cluster: DiscriminantCluster) => ({
+  target: cluster.targetKey,
+  literals: cluster.literals.join(", "),
+});
 
 const reportDiscriminant = (
   node: TSESTree.Node,
@@ -19,22 +26,21 @@ const reportDiscriminant = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(byLocation[getNodeLocationKey(node, services)]),
-    O.map((cluster) => {
-      report({
-        node,
-        messageId: "stringlyTypedDiscriminant",
-        data: { target: cluster.targetKey, literals: cluster.literals.join(", ") },
-      });
-    }),
-  );
+  O.map((cluster: DiscriminantCluster) => {
+    report({
+      node,
+      messageId: "stringlyTypedDiscriminant",
+      data: formatDiscriminantFields(cluster),
+    });
+  })(O.fromNullable(byLocation[resolveNodeLocationKey(node, services)]));
 };
 
+const isWithProperty = (member: TSESTree.MemberExpression) =>
+  member.property.type === AST_NODE_TYPES.Identifier &&
+  WITH_METHOD_NAMES.has(member.property.name);
+
 const isWithMemberCall = (c: TSESTree.CallExpression) =>
-  c.callee.type === AST_NODE_TYPES.MemberExpression &&
-  c.callee.property.type === AST_NODE_TYPES.Identifier &&
-  c.callee.property.name === "with";
+  c.callee.type === AST_NODE_TYPES.MemberExpression && isWithProperty(c.callee);
 
 const checkWithCall = (
   node: TSESTree.CallExpression,
@@ -42,12 +48,11 @@ const checkWithCall = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.some(node),
-    O.filter(isWithMemberCall),
+  flow(
+    O.fromPredicate(isWithMemberCall),
     O.flatMap((c) => O.fromNullable(c.arguments[0])),
     O.map((arg0) => { reportDiscriminant(arg0, byLocation, services, report); }),
-  );
+  )(node);
 };
 
 export const noStringlyTypedDiscriminants = createRule<Options, MessageIds>({
@@ -76,12 +81,12 @@ export const noStringlyTypedDiscriminants = createRule<Options, MessageIds>({
   create: (context, [options]) => {
     const services = ESLintUtils.getParserServices(context);
     const report = (d: TSESLint.ReportDescriptor<MessageIds>) => { context.report(d); };
-    const getByLoc = () => analyzeStringlyTypedDiscriminants(services.program, options.minBranches).byLocation;
-    const check = (node: TSESTree.Node) => { reportDiscriminant(node, getByLoc(), services, report); };
+    const resolveByLoc = () => analyzeStringlyTypedDiscriminants(services.program, options.minBranches).byLocation;
+    const check = (node: TSESTree.Node) => { reportDiscriminant(node, resolveByLoc(), services, report); };
     return {
       BinaryExpression: check,
       SwitchCase: check,
-      CallExpression: (node) => { checkWithCall(node, getByLoc(), services, report); },
+      CallExpression: (node) => { checkWithCall(node, resolveByLoc(), services, report); },
     };
   },
 });

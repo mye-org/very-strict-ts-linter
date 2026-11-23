@@ -6,12 +6,21 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow, pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import { normalizeFilePath } from "../utils/program-cache.js";
-import { isFiniteExhaustiveCandidate, isFiniteUnionOrEnumKey } from "../utils/type-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { normalizeFilePath } from "../lib/source-paths.js";
+import { isFiniteExhaustiveCandidate } from "../lib/finite-types.js";
+
+const FINITE_KEY_LITERAL_FLAGS =
+  ts.TypeFlags.StringLiteral | ts.TypeFlags.NumberLiteral | ts.TypeFlags.EnumLiteral;
+
+const isFiniteUnionOrEnumKey = (type: ts.Type) =>
+  (type.flags & (ts.TypeFlags.Enum | ts.TypeFlags.EnumLiteral)) !== 0 ||
+  (type.isUnion() &&
+    type.types.length >= 2 &&
+    RA.every((member: ts.Type) => (member.flags & FINITE_KEY_LITERAL_FLAGS) !== 0)(type.types));
 
 type MessageIds =
   | "noPartialFiniteRecord"
@@ -20,74 +29,64 @@ type MessageIds =
 
 const OPTIONS_OR_CONFIG_RE = /(Options|Config|Props)$/;
 const OBJECT_KEY_METHODS = new Set(["keys", "entries"]);
+const PARTIAL_TYPE_NAMES: ReadonlySet<string> = new Set(["Partial"]);
+const RECORD_TYPE_NAMES: ReadonlySet<string> = new Set(["Record"]);
+const GET_METHOD_NAMES: ReadonlySet<string> = new Set(["get"]);
+const OBJECT_GLOBAL_NAMES: ReadonlySet<string> = new Set(["Object"]);
+const BUILTIN_MAP_OR_RECORD = new Set(["Record", "ReadonlyRecord", "ReadonlyMap", "Map"]);
+
+const isBooleanTypeFlag = (flags: ts.TypeFlags) =>
+  Boolean(flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral));
+
+const isStringTypeFlag = (type: ts.Type) => Boolean(type.flags & ts.TypeFlags.String);
 
 const isBooleanOnly = (type: ts.Type) =>
-  Boolean(type.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) ||
-  (type.isUnion() &&
-    pipe(
-      type.types,
-      RA.every((t) => Boolean(t.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral))),
-    ));
+  isBooleanTypeFlag(type.flags) ||
+  (type.isUnion() && RA.every((t: ts.Type) => isBooleanTypeFlag(t.flags))(type.types));
 
 const isFiniteNonBooleanKey = (type: ts.Type) =>
   !isBooleanOnly(type) &&
   !(type.flags & ts.TypeFlags.String) &&
   isFiniteExhaustiveCandidate(type);
 
+const isOptionsOrConfigName = (name: string) => OPTIONS_OR_CONFIG_RE.test(name);
+
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive ancestor walk
 const isInsideOptionsTypeAlias = (node: TSESTree.Node): boolean =>
-  pipe(
-    O.fromNullable(node.parent),
+  flow(
+    (n: TSESTree.Node) => O.fromNullable(n.parent),
     O.exists(
       (parent) =>
         (parent.type === AST_NODE_TYPES.TSTypeAliasDeclaration &&
-          OPTIONS_OR_CONFIG_RE.test(parent.id.name)) ||
+          isOptionsOrConfigName(parent.id.name)) ||
         isInsideOptionsTypeAlias(parent),
     ),
-  );
+  )(node);
 
-const getPartialRecordKeyType = (node: TSESTree.TSTypeReference) =>
+const isTypeRefNamed = (
+  node: TSESTree.TypeNode,
+  names: ReadonlySet<string>,
+): node is TSESTree.TSTypeReference =>
+  node.type === AST_NODE_TYPES.TSTypeReference &&
   node.typeName.type === AST_NODE_TYPES.Identifier &&
-  node.typeName.name === "Partial" &&
-  node.typeArguments?.params[0]?.type === AST_NODE_TYPES.TSTypeReference &&
-  node.typeArguments.params[0].typeName.type === AST_NODE_TYPES.Identifier &&
-  node.typeArguments.params[0].typeName.name === "Record"
-    ? O.fromNullable(node.typeArguments.params[0].typeArguments?.params[0])
-    : O.none;
+  names.has(node.typeName.name);
 
-const isPartialFiniteRecordNode = (
-  node: TSESTree.TSTypeReference,
-  services: ParserServicesWithTypeInformation,
-) =>
-  !isInsideOptionsTypeAlias(node) &&
-  pipe(
-    getPartialRecordKeyType(node),
-    O.exists(
-      flow(
-        (keyNode) => services.esTreeNodeToTSNodeMap.get(keyNode),
-        (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
-        isFiniteNonBooleanKey,
-      ),
+const resolveFirstTypeArg = flow(
+  (ref: TSESTree.TSTypeReference) => O.fromNullable(ref.typeArguments),
+  O.flatMap((ta) => O.fromNullable(ta.params[0])),
+);
+
+const resolvePartialRecordKeyType = (node: TSESTree.TSTypeReference) =>
+  flow(
+    O.fromPredicate((n: TSESTree.TSTypeReference) => isTypeRefNamed(n, PARTIAL_TYPE_NAMES)),
+    O.flatMap(resolveFirstTypeArg),
+    O.filter((inner): inner is TSESTree.TSTypeReference =>
+      isTypeRefNamed(inner, RECORD_TYPE_NAMES),
     ),
-  );
+    O.flatMap(resolveFirstTypeArg),
+  )(node);
 
-const isWideStringIndexRecord = (type: ts.Type, checker: ts.TypeChecker) =>
-  type.getProperties().length === 0 &&
-  Boolean(checker.getIndexInfoOfType(type, ts.IndexKind.String));
-
-const isWideStringMap = (type: ts.Type, checker: ts.TypeChecker) => {
-  const symName = type.getSymbol()?.name;
-  return (
-    (symName === "ReadonlyMap" || symName === "Map") &&
-    pipe(
-      checker.getTypeArguments(type as ts.TypeReference),
-      RA.head,
-      O.exists((kType) => Boolean(kType.flags & ts.TypeFlags.String)),
-    )
-  );
-};
-
-const getNodeTsType = (
+const resolveNodeTsType = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
 ) =>
@@ -95,22 +94,75 @@ const getNodeTsType = (
     .getTypeChecker()
     .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(node));
 
-const isNodeModulesFile = (file: string) => normalizeFilePath(file).includes("/node_modules/");
+const isFiniteNonBooleanNode = (
+  keyNode: TSESTree.TypeNode,
+  services: ParserServicesWithTypeInformation,
+) => isFiniteNonBooleanKey(resolveNodeTsType(keyNode, services));
 
-const getFirstDeclFile = (
+const isPartialFiniteRecordNode = (
+  node: TSESTree.TSTypeReference,
+  services: ParserServicesWithTypeInformation,
+) =>
+  !isInsideOptionsTypeAlias(node) &&
+  O.exists((keyNode: TSESTree.TypeNode) => isFiniteNonBooleanNode(keyNode, services))(
+    resolvePartialRecordKeyType(node),
+  );
+
+const isStringIndexed = (type: ts.Type, checker: ts.TypeChecker) =>
+  flow(
+    (t: ts.Type) => checker.getIndexInfoOfType(t, ts.IndexKind.String),
+    O.fromNullable,
+    O.isSome,
+  )(type);
+
+const isWideStringIndexRecord = (type: ts.Type, checker: ts.TypeChecker) =>
+  type.getProperties().length === 0 && isStringIndexed(type, checker);
+
+const isWideStringMap = (type: ts.Type, checker: ts.TypeChecker) => {
+  const symName = type.getSymbol()?.name;
+  return (
+    (symName === "ReadonlyMap" || symName === "Map") &&
+    flow(RA.head<ts.Type>, O.exists(isStringTypeFlag))(
+      checker.getTypeArguments(type as ts.TypeReference),
+    )
+  );
+};
+
+const isNodeModulesSegment = (normalized: string) =>
+  normalized.includes("/node_modules/");
+
+const isNodeModulesFile = flow(normalizeFilePath, isNodeModulesSegment);
+
+const resolveSymbolFirstDecl = O.flatMap((s: ts.Symbol) => O.fromNullable(s.declarations?.[0]));
+
+const resolveAliasDecl = flow(
+  (type: ts.Type) => O.fromNullable(type.aliasSymbol),
+  resolveSymbolFirstDecl,
+);
+
+const resolveTypeDecl = flow(
+  (type: ts.Type) => type.getSymbol(),
+  O.fromNullable,
+  resolveSymbolFirstDecl,
+);
+
+const resolveNodeSymbolDecl = (tsNode: ts.Node, checker: ts.TypeChecker) =>
+  flow(
+    (n: ts.Node) => checker.getSymbolAtLocation(n),
+    O.fromNullable,
+    resolveSymbolFirstDecl,
+  )(tsNode);
+
+const resolveFirstDeclFile = (
   tsNode: ts.Node,
   type: ts.Type,
   checker: ts.TypeChecker,
 ) =>
-  O.fromNullable(
-    (
-      type.aliasSymbol?.declarations?.[0] ??
-      type.getSymbol()?.declarations?.[0] ??
-      checker.getSymbolAtLocation(tsNode)?.declarations?.[0]
-    )?.getSourceFile().fileName,
-  );
-
-const BUILTIN_MAP_OR_RECORD = new Set(["Record", "ReadonlyRecord", "ReadonlyMap", "Map"]);
+  flow(
+    O.alt(() => resolveTypeDecl(type)),
+    O.alt(() => resolveNodeSymbolDecl(tsNode, checker)),
+    O.map((decl: ts.Declaration) => decl.getSourceFile().fileName),
+  )(resolveAliasDecl(type));
 
 const isExternalLibraryType = (
   node: TSESTree.Node,
@@ -121,7 +173,7 @@ const isExternalLibraryType = (
   const type = checker.getTypeAtLocation(tsNode);
   return (
     !BUILTIN_MAP_OR_RECORD.has(type.aliasSymbol?.name ?? type.getSymbol()?.name ?? "") &&
-    pipe(getFirstDeclFile(tsNode, type, checker), O.exists(isNodeModulesFile))
+    O.exists(isNodeModulesFile)(resolveFirstDeclFile(tsNode, type, checker))
   );
 };
 
@@ -131,41 +183,52 @@ const isWideRecordIndexedByFiniteKey = (
 ) =>
   node.computed &&
   !isExternalLibraryType(node.object, services) &&
-  isWideStringIndexRecord(getNodeTsType(node.object, services), services.program.getTypeChecker()) &&
-  isFiniteUnionOrEnumKey(getNodeTsType(node.property, services));
+  isWideStringIndexRecord(resolveNodeTsType(node.object, services), services.program.getTypeChecker()) &&
+  isFiniteUnionOrEnumKey(resolveNodeTsType(node.property, services));
+
+const isGetMemberProperty = (member: TSESTree.MemberExpression) =>
+  !member.computed &&
+  member.property.type === AST_NODE_TYPES.Identifier &&
+  GET_METHOD_NAMES.has(member.property.name);
 
 const isWideMapGetWithFiniteKey = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
 ) =>
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
-  !node.callee.computed &&
-  node.callee.property.type === AST_NODE_TYPES.Identifier &&
-  node.callee.property.name === "get" &&
+  isGetMemberProperty(node.callee) &&
   !isExternalLibraryType(node.callee.object, services) &&
-  Boolean(node.arguments[0]) &&
-  isWideStringMap(getNodeTsType(node.callee.object, services), services.program.getTypeChecker()) &&
-  Boolean(node.arguments[0] && isFiniteUnionOrEnumKey(getNodeTsType(node.arguments[0], services)));
+  isWideStringMap(resolveNodeTsType(node.callee.object, services), services.program.getTypeChecker()) &&
+  O.exists(
+    flow(
+      (arg: TSESTree.CallExpressionArgument) => resolveNodeTsType(arg, services),
+      isFiniteUnionOrEnumKey,
+    ),
+  )(O.fromNullable(node.arguments[0]));
 
 const hasKnownFiniteProperties = (type: ts.Type, checker: ts.TypeChecker) =>
   type.getProperties().length > 0 && !checker.getIndexInfoOfType(type, ts.IndexKind.String);
+
+const isFiniteObjectArg = (
+  arg: TSESTree.CallExpressionArgument,
+  services: ParserServicesWithTypeInformation,
+) => hasKnownFiniteProperties(resolveNodeTsType(arg, services), services.program.getTypeChecker());
+
+const isObjectKeysCallee = (member: TSESTree.MemberExpression) =>
+  !member.computed &&
+  member.object.type === AST_NODE_TYPES.Identifier &&
+  OBJECT_GLOBAL_NAMES.has(member.object.name) &&
+  member.property.type === AST_NODE_TYPES.Identifier &&
+  OBJECT_KEY_METHODS.has(member.property.name);
 
 const isObjectKeysOnFiniteObject = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
 ) =>
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
-  !node.callee.computed &&
-  node.callee.object.type === AST_NODE_TYPES.Identifier &&
-  node.callee.object.name === "Object" &&
-  node.callee.property.type === AST_NODE_TYPES.Identifier &&
-  OBJECT_KEY_METHODS.has(node.callee.property.name) &&
-  Boolean(
-    node.arguments[0] &&
-      hasKnownFiniteProperties(
-        getNodeTsType(node.arguments[0], services),
-        services.program.getTypeChecker(),
-      ),
+  isObjectKeysCallee(node.callee) &&
+  O.exists((arg: TSESTree.CallExpressionArgument) => isFiniteObjectArg(arg, services))(
+    O.fromNullable(node.arguments[0]),
   );
 
 const checkCallExpression = (
@@ -188,7 +251,7 @@ const reportOpt = (
   msg: O.Option<MessageIds>,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
 ) => {
-  pipe(msg, O.map((messageId) => { report({ node, messageId }); }));
+  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
 };
 
 export const preferExhaustiveRecord = createRule<[], MessageIds>({

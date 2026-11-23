@@ -7,11 +7,11 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import { isPipeCallExpression } from "../utils/type-helpers.js";
+import { isPipeCallExpression } from "../lib/pipe-call.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "preferPointFree";
 
@@ -30,6 +30,8 @@ type ResolvedCallee = Readonly<{
   signature: ts.Signature;
 }>;
 
+const THIS_IDENTIFIERS: ReadonlySet<string> = new Set(["this"]);
+
 const isObjectMethodOrAccessor = (node: FunctionNode) =>
   node.type === AST_NODE_TYPES.FunctionExpression &&
   ((node.parent.type === AST_NODE_TYPES.Property &&
@@ -37,15 +39,17 @@ const isObjectMethodOrAccessor = (node: FunctionNode) =>
     node.parent.type === AST_NODE_TYPES.MethodDefinition);
 
 const isPlainParam = (param: TSESTree.Parameter) =>
-  (param.type === AST_NODE_TYPES.Identifier && param.name !== "this") ||
+  (param.type === AST_NODE_TYPES.Identifier && !THIS_IDENTIFIERS.has(param.name)) ||
   (param.type === AST_NODE_TYPES.RestElement && param.argument.type === AST_NODE_TYPES.Identifier);
+
+const hasFunctionBody = (node: FunctionNode) => Boolean(node.body);
 
 const isEligibleFunction = (node: FunctionNode) =>
   !node.async &&
   !node.generator &&
-  Boolean(node.body) &&
+  hasFunctionBody(node) &&
   !isObjectMethodOrAccessor(node) &&
-  pipe(node.params, RA.every(isPlainParam));
+  RA.every(isPlainParam)(node.params);
 
 const matchSingleStatement = (stmt: TSESTree.Statement) =>
   match(stmt)
@@ -60,17 +64,17 @@ const matchSingleStatement = (stmt: TSESTree.Statement) =>
     .with(P._, () => O.none as O.Option<ForwardedCall>)
     .exhaustive();
 
-const getBlockForwardedCall = (body: TSESTree.BlockStatement) =>
+const extractBlockForwardedCall = (body: TSESTree.BlockStatement) =>
   body.body.length === 1
-    ? pipe(O.fromNullable(body.body[0]), O.flatMap(matchSingleStatement))
+    ? O.flatMap(matchSingleStatement)(O.fromNullable(body.body[0]))
     : (O.none as O.Option<ForwardedCall>);
 
-const getForwardedCall = (node: FunctionNode) =>
+const extractForwardedCall = (node: FunctionNode) =>
   match(node.body)
     .with({ type: AST_NODE_TYPES.CallExpression }, (call) =>
       O.some<ForwardedCall>({ call, kind: "return" }),
     )
-    .with({ type: AST_NODE_TYPES.BlockStatement }, getBlockForwardedCall)
+    .with({ type: AST_NODE_TYPES.BlockStatement }, extractBlockForwardedCall)
     .with(P._, () => O.none as O.Option<ForwardedCall>)
     .exhaustive();
 
@@ -96,10 +100,10 @@ const hasMatchingArgsAndParams = (
   args: ReadonlyArray<TSESTree.CallExpressionArgument>,
 ) =>
   params.length === args.length &&
-  pipe(
-    RA.zip(params, args),
-    RA.every(([param, arg]) => isMatchingParamAndArg(param, arg)),
-  );
+  RA.every(
+    ([param, arg]: readonly [TSESTree.Parameter, TSESTree.CallExpressionArgument]) =>
+      isMatchingParamAndArg(param, arg),
+  )(RA.zip(params, args));
 
 const isRangeInside = (inner: TSESTree.Range, outer: TSESTree.Range) =>
   inner[0] >= outer[0] && inner[1] <= outer[1];
@@ -108,12 +112,12 @@ const hasReadRefInRange = (
   variable: TSESLint.Scope.Variable,
   targetRange: TSESTree.Range,
 ) =>
-  pipe(
-    variable.references,
-    RA.some((ref) => ref.isRead() && isRangeInside(ref.identifier.range, targetRange)),
-  );
+  RA.some(
+    (ref: TSESLint.Scope.Reference) =>
+      ref.isRead() && isRangeInside(ref.identifier.range, targetRange),
+  )(variable.references);
 
-const getRelevantDeclaredVars = (
+const collectRelevantDeclaredVars = (
   node: FunctionNode,
   sourceCode: Readonly<TSESLint.SourceCode>,
 ) =>
@@ -122,14 +126,9 @@ const getRelevantDeclaredVars = (
     : sourceCode.getDeclaredVariables(node);
 
 const hasVarRefInCallee = (
-  node: FunctionNode,
+  declaredVars: ReadonlyArray<TSESLint.Scope.Variable>,
   callee: TSESTree.Expression,
-  sourceCode: Readonly<TSESLint.SourceCode>,
-) =>
-  pipe(
-    getRelevantDeclaredVars(node, sourceCode),
-    RA.some((v) => hasReadRefInRange(v, callee.range)),
-  );
+) => RA.some((v: TSESLint.Scope.Variable) => hasReadRefInRange(v, callee.range))(declaredVars);
 
 const isUnsafeMethodDeclaration = (decl: ts.Declaration) =>
   ts.isMethodSignature(decl) ||
@@ -139,19 +138,22 @@ const isUnsafeMethodDeclaration = (decl: ts.Declaration) =>
 const resolveSymbol = (symbol: ts.Symbol, checker: ts.TypeChecker) =>
   symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 
-const getCalleeSymbol = (
+const resolveCalleeSymbol = (
   callee: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
-  pipe(
-    services.esTreeNodeToTSNodeMap.get(callee),
+  flow(
+    (c: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(c),
     (tsNode) => checker.getSymbolAtLocation(tsNode),
     O.fromNullable,
-  );
+  )(callee);
 
 const hasNoUnsafeDeclaration = (decls: ReadonlyArray<ts.Declaration>) =>
-  !pipe(decls, RA.some(isUnsafeMethodDeclaration));
+  !RA.some(isUnsafeMethodDeclaration)(decls);
+
+const resolveSymbolDeclarations = (checker: ts.TypeChecker) => (sym: ts.Symbol) =>
+  resolveSymbol(sym, checker).getDeclarations() ?? [];
 
 const isSafeMemberCallee = (
   callee: TSESTree.Expression,
@@ -162,47 +164,42 @@ const isSafeMemberCallee = (
     ? true
     : !callee.optional &&
       !callee.computed &&
-      pipe(
-        getCalleeSymbol(callee, services, checker),
-        O.map((sym) => resolveSymbol(sym, checker)),
-        O.map((sym) => sym.getDeclarations() ?? []),
+      flow(
+        resolveCalleeSymbol,
+        O.map(resolveSymbolDeclarations(checker)),
         O.exists(hasNoUnsafeDeclaration),
-      );
+      )(callee, services, checker);
 
 const isRestParamSymbol = (sym: ts.Symbol) =>
-  Boolean(
-    sym.valueDeclaration &&
-      ts.isParameter(sym.valueDeclaration) &&
-      sym.valueDeclaration.dotDotDotToken,
-  );
+  sym.valueDeclaration !== undefined &&
+  ts.isParameter(sym.valueDeclaration) &&
+  sym.valueDeclaration.dotDotDotToken !== undefined;
 
-const hasRestParamNode = (params: ReadonlyArray<TSESTree.Parameter>) =>
-  pipe(
-    RA.last(params),
-    O.exists((p) => p.type === AST_NODE_TYPES.RestElement),
-  );
+const hasRestParamNode = flow(
+  RA.last<TSESTree.Parameter>,
+  O.exists((p) => p.type === AST_NODE_TYPES.RestElement),
+);
+
+const hasRestParamSymbol = flow(RA.last<ts.Symbol>, O.exists(isRestParamSymbol));
 
 const hasMatchingArity = (node: FunctionNode, sig: ts.Signature) => {
   const sigParams = sig.getParameters();
   return (
     node.params.length === sigParams.length &&
-    hasRestParamNode(node.params) === pipe(RA.last(sigParams), O.exists(isRestParamSymbol))
+    hasRestParamNode(node.params) === hasRestParamSymbol(sigParams)
   );
 };
 
 const isExplicitThisParameter = (param: ts.ParameterDeclaration, checker: ts.TypeChecker) =>
   ts.isIdentifier(param.name) &&
-  param.name.text === "this" &&
-  !(checker.getTypeAtLocation(param).flags & ts.TypeFlags.Void);
+  THIS_IDENTIFIERS.has(param.name.text) &&
+  (checker.getTypeAtLocation(param).flags & ts.TypeFlags.Void) === 0;
 
 const hasNonVoidThisParam = (sig: ts.Signature, checker: ts.TypeChecker) =>
-  Boolean(
-    sig.declaration &&
-      ts.isFunctionLike(sig.declaration) &&
-      pipe(
-        sig.declaration.parameters,
-        RA.some((p) => isExplicitThisParameter(p, checker)),
-      ),
+  sig.declaration !== undefined &&
+  ts.isFunctionLike(sig.declaration) &&
+  RA.some((p: ts.ParameterDeclaration) => isExplicitThisParameter(p, checker))(
+    sig.declaration.parameters,
   );
 
 const isVoidReturnCompatible = (
@@ -211,30 +208,32 @@ const isVoidReturnCompatible = (
   checker: ts.TypeChecker,
 ) =>
   kind === "return" ||
-  Boolean(
-    checker.getReturnTypeOfSignature(sig).flags &
-      (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never),
-  );
+  (checker.getReturnTypeOfSignature(sig).flags &
+    (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never)) !==
+    0;
 
 const hasParamTypeAnnotation = (param: TSESTree.Parameter) =>
   param.type === AST_NODE_TYPES.Identifier
-    ? Boolean(param.typeAnnotation)
-    : param.type === AST_NODE_TYPES.RestElement && Boolean(param.typeAnnotation);
+    ? param.typeAnnotation !== undefined
+    : param.type === AST_NODE_TYPES.RestElement && param.typeAnnotation !== undefined;
 
-const hasExplicitTypeInfo = (node: FunctionNode) =>
-  Boolean(node.typeParameters || node.returnType || pipe(node.params, RA.some(hasParamTypeAnnotation)));
+const hasExplicitTypeAnnotation = (node: FunctionNode) =>
+  node.typeParameters !== undefined ||
+  node.returnType !== undefined ||
+  RA.some(hasParamTypeAnnotation)(node.params);
+
+const isAnyTsType = (type: ts.Type) => (type.flags & ts.TypeFlags.Any) !== 0;
+
+const zipSignatureParams = (a: ts.Signature, b: ts.Signature) =>
+  RA.zip(a.getParameters(), b.getParameters());
 
 const hasAnyLeakage = (wrapperSig: ts.Signature, calleeSig: ts.Signature, checker: ts.TypeChecker) =>
-  pipe(
-    RA.zip(wrapperSig.getParameters(), calleeSig.getParameters()),
-    RA.some(
-      ([wp, cp]) =>
-        Boolean(checker.getTypeOfSymbol(cp).flags & ts.TypeFlags.Any) &&
-        !(checker.getTypeOfSymbol(wp).flags & ts.TypeFlags.Any),
-    ),
-  );
+  RA.some(
+    ([wp, cp]: readonly [ts.Symbol, ts.Symbol]) =>
+      isAnyTsType(checker.getTypeOfSymbol(cp)) && !isAnyTsType(checker.getTypeOfSymbol(wp)),
+  )(zipSignatureParams(wrapperSig, calleeSig));
 
-const getNodeType = (
+const resolveNodeType = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
@@ -249,15 +248,12 @@ const hasEquivalentAnnotatedType = (
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) => {
-  const wrapperType = getNodeType(node, services, checker);
-  return pipe(
-    O.fromNullable(wrapperType.getCallSignatures()[0]),
-    O.exists(
-      (wrapperSig) =>
-        !hasAnyLeakage(wrapperSig, callee.signature, checker) &&
-        isMutuallyAssignable(wrapperType, callee.type, checker),
-    ),
-  );
+  const wrapperType = resolveNodeType(node, services, checker);
+  return O.exists(
+    (wrapperSig: ts.Signature) =>
+      !hasAnyLeakage(wrapperSig, callee.signature, checker) &&
+      isMutuallyAssignable(wrapperType, callee.type, checker),
+  )(O.fromNullable(wrapperType.getCallSignatures()[0]));
 };
 
 const hasPreservedExplicitSignature = (
@@ -266,12 +262,18 @@ const hasPreservedExplicitSignature = (
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
-  !hasExplicitTypeInfo(node) ||
+  !hasExplicitTypeAnnotation(node) ||
   hasEquivalentAnnotatedType(node, callee, services, checker);
+
+const hasTypeArguments = flow(
+  (call: TSESTree.CallExpression) => call.typeArguments,
+  O.fromNullable,
+  O.exists((typeArgs) => typeArgs.params.length > 0),
+);
 
 const isValidCallTarget = (call: TSESTree.CallExpression) =>
   !call.optional &&
-  !call.typeArguments?.params.length &&
+  !hasTypeArguments(call) &&
   call.callee.type !== AST_NODE_TYPES.Super &&
   !isPipeCall(call);
 
@@ -298,10 +300,9 @@ const isTypeSafeEtaReduction = (
   const sigs = calleeType.getCallSignatures();
   return (
     sigs.length === 1 &&
-    pipe(
-      O.fromNullable(sigs[0]),
-      O.exists((signature) => isSafeCalleeSig(node, forwarded, { type: calleeType, signature }, services, checker)),
-    )
+    O.exists((signature: ts.Signature) =>
+      isSafeCalleeSig(node, forwarded, { type: calleeType, signature }, services, checker),
+    )(O.fromNullable(sigs[0]))
   );
 };
 
@@ -311,16 +312,16 @@ const isPointFreeCandidate = (
   services: ParserServicesWithTypeInformation,
 ) =>
   isEligibleFunction(node) &&
-  pipe(
-    getForwardedCall(node),
+  flow(
+    extractForwardedCall,
     O.exists(
       (forwarded) =>
         isValidCallTarget(forwarded.call) &&
         hasMatchingArgsAndParams(node.params, forwarded.call.arguments) &&
-        !hasVarRefInCallee(node, forwarded.call.callee, sourceCode) &&
+        !hasVarRefInCallee(collectRelevantDeclaredVars(node, sourceCode), forwarded.call.callee) &&
         isTypeSafeEtaReduction(node, forwarded, services, services.program.getTypeChecker()),
     ),
-  );
+  )(node);
 
 const checkFunction = (
   node: FunctionNode,

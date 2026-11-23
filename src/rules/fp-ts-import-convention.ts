@@ -1,35 +1,44 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
-import { pipe } from "fp-ts/lib/function.js";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "useLibPath" | "useNamespaceImport";
 
 const FUNCTION_MODULE_RE = /^fp-ts\/(lib\/)?function(\.js)?$/;
 const FP_TS_TOP_LEVEL_MODULE_RE = /^fp-ts\/([A-Z][A-Za-z0-9]*(?:\.js)?)$/;
 
+const isNamespaceSpecifier = (spec: TSESTree.ImportClause) =>
+  spec.type === AST_NODE_TYPES.ImportNamespaceSpecifier;
+
+const isTypeImportSpecifier = (spec: TSESTree.ImportClause) =>
+  spec.type === AST_NODE_TYPES.ImportSpecifier && spec.importKind === "type";
+
+const isFunctionModulePath = (source: string) => FUNCTION_MODULE_RE.test(source);
+
+const extractTopLevelModule = (source: string) =>
+  FP_TS_TOP_LEVEL_MODULE_RE.exec(source)?.[1];
+
 const hasOnlyNamespaceSpecifier = (node: TSESTree.ImportDeclaration) =>
   node.specifiers.length === 1 &&
-  node.specifiers[0]?.type === AST_NODE_TYPES.ImportNamespaceSpecifier;
+  flow(RA.head<TSESTree.ImportClause>, O.exists(isNamespaceSpecifier))(node.specifiers);
 
 const hasOnlyTypeSpecifiers = (node: TSESTree.ImportDeclaration) =>
-  node.specifiers.length > 0 &&
-  node.specifiers.every(
-    (spec) =>
-      spec.type === AST_NODE_TYPES.ImportSpecifier && spec.importKind === "type",
-  );
+  node.specifiers.length > 0 && RA.every(isTypeImportSpecifier)(node.specifiers);
 
 const checkTopLevelPath = (
   node: TSESTree.ImportDeclaration,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
-  pipe(
-    O.fromNullable(FP_TS_TOP_LEVEL_MODULE_RE.exec(node.source.value)?.[1]),
+  flow(
+    extractTopLevelModule,
+    O.fromNullable,
     O.map((module) => {
       report({ node: node.source, messageId: "useLibPath", data: { module } });
     }),
-  );
+  )(node.source.value);
 };
 
 const checkNamespaceImport = (
@@ -38,16 +47,14 @@ const checkNamespaceImport = (
 ) => {
   const source = node.source.value;
   match({
-    isFunctionModule: FUNCTION_MODULE_RE.test(source),
+    isFunctionModule: isFunctionModulePath(source),
     importKind: node.importKind,
     isInlineTypeOnly: hasOnlyTypeSpecifiers(node),
     hasNamespace: hasOnlyNamespaceSpecifier(node),
   })
     .with(
       { isFunctionModule: false, importKind: "value", isInlineTypeOnly: false, hasNamespace: false },
-      () => {
-        report({ node, messageId: "useNamespaceImport", data: { source } });
-      },
+      () => { report({ node, messageId: "useNamespaceImport", data: { source } }); },
     )
     .otherwise(() => {});
 };

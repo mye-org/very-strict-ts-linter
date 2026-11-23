@@ -2,10 +2,12 @@ import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLin
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as S from "fp-ts/lib/string.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { getEstreeChildNodes, getTsTypeName, isEsTreeFunctionNode } from "../utils/type-helpers.js";
+import { collectEstreeChildNodes } from "../lib/estree-children.js";
+import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
+import { createRule } from "../lib/rule-factory.js";
+import { resolveTsTypeName } from "../lib/ts-type-name.js";
 
 type Options = [Readonly<{ readonly persistenceMethods: ReadonlyArray<string> }>];
 type MessageIds = "multiRepoOrchestration";
@@ -20,17 +22,16 @@ const REPO_SUFFIXES = ["repo", "repository", "store", "dao"];
 const STANDALONE_PERSIST_PREFIXES = ["save", "update", "insert", "upsert", "delete", "persist"];
 
 const isRepoLikeName = (name: string) =>
-  pipe(REPO_SUFFIXES, RA.some((suffix) => name.toLowerCase().endsWith(suffix)));
+  RA.some((suffix: string) => name.toLowerCase().endsWith(suffix))(REPO_SUFFIXES);
 
 const extractStandaloneEntity = (name: string) =>
-  pipe(
-    STANDALONE_PERSIST_PREFIXES,
-    RA.findFirst((prefix) => {
+  flow(
+    RA.findFirst((prefix: string) => {
       const ch = name.charAt(prefix.length);
       return name.startsWith(prefix) && ch >= "A" && ch <= "Z";
     }),
     O.map((prefix) => `${name.slice(prefix.length)}Repository`),
-  );
+  )(STANDALONE_PERSIST_PREFIXES);
 
 const collectCallsInBody = (
   node: TSESTree.Node,
@@ -41,19 +42,18 @@ const collectCallsInBody = (
     ? []
     : [
         ...(node.type === AST_NODE_TYPES.CallExpression ? [node] : []),
-        ...pipe(
-          getEstreeChildNodes(node, visitorKeys),
-          RA.flatMap((child) => collectCallsInBody(child, visitorKeys)),
+        ...RA.flatMap((child: TSESTree.Node) => collectCallsInBody(child, visitorKeys))(
+          collectEstreeChildNodes(node, visitorKeys),
         ),
       ];
 
-const getMemberPropName = (expr: TSESTree.Expression) =>
+const extractMemberPropName = (expr: TSESTree.Expression) =>
   expr.type === AST_NODE_TYPES.MemberExpression && expr.property.type === AST_NODE_TYPES.Identifier
     ? O.some(expr.property.name)
     : O.none;
 
-const getReceiverName = (expr: TSESTree.Expression) =>
-  expr.type === AST_NODE_TYPES.Identifier ? O.some(expr.name) : getMemberPropName(expr);
+const extractReceiverName = (expr: TSESTree.Expression) =>
+  expr.type === AST_NODE_TYPES.Identifier ? O.some(expr.name) : extractMemberPropName(expr);
 
 const isRepoReceiver = (
   expr: TSESTree.Expression,
@@ -61,11 +61,12 @@ const isRepoReceiver = (
   services: ParserServicesWithTypeInformation,
 ) =>
   isRepoLikeName(receiverName) ||
-  pipe(
-    services.program.getTypeChecker().getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(expr)),
-    getTsTypeName,
+  flow(
+    (e: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(e),
+    (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
+    resolveTsTypeName,
     O.exists(isRepoLikeName),
-  );
+  )(expr);
 
 const extractMemberRepoKey = (
   member: TSESTree.MemberExpression,
@@ -73,7 +74,10 @@ const extractMemberRepoKey = (
   services: ParserServicesWithTypeInformation,
 ) =>
   member.property.type === AST_NODE_TYPES.Identifier && methodSet.has(member.property.name)
-    ? pipe(getReceiverName(member.object), O.filter((name) => isRepoReceiver(member.object, name, services)))
+    ? flow(
+        extractReceiverName,
+        O.filter((name) => isRepoReceiver(member.object, name, services)),
+      )(member.object)
     : O.none;
 
 const extractIdentRepoKey = (callee: TSESTree.Expression) =>
@@ -98,7 +102,7 @@ const collectBlockBodyCalls = (
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) =>
   body.type === AST_NODE_TYPES.BlockStatement
-    ? pipe(body.body, RA.flatMap((s) => collectCallsInBody(s, visitorKeys)))
+    ? RA.flatMap((s: TSESTree.Statement) => collectCallsInBody(s, visitorKeys))(body.body)
     : ([] as ReadonlyArray<TSESTree.CallExpression>);
 
 const collectDistinctRepos = (
@@ -106,11 +110,16 @@ const collectDistinctRepos = (
   { methodSet, visitorKeys }: MultiRepoContext,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
-    collectBlockBodyCalls(fn.body, visitorKeys),
+  flow(
+    (body: FunctionNode["body"]) => collectBlockBodyCalls(body, visitorKeys),
     RA.filterMap((call) => extractRepoKey(call, methodSet, services)),
     RA.uniq(S.Eq),
-  );
+  )(fn.body);
+
+const formatMultiRepoPayload = (repos: ReadonlyArray<string>) => ({
+  count: String(repos.length),
+  repos: repos.join(", "),
+});
 
 const checkFunctionRepos = (
   fn: FunctionNode,
@@ -121,13 +130,13 @@ const checkFunctionRepos = (
   const repos = collectDistinctRepos(fn, repoCtx, services);
   match(repos.length >= 2)
     .with(true, () => {
-      report({ node: fn, messageId: "multiRepoOrchestration", data: { count: String(repos.length), repos: repos.join(", ") } });
+      report({ node: fn, messageId: "multiRepoOrchestration", data: formatMultiRepoPayload(repos) });
     })
     .with(false, () => {})
     .exhaustive();
 };
 
-const createMultiRepoListeners = (
+const buildMultiRepoListeners = (
   repoCtx: MultiRepoContext,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -166,7 +175,7 @@ export const noMultiRepoOrchestration = createRule<Options, MessageIds>({
     defaultOptions: [{ persistenceMethods: DEFAULT_PERSISTENCE_METHODS }],
   },
   create: (context, [options]) =>
-    createMultiRepoListeners(
+    buildMultiRepoListeners(
       {
         methodSet: new Set(options.persistenceMethods),
         visitorKeys: context.sourceCode.visitorKeys,

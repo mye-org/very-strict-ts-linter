@@ -5,7 +5,8 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { buildDiscoveryRadarReport, formatDiscoveryReport } from "../src/analyzers/radar-report.js";
+import { formatDiscoveryReport } from "../src/analyzers/radar-report.js";
+import { buildDiscoveryRadarReport } from "../src/cli/discovery-radar.js";
 
 const loadSampleProgram = (tsconfigPath: string) => {
   const parsed = ts.parseJsonConfigFileContent(

@@ -1,15 +1,13 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import {
-  getEstreeChildNodes,
-  isEsTreeFunctionNode,
-  isMemberAssignment,
-  isSetterMethodName,
-} from "../utils/type-helpers.js";
+import { collectEstreeChildNodes } from "../lib/estree-children.js";
+import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
+import { isMemberAssignment } from "../lib/member-assignment.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isSetterMethodName } from "../lib/setter-method.js";
 
 type Options = [Readonly<{ readonly infraTargets: ReadonlyArray<string> }>];
 type MessageIds = "inlineInfraSideEffect";
@@ -50,32 +48,29 @@ const collectNodesInFunction = (
     ? []
     : [
         node,
-        ...pipe(
-          getEstreeChildNodes(node, visitorKeys),
-          RA.flatMap((child) => collectNodesInFunction(child, visitorKeys)),
+        ...RA.flatMap((child: TSESTree.Node) => collectNodesInFunction(child, visitorKeys))(
+          collectEstreeChildNodes(node, visitorKeys),
         ),
       ];
 
-const isDomainMutationCall = (node: TSESTree.Node) =>
-  node.type === AST_NODE_TYPES.CallExpression &&
-  node.callee.type === AST_NODE_TYPES.MemberExpression &&
-  !node.callee.computed &&
-  node.callee.property.type === AST_NODE_TYPES.Identifier &&
-  (STATE_MUTATION_METHODS.has(node.callee.property.name) || isSetterMethodName(node.callee.property.name));
+const isMutationMemberCallee = (callee: TSESTree.Expression) =>
+  callee.type === AST_NODE_TYPES.MemberExpression &&
+  !callee.computed &&
+  callee.property.type === AST_NODE_TYPES.Identifier &&
+  (STATE_MUTATION_METHODS.has(callee.property.name) || isSetterMethodName(callee.property.name));
 
-const hasDomainStateMutation = (nodes: ReadonlyArray<TSESTree.Node>) =>
-  pipe(
-    nodes,
-    RA.some(
-      (n) =>
-        isMemberAssignment(n) ||
-        n.type === AST_NODE_TYPES.UpdateExpression ||
-        isDomainMutationCall(n),
-    ),
-  );
+const isDomainMutationCall = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.CallExpression && isMutationMemberCallee(node.callee);
+
+const hasDomainStateMutation = RA.some(
+  (n: TSESTree.Node) =>
+    isMemberAssignment(n) ||
+    n.type === AST_NODE_TYPES.UpdateExpression ||
+    isDomainMutationCall(n),
+);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive target unwrap
-const getCallTargetName = (expr: TSESTree.Expression): O.Option<string> =>
+const resolveCallTargetName = (expr: TSESTree.Expression): O.Option<string> =>
   match(expr)
     .with({ type: AST_NODE_TYPES.Identifier }, (id) => O.some(id.name))
     .with(
@@ -87,23 +82,25 @@ const getCallTargetName = (expr: TSESTree.Expression): O.Option<string> =>
       },
       (m) => O.some(m.property.name),
     )
-    .with({ type: AST_NODE_TYPES.MemberExpression }, (m) => getCallTargetName(m.object))
+    .with({ type: AST_NODE_TYPES.MemberExpression }, (m) => resolveCallTargetName(m.object))
     .with(P._, () => O.none as O.Option<string>)
     .exhaustive();
 
+const normalizeTargetName = (name: string) => name.toLowerCase();
+
 const isInfraCallName = (name: string, infraSet: ReadonlySet<string>) =>
-  infraSet.has(name.toLowerCase());
+  infraSet.has(normalizeTargetName(name));
 
 const findInfraCallTarget = (
   node: TSESTree.Node,
   infraSet: ReadonlySet<string>,
 ) =>
   node.type === AST_NODE_TYPES.CallExpression
-    ? pipe(
-        getCallTargetName(node.callee),
+    ? flow(
+        resolveCallTargetName,
         O.filter((name) => isInfraCallName(name, infraSet)),
         O.map((target) => ({ node, target })),
-      )
+      )(node.callee)
     : O.none;
 
 const reportInfraTargets = (
@@ -111,13 +108,12 @@ const reportInfraTargets = (
   infraSet: ReadonlySet<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    nodes,
-    RA.filterMap((n) => findInfraCallTarget(n, infraSet)),
+  flow(
+    RA.filterMap((n: TSESTree.Node) => findInfraCallTarget(n, infraSet)),
     RA.map(({ node, target }) => {
       report({ node, messageId: "inlineInfraSideEffect", data: { target } });
     }),
-  );
+  )(nodes);
 };
 
 const collectBodyNodes = (
@@ -125,7 +121,7 @@ const collectBodyNodes = (
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) =>
   fn.body.type === AST_NODE_TYPES.BlockStatement
-    ? pipe(fn.body.body, RA.flatMap((s) => collectNodesInFunction(s, visitorKeys)))
+    ? RA.flatMap((s: TSESTree.Statement) => collectNodesInFunction(s, visitorKeys))(fn.body.body)
     : ([] as ReadonlyArray<TSESTree.Node>);
 
 const checkFunctionSideEffects = (
@@ -181,7 +177,7 @@ export const noInlineInfraSideEffects = createRule<Options, MessageIds>({
   },
   create: (context, [options]) =>
     buildSideEffectListeners(
-      new Set(pipe(options.infraTargets, RA.map((t) => t.toLowerCase()))),
+      new Set(RA.map(normalizeTargetName)(options.infraTargets)),
       context.sourceCode.visitorKeys,
       (d) => { context.report(d); },
     ),

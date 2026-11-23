@@ -3,34 +3,54 @@ import os from "node:os";
 import path from "node:path";
 import { clearCaches } from "@typescript-eslint/parser";
 import { ESLint } from "eslint";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import { flow } from "fp-ts/lib/function.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { runDiscoveryRadar } from "../src/cli/discovery-radar.js";
 import {
   requestDaemonStatus,
   stopWorkspaceDaemon,
 } from "../src/cli/strict-fp-daemon.js";
-import { parseCliArgs, runPhasedLint } from "../src/cli/strict-fp-lint.js";
+import {
+  parseCliArgs,
+  runPhasedLint,
+  type TierRunSummary,
+} from "../src/cli/strict-fp-lint.js";
 
-const createTempWorkspace = (prefix: string) =>
-  fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+const tmpRoot = os.tmpdir();
+
+const createTempWorkspace = flow(
+  (prefix: string) => path.join(tmpRoot, prefix),
+  (prefixPath) => fs.mkdtempSync(prefixPath),
+);
+
+const extractSummaryTiers = RA.map((s: TierRunSummary) => s.tier);
 
 const createTrackingEslint = () => {
-  const ctorCalls: Array<ESLint.Options> = [];
-  const lintFilesCalls: Array<string | Array<string>> = [];
+  let ctorCalls: ReadonlyArray<ESLint.Options> = [];
+  let lintFilesCalls: ReadonlyArray<Parameters<ESLint["lintFiles"]>[0]> = [];
 
   class TrackingESLint extends ESLint {
     constructor(options?: ESLint.Options) {
       super(options);
-      ctorCalls.push(options ?? {});
+      ctorCalls = RA.append(options ?? {})(ctorCalls);
     }
 
-    override lintFiles(patterns: string | Array<string>) {
-      lintFilesCalls.push(patterns);
+    override lintFiles(patterns: Parameters<ESLint["lintFiles"]>[0]) {
+      lintFilesCalls = RA.append(patterns)(lintFilesCalls);
       return super.lintFiles(patterns);
     }
   }
 
-  return { TrackingESLint, ctorCalls, lintFilesCalls };
+  return {
+    TrackingESLint,
+    get ctorCalls() {
+      return ctorCalls;
+    },
+    get lintFilesCalls() {
+      return lintFilesCalls;
+    },
+  };
 };
 
 const writeStandardProject = (tmpDir: string) => {
@@ -59,8 +79,15 @@ export default [
 };
 
 describe("incremental caching, tsbuildinfo reuse, and workspace daemon", () => {
-  afterEach(() => {
-    clearCaches();
+  let daemonWorkspacesToCleanup: ReadonlyArray<string> = [];
+
+  afterEach(clearCaches);
+  afterEach(async () => {
+    for (const dir of daemonWorkspacesToCleanup) {
+      await stopWorkspaceDaemon(dir);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    daemonWorkspacesToCleanup = [];
   });
 
   it("parses incremental caching and daemon CLI flags without altering defaults", () => {
@@ -127,8 +154,9 @@ describe("incremental caching, tsbuildinfo reuse, and workspace daemon", () => {
       expect(coldResult.passed).toBe(true);
       expect(coldResult.cacheHit).toBeUndefined();
       expect(coldTracker.ctorCalls).toHaveLength(1);
+      const cacheFiles = fs.readdirSync(cacheDir);
       expect(
-        fs.readdirSync(cacheDir).some((name) => name.endsWith(".tsbuildinfo")),
+        RA.some((name: string) => name.endsWith(".tsbuildinfo"))(cacheFiles),
       ).toBe(true);
 
       // 2. Unchanged consecutive run: content-hashed cache hit skips tsc and ESLint completely
@@ -254,99 +282,112 @@ describe("incremental caching, tsbuildinfo reuse, and workspace daemon", () => {
     }
   }, 30_000);
 
-  it("keeps Tier 0 BuilderProgram and ESLint warm in a workspace daemon across edits and shuts down cleanly", async () => {
+  it("keeps Tier 0 BuilderProgram and ESLint warm in a workspace daemon across edits", async () => {
     const tmpDir = createTempWorkspace("strict-fp-daemon-test-");
     const cacheDir = path.join(tmpDir, ".daemon-cache");
-    try {
-      writeStandardProject(tmpDir);
-      fs.writeFileSync(path.join(tmpDir, "sample.ts"), "export const answer = 42;\n");
+    daemonWorkspacesToCleanup = RA.append(tmpDir)(daemonWorkspacesToCleanup);
+    writeStandardProject(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, "sample.ts"), "export const answer = 42;\n");
 
-      // 1. First daemon call boots workspace daemon and passes all tiers
-      const first = await runPhasedLint({
-        targets: ["sample.ts"],
-        fix: false,
-        format: "json",
-        maxTier: 3,
-        cwd: tmpDir,
-        cacheLocation: cacheDir,
-        daemon: true,
-      });
-      expect(first.passed).toBe(true);
-      expect(first.summaries.map((s) => s.tier)).toEqual([0, 1, 2, 3]);
+    // 1. First daemon call boots workspace daemon and passes all tiers
+    const first = await runPhasedLint({
+      targets: ["sample.ts"],
+      fix: false,
+      format: "json",
+      maxTier: 3,
+      cwd: tmpDir,
+      cacheLocation: cacheDir,
+      daemon: true,
+    });
+    expect(first.passed).toBe(true);
+    expect(extractSummaryTiers(first.summaries)).toEqual([0, 1, 2, 3]);
 
-      const status = await requestDaemonStatus(tmpDir);
-      expect(status.running).toBe(true);
-      expect(status.pid).toBeGreaterThan(0);
-      expect(status.requestsServed).toBe(1);
+    // 2. Unchanged consecutive call via daemon returns cached result immediately
+    const second = await runPhasedLint({
+      targets: ["sample.ts"],
+      fix: false,
+      format: "json",
+      maxTier: 3,
+      cwd: tmpDir,
+      cacheLocation: cacheDir,
+      daemon: true,
+    });
+    expect(second.passed).toBe(true);
+    expect(second.cacheHit).toBe(true);
 
-      // 2. Unchanged consecutive call via daemon returns cached result immediately
-      const second = await runPhasedLint({
-        targets: ["sample.ts"],
-        fix: false,
-        format: "json",
-        maxTier: 3,
-        cwd: tmpDir,
-        cacheLocation: cacheDir,
-        daemon: true,
-      });
-      expect(second.passed).toBe(true);
-      expect(second.cacheHit).toBe(true);
+    // 3. Edit introduces Tier 0 TS error -> warm BuilderProgram catches it
+    fs.writeFileSync(path.join(tmpDir, "sample.ts"), 'export const answer: number = "oops";\n');
+    const tier0Fail = await runPhasedLint({
+      targets: ["sample.ts"],
+      fix: false,
+      format: "json",
+      maxTier: 3,
+      cwd: tmpDir,
+      cacheLocation: cacheDir,
+      daemon: true,
+    });
+    expect(tier0Fail.passed).toBe(false);
+    expect(tier0Fail.failedTier).toBe(0);
+    expect(tier0Fail.summaries[0]?.output).toContain("TS2322");
 
-      // 3. Edit introduces Tier 0 TS error -> warm BuilderProgram catches it
-      fs.writeFileSync(path.join(tmpDir, "sample.ts"), 'export const answer: number = "oops";\n');
-      const tier0Fail = await runPhasedLint({
-        targets: ["sample.ts"],
-        fix: false,
-        format: "json",
-        maxTier: 3,
-        cwd: tmpDir,
-        cacheLocation: cacheDir,
-        daemon: true,
-      });
-      expect(tier0Fail.passed).toBe(false);
-      expect(tier0Fail.failedTier).toBe(0);
-      expect(tier0Fail.summaries[0]?.output).toContain("TS2322");
+    // 4. Edit fixes TS error but introduces Tier 3 ESLint error -> warm ESLint catches it
+    fs.writeFileSync(
+      path.join(tmpDir, "sample.ts"),
+      "export const compute = (n: number) => { let count = n; count += 1; return count; };\n",
+    );
+    const tier3Fail = await runPhasedLint({
+      targets: ["sample.ts"],
+      fix: false,
+      format: "json",
+      maxTier: 3,
+      cwd: tmpDir,
+      cacheLocation: cacheDir,
+      daemon: true,
+    });
+    expect(tier3Fail.passed).toBe(false);
+    expect(tier3Fail.failedTier).toBe(3);
+    expect(tier3Fail.summaries[3]?.output).toContain("strict-fp/no-let-or-var");
 
-      // 4. Edit fixes TS error but introduces Tier 3 ESLint error -> warm ESLint catches it
-      fs.writeFileSync(
-        path.join(tmpDir, "sample.ts"),
-        "export const compute = (n: number) => { let count = n; count += 1; return count; };\n",
-      );
-      const tier3Fail = await runPhasedLint({
-        targets: ["sample.ts"],
-        fix: false,
-        format: "json",
-        maxTier: 3,
-        cwd: tmpDir,
-        cacheLocation: cacheDir,
-        daemon: true,
-      });
-      expect(tier3Fail.passed).toBe(false);
-      expect(tier3Fail.failedTier).toBe(3);
-      expect(tier3Fail.summaries[3]?.output).toContain("strict-fp/no-let-or-var");
+    // 5. Fixing the file passes all tiers on the same warm daemon
+    fs.writeFileSync(path.join(tmpDir, "sample.ts"), "export const compute = (n: number) => n + 1;\n");
+    const recovered = await runPhasedLint({
+      targets: ["sample.ts"],
+      fix: false,
+      format: "json",
+      maxTier: 3,
+      cwd: tmpDir,
+      cacheLocation: cacheDir,
+      daemon: true,
+    });
+    expect(recovered.passed).toBe(true);
+    expect(recovered.cacheHit).toBeUndefined();
+  }, 45_000);
 
-      // 5. Fixing the file passes all tiers on the same warm daemon
-      fs.writeFileSync(path.join(tmpDir, "sample.ts"), "export const compute = (n: number) => n + 1;\n");
-      const recovered = await runPhasedLint({
-        targets: ["sample.ts"],
-        fix: false,
-        format: "json",
-        maxTier: 3,
-        cwd: tmpDir,
-        cacheLocation: cacheDir,
-        daemon: true,
-      });
-      expect(recovered.passed).toBe(true);
-      expect(recovered.cacheHit).toBeUndefined();
+  it("reports workspace daemon status and shuts down cleanly", async () => {
+    const tmpDir = createTempWorkspace("strict-fp-daemon-lifecycle-");
+    const cacheDir = path.join(tmpDir, ".daemon-cache");
+    daemonWorkspacesToCleanup = RA.append(tmpDir)(daemonWorkspacesToCleanup);
+    writeStandardProject(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, "sample.ts"), "export const answer = 42;\n");
 
-      // 6. Stop daemon cleanly
-      const stopped = await stopWorkspaceDaemon(tmpDir);
-      expect(stopped).toBe(true);
-      const afterStop = await requestDaemonStatus(tmpDir);
-      expect(afterStop.running).toBe(false);
-    } finally {
-      await stopWorkspaceDaemon(tmpDir);
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    await runPhasedLint({
+      targets: ["sample.ts"],
+      fix: false,
+      format: "json",
+      maxTier: 3,
+      cwd: tmpDir,
+      cacheLocation: cacheDir,
+      daemon: true,
+    });
+
+    const status = await requestDaemonStatus(tmpDir);
+    expect(status.running).toBe(true);
+    expect(status.pid).toBeGreaterThan(0);
+    expect(status.requestsServed).toBe(1);
+
+    const stopped = await stopWorkspaceDaemon(tmpDir);
+    expect(stopped).toBe(true);
+    const afterStop = await requestDaemonStatus(tmpDir);
+    expect(afterStop.running).toBe(false);
   }, 45_000);
 });

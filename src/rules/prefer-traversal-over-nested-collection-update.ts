@@ -1,13 +1,11 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
-import { createRule } from "../utils/create-rule.js";
-import {
-  isFlowCallExpression,
-  isPipeCallExpression,
-  isSameEsTreeAccessExpr,
-} from "../utils/type-helpers.js";
+import { flow } from "fp-ts/lib/function.js";
+import { isSameEsTreeAccessExpr } from "../lib/estree-access-equality.js";
+import { isFlowCallExpression } from "../lib/flow-call.js";
+import { isPipeCallExpression } from "../lib/pipe-call.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "preferTraversal";
 type TargetProp = Readonly<
@@ -16,94 +14,106 @@ type TargetProp = Readonly<
   }
 >;
 
-const COLLECTION_NAMESPACES = new Set(["RA", "A", "RNEA", "RR", "R"]);
+const COLLECTION_NAMESPACES: ReadonlySet<string> = new Set(["RA", "A", "RNEA", "RR", "R"]);
+const MAP_METHODS: ReadonlySet<string> = new Set(["map"]);
 
-const getSpreadTarget = (node: TSESTree.ObjectExpression) =>
-  pipe(
-    node.properties,
+const extractSpreadTarget = (node: TSESTree.ObjectExpression) =>
+  flow(
     RA.findFirst(
-      (p): p is TSESTree.SpreadElement => p.type === AST_NODE_TYPES.SpreadElement,
+      (p: TSESTree.ObjectLiteralElement): p is TSESTree.SpreadElement =>
+        p.type === AST_NODE_TYPES.SpreadElement,
     ),
     O.map((spread) => spread.argument),
-  );
+  )(node.properties);
 
 const isTargetPropAccess = (
   expr: O.Option<TSESTree.CallExpressionArgument>,
   target: TargetProp,
 ) =>
-  pipe(
-    expr,
-    O.exists(
-      (e) =>
-        e.type === AST_NODE_TYPES.MemberExpression &&
-        !e.computed &&
-        e.property.type === AST_NODE_TYPES.Identifier &&
-        e.property.name === target.propName &&
-        isSameEsTreeAccessExpr(e.object, target.outerTarget),
-    ),
-  );
+  O.exists(
+    (e: TSESTree.CallExpressionArgument) =>
+      e.type === AST_NODE_TYPES.MemberExpression &&
+      !e.computed &&
+      e.property.type === AST_NODE_TYPES.Identifier &&
+      e.property.name === target.propName &&
+      isSameEsTreeAccessExpr(e.object, target.outerTarget),
+  )(expr);
+
+const resolveFirstParamName = flow(
+  RA.head<TSESTree.Parameter>,
+  O.filter((p): p is TSESTree.Identifier => p.type === AST_NODE_TYPES.Identifier),
+  O.map((p) => p.name),
+);
+
+const isSpreadOfParam = (prop: TSESTree.ObjectLiteralElement, paramName: string) =>
+  prop.type === AST_NODE_TYPES.SpreadElement &&
+  prop.argument.type === AST_NODE_TYPES.Identifier &&
+  prop.argument.name === paramName;
+
+const isSpreadObjectUpdate = (body: TSESTree.Node, paramName: string) =>
+  body.type === AST_NODE_TYPES.ObjectExpression &&
+  body.properties.length >= 2 &&
+  RA.some((p: TSESTree.ObjectLiteralElement) => isSpreadOfParam(p, paramName))(body.properties);
 
 const isSpreadUpdateArrow = (fn: TSESTree.ArrowFunctionExpression) =>
-  fn.params.length >= 1 &&
-  fn.params[0]?.type === AST_NODE_TYPES.Identifier &&
-  fn.body.type === AST_NODE_TYPES.ObjectExpression &&
-  fn.body.properties.length >= 2 &&
-  pipe(
-    fn.body.properties,
-    RA.some(
-      (p) =>
-        p.type === AST_NODE_TYPES.SpreadElement &&
-        p.argument.type === AST_NODE_TYPES.Identifier &&
-        fn.params[0]?.type === AST_NODE_TYPES.Identifier &&
-        p.argument.name === fn.params[0].name,
-    ),
-  );
+  flow(
+    resolveFirstParamName,
+    O.exists((paramName) => isSpreadObjectUpdate(fn.body, paramName)),
+  )(fn.params);
 
-const isSpreadUpdateMapper = (arg: O.Option<TSESTree.CallExpressionArgument>) =>
-  pipe(
-    arg,
-    O.filter(
-      (a): a is TSESTree.ArrowFunctionExpression =>
-        a.type === AST_NODE_TYPES.ArrowFunctionExpression,
-    ),
-    O.exists(isSpreadUpdateArrow),
-  );
+const isSpreadUpdateMapper = flow(
+  O.filter(
+    (a: TSESTree.CallExpressionArgument): a is TSESTree.ArrowFunctionExpression =>
+      a.type === AST_NODE_TYPES.ArrowFunctionExpression,
+  ),
+  O.exists(isSpreadUpdateArrow),
+);
+
+const isCollectionMapCallee = (callee: TSESTree.Expression) =>
+  callee.type === AST_NODE_TYPES.MemberExpression &&
+  !callee.computed &&
+  callee.object.type === AST_NODE_TYPES.Identifier &&
+  COLLECTION_NAMESPACES.has(callee.object.name) &&
+  callee.property.type === AST_NODE_TYPES.Identifier &&
+  MAP_METHODS.has(callee.property.name);
 
 const isCollectionMapStep = (step: TSESTree.CallExpressionArgument) =>
   step.type === AST_NODE_TYPES.CallExpression &&
-  step.callee.type === AST_NODE_TYPES.MemberExpression &&
-  !step.callee.computed &&
-  step.callee.object.type === AST_NODE_TYPES.Identifier &&
-  COLLECTION_NAMESPACES.has(step.callee.object.name) &&
-  step.callee.property.type === AST_NODE_TYPES.Identifier &&
-  step.callee.property.name === "map" &&
+  isCollectionMapCallee(step.callee) &&
   isSpreadUpdateMapper(O.fromNullable(step.arguments[0]));
+
+const dropFirstArg = (args: ReadonlyArray<TSESTree.CallExpressionArgument>) =>
+  RA.dropLeft(1)(args);
 
 const isPipeCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
   isPipeCallExpression(call) &&
   call.arguments.length >= 2 &&
   isTargetPropAccess(O.fromNullable(call.arguments[0]), target) &&
-  pipe(call.arguments.slice(1), RA.every(isCollectionMapStep));
+  flow(dropFirstArg, RA.every(isCollectionMapStep))(call.arguments);
+
+const isFlowMapCallee = (callee: TSESTree.Expression) =>
+  callee.type === AST_NODE_TYPES.CallExpression &&
+  isFlowCallExpression(callee) &&
+  callee.arguments.length >= 1 &&
+  RA.every(isCollectionMapStep)(callee.arguments);
 
 const isFlowCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
-  call.callee.type === AST_NODE_TYPES.CallExpression &&
-  isFlowCallExpression(call.callee) &&
-  call.callee.arguments.length >= 1 &&
-  isTargetPropAccess(O.fromNullable(call.arguments[0]), target) &&
-  pipe(call.callee.arguments, RA.every(isCollectionMapStep));
+  isFlowMapCallee(call.callee) && isTargetPropAccess(O.fromNullable(call.arguments[0]), target);
 
 const isCurriedCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
   call.callee.type === AST_NODE_TYPES.CallExpression &&
   isCollectionMapStep(call.callee) &&
   isTargetPropAccess(O.fromNullable(call.arguments[0]), target);
 
+const isTargetMapMember = (callee: TSESTree.Expression, target: TargetProp) =>
+  callee.type === AST_NODE_TYPES.MemberExpression &&
+  !callee.computed &&
+  callee.property.type === AST_NODE_TYPES.Identifier &&
+  MAP_METHODS.has(callee.property.name) &&
+  isTargetPropAccess(O.some(callee.object), target);
+
 const isMethodCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
-  call.callee.type === AST_NODE_TYPES.MemberExpression &&
-  !call.callee.computed &&
-  call.callee.property.type === AST_NODE_TYPES.Identifier &&
-  call.callee.property.name === "map" &&
-  isTargetPropAccess(O.some(call.callee.object), target) &&
-  isSpreadUpdateMapper(O.fromNullable(call.arguments[0]));
+  isTargetMapMember(call.callee, target) && isSpreadUpdateMapper(O.fromNullable(call.arguments[0]));
 
 const isNestedCollectionUpdateProp = (
   prop: TSESTree.ObjectLiteralElement,
@@ -121,7 +131,7 @@ const isNestedCollectionUpdateProp = (
 const hasNestedCollectionUpdate = (
   properties: ReadonlyArray<TSESTree.ObjectLiteralElement>,
   outerTarget: TSESTree.Expression,
-) => pipe(properties, RA.some((p) => isNestedCollectionUpdateProp(p, outerTarget)));
+) => RA.some((p: TSESTree.ObjectLiteralElement) => isNestedCollectionUpdateProp(p, outerTarget))(properties);
 
 export const preferTraversalOverNestedCollectionUpdate = createRule<[], MessageIds>({
   name: "prefer-traversal-over-nested-collection-update",
@@ -140,13 +150,13 @@ export const preferTraversalOverNestedCollectionUpdate = createRule<[], MessageI
   },
   create: (context) => ({
     ObjectExpression: (node) => {
-      pipe(
-        getSpreadTarget(node),
+      flow(
+        extractSpreadTarget,
         O.filter((outerTarget) => hasNestedCollectionUpdate(node.properties, outerTarget)),
         O.map(() => {
           context.report({ node, messageId: "preferTraversal" });
         }),
-      );
+      )(node);
     },
   }),
 });

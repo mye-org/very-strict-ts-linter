@@ -1,12 +1,13 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "discriminatedOptionalBag" | "multipleOptionalBag";
 
+const OPTION_TYPE_NAMES: ReadonlySet<string> = new Set(["Option"]);
 const DISCRIMINANT_NAMES = new Set([
   "kind",
   "type",
@@ -22,18 +23,19 @@ const DISCRIMINANT_NAMES = new Set([
 const isOptionReference = (typeNode: TSESTree.TypeNode) =>
   typeNode.type === AST_NODE_TYPES.TSTypeReference &&
   match(typeNode.typeName)
-    .with({ type: AST_NODE_TYPES.Identifier }, (id) => id.name === "Option")
-    .with({ type: AST_NODE_TYPES.TSQualifiedName }, (q) => q.right.name === "Option")
+    .with({ type: AST_NODE_TYPES.Identifier }, (id) => OPTION_TYPE_NAMES.has(id.name))
+    .with({ type: AST_NODE_TYPES.TSQualifiedName }, (q) => OPTION_TYPE_NAMES.has(q.right.name))
     .with(P._, () => false)
     .exhaustive();
 
+const hasOptionTypeAnnotation = (member: TSESTree.TSPropertySignature) =>
+  match(member.typeAnnotation)
+    .with({ type: AST_NODE_TYPES.TSTypeAnnotation }, (ann) => isOptionReference(ann.typeAnnotation))
+    .otherwise(() => false);
+
 const isOptionalOrOptionProp = (member: TSESTree.TypeElement) =>
   member.type === AST_NODE_TYPES.TSPropertySignature &&
-  (member.optional ||
-    pipe(
-      O.fromNullable(member.typeAnnotation?.typeAnnotation),
-      O.exists(isOptionReference),
-    ));
+  (member.optional || hasOptionTypeAnnotation(member));
 
 const isDiscriminantProperty = (member: TSESTree.TypeElement) =>
   member.type === AST_NODE_TYPES.TSPropertySignature &&
@@ -42,8 +44,8 @@ const isDiscriminantProperty = (member: TSESTree.TypeElement) =>
 
 const classifyTypeLiteral = (node: TSESTree.TSTypeLiteral) =>
   match({
-    hasDiscriminant: pipe(node.members, RA.some(isDiscriminantProperty)),
-    optionalCount: pipe(node.members, RA.filter(isOptionalOrOptionProp)).length,
+    hasDiscriminant: RA.some(isDiscriminantProperty)(node.members),
+    optionalCount: RA.filter(isOptionalOrOptionProp)(node.members).length,
   })
     .with({ hasDiscriminant: true, optionalCount: P.when((n) => n >= 1) }, () =>
       O.some<MessageIds>("discriminatedOptionalBag"),
@@ -72,12 +74,12 @@ export const noOptionalStateBags = createRule<[], MessageIds>({
   },
   create: (context) => ({
     TSTypeLiteral: (node) => {
-      pipe(
-        classifyTypeLiteral(node),
+      flow(
+        classifyTypeLiteral,
         O.map((messageId) => {
           context.report({ node, messageId });
         }),
-      );
+      )(node);
     },
   }),
 });

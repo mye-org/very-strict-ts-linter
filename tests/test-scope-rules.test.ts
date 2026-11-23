@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import * as O from "fp-ts/lib/Option.js";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { analyzeTestScope, DEFAULT_TEST_SCOPE_OPTIONS } from "../src/analyzers/test-scope-analyzer.js";
@@ -17,6 +20,13 @@ const samplePath = (...parts: ReadonlyArray<string>) =>
 const readSample = (...parts: ReadonlyArray<string>) =>
   fs.readFileSync(samplePath(...parts), "utf8");
 
+const tmpRoot = os.tmpdir();
+
+const makeTmpDir = flow(
+  (prefix: string) => path.join(tmpRoot, prefix),
+  (dirPath) => fs.mkdtempSync(dirPath),
+);
+
 const loadProgram = (tsconfigPath: string) => {
   const parsed = ts.parseJsonConfigFileContent(
     ts.readConfigFile(tsconfigPath, (f) => ts.sys.readFile(f)).config,
@@ -31,10 +41,17 @@ const loadProgram = (tsconfigPath: string) => {
 // ---------------------------------------------------------------------------
 
 describe("TestScope analyzer — classifications & static dependency analysis", () => {
-  const analysis = analyzeTestScope(loadProgram(samplePath("tsconfig.json")));
+  const analysis = flow(
+    (name: string) => samplePath(name),
+    loadProgram,
+    analyzeTestScope,
+  )("tsconfig.json");
 
   const findTest = (substring: string) =>
-    analysis.tests.find((t) => t.fullName.includes(substring));
+    flow(
+      RA.findFirst((t: (typeof analysis.tests)[number]) => t.fullName.includes(substring)),
+      O.toUndefined,
+    )(analysis.tests);
 
   it("classifies component, composition, system-invariant, mocked, and potentially-redundant tests", () => {
     expect(findTest("parses valid dollar amounts")?.classification).toBe("component");
@@ -59,7 +76,7 @@ describe("TestScope analyzer — classifications & static dependency analysis", 
   });
 
   it("flags repeated parsing cases in a single higher-level test even without a separate composition test", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-scope-repeated-"));
+    const tmpDir = makeTmpDir("test-scope-repeated-");
     try {
       fs.writeFileSync(
         path.join(tmpDir, "tsconfig.json"),
@@ -120,7 +137,7 @@ it("repeats parsing cases through runOrder", () => {
   });
 
   it("supports vi.mock module-level mocking boundary exemption", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-scope-vimock-"));
+    const tmpDir = makeTmpDir("test-scope-vimock-");
     try {
       fs.writeFileSync(
         path.join(tmpDir, "tsconfig.json"),
@@ -180,7 +197,7 @@ it("returns mocked parser amount", () => {
   });
 
   it("detects it.each repeated delegated cases and fp-ts Either Left delegated errors", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-scope-each-fp-"));
+    const tmpDir = makeTmpDir("test-scope-each-fp-");
     try {
       fs.writeFileSync(
         path.join(tmpDir, "tsconfig.json"),
@@ -254,8 +271,16 @@ it("delegates Left check again through validateOrder", () => {
       const result = analyzeTestScope(prog, DEFAULT_TEST_SCOPE_OPTIONS);
       const workflowTestFile = path.join(tmpDir, "workflow.test.ts").replace(/\\/g, "/");
       const findings = result.redundancyByFile[workflowTestFile] ?? [];
-      expect(findings.some((f) => f.testName.includes("repeats parsing through workflow"))).toBe(true);
-      expect(findings.some((f) => f.testName.includes("delegates Left check again"))).toBe(true);
+      expect(
+        RA.some((f: (typeof findings)[number]) =>
+          f.testName.includes("repeats parsing through workflow"),
+        )(findings),
+      ).toBe(true);
+      expect(
+        RA.some((f: (typeof findings)[number]) =>
+          f.testName.includes("delegates Left check again"),
+        )(findings),
+      ).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

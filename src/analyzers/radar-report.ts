@@ -1,17 +1,15 @@
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import * as ts from "typescript";
-import { listAggregateOwnershipEdges } from "./aggregate-graph-analyzer.js";
-import { analyzeCatamorphisms, CatamorphismFinding } from "./catamorphism-analyzer.js";
-import { analyzeContextDrilling, ContextDrillingFinding } from "./context-drilling-analyzer.js";
-import { analyzeDataClumps, ClumpFinding } from "./data-clump-analyzer.js";
-import { analyzeGuardClauses, GuardCluster } from "./guard-clause-analyzer.js";
-import { analyzePolysemy, PolysemyFinding } from "./polysemy-analyzer.js";
-import { analyzeSkeletonDuplications, SkeletonCluster } from "./skeleton-duplication-analyzer.js";
-import { analyzeStringlyTypedDiscriminants, DiscriminantCluster } from "./stringly-typed-analyzer.js";
+import type { CatamorphismFinding } from "./catamorphism-analyzer.js";
+import type { ContextDrillingFinding } from "./context-drilling-analyzer.js";
+import type { ClumpFinding } from "./data-clump-analyzer.js";
+import type { GuardCluster } from "./guard-clause-analyzer.js";
+import type { PolysemyFinding } from "./polysemy-analyzer.js";
+import type { SkeletonCluster } from "./skeleton-duplication-analyzer.js";
+import type { DiscriminantCluster } from "./stringly-typed-analyzer.js";
 
-export type DiscoveryRadarReport = Readonly<{
+export type DiscoveryRadarReport = {
   readonly dataClumps: ReadonlyArray<ClumpFinding>;
   readonly polysemyModels: ReadonlyArray<PolysemyFinding>;
   readonly repeatedGuards: ReadonlyArray<GuardCluster>;
@@ -22,134 +20,184 @@ export type DiscoveryRadarReport = Readonly<{
   readonly contextDrillingChains: ReadonlyArray<ContextDrillingFinding>;
   readonly skeletonDuplications: ReadonlyArray<SkeletonCluster>;
   readonly catamorphismCandidates: ReadonlyArray<CatamorphismFinding>;
-}>;
+};
 
-export const buildDiscoveryRadarReport = (program: ts.Program) => ({
-  dataClumps: analyzeDataClumps(program).findings,
-  polysemyModels: analyzePolysemy(program).findings,
-  repeatedGuards: analyzeGuardClauses(program).clusters,
-  stringlyTypedDiscriminants: analyzeStringlyTypedDiscriminants(program).clusters,
-  aggregateChildren: listAggregateOwnershipEdges(program),
-  contextDrillingChains: analyzeContextDrilling(program).chains,
-  skeletonDuplications: analyzeSkeletonDuplications(program).groups,
-  catamorphismCandidates: analyzeCatamorphisms(program).candidates,
+const joinLines = (lines: ReadonlyArray<string>) => lines.join("\n");
+const joinComma = (items: ReadonlyArray<string>) => items.join(", ");
+
+const renderSectionBody = (lines: ReadonlyArray<string>) =>
+  lines.length === 0 ? "- None detected." : lines.join("\n");
+
+const renderSection = (heading: string) => (body: string) => `\n${heading}\n${body}`;
+const renderTrailingSection = (heading: string) => (body: string) => `\n${heading}\n${body}\n`;
+
+const formatLocation = (loc: Readonly<Record<"file", string> & Record<"line", number>>) =>
+  `${loc.file}:${String(loc.line)}`;
+
+const formatLocations = flow(RA.map(formatLocation), joinComma);
+
+const prepareClumpLine = (clump: ClumpFinding) => ({
+  fieldsText: joinComma(clump.fields),
+  suggestedName: clump.suggestedName,
+  clumpSiteCount: clump.locations.length,
+  clumpSitesText: formatLocations(clump.locations),
 });
 
-const formatLocations = (locs: ReadonlyArray<Readonly<Record<"file", string> & Record<"line", number>>>) =>
-  pipe(locs, RA.map((l) => `${l.file}:${String(l.line)}`)).join(", ");
-
-const formatClumpSection = (clumps: ReadonlyArray<ClumpFinding>) =>
-  clumps.length === 0
-    ? "- None detected."
-    : pipe(
-        clumps,
-        RA.map(
-          (c) =>
-            `- **(${c.fields.join(", ")})** → suggest \`${c.suggestedName}\` (${String(c.locations.length)} sites: ${formatLocations(c.locations)})`,
-        ),
-      ).join("\n");
-
-const formatPolysemyClusters = (clusters: PolysemyFinding["clusters"]) =>
-  pipe(
-    clusters,
-    RA.map((c) => `  - \`${c.modulePath}\`: {${c.fields.join(", ")}}`),
-  ).join("\n");
-
-const formatPolysemySection = (models: ReadonlyArray<PolysemyFinding>) =>
-  models.length === 0
-    ? "- None detected."
-    : pipe(
-        models,
-        RA.map(
-          (m) =>
-            `- **${m.modelName}** (${m.location.file}:${String(m.location.line)}):\n${formatPolysemyClusters(m.clusters)}`,
-        ),
-      ).join("\n");
-
-const formatGuardsSection = (guards: ReadonlyArray<GuardCluster>) =>
-  guards.length === 0
-    ? "- None detected."
-    : pipe(
-        guards,
-        RA.map(
-          (g) =>
-            `- \`${g.preview}\` (${String(g.locations.length)} sites: ${formatLocations(g.locations)})`,
-        ),
-      ).join("\n");
-
-const formatDiscriminantsSection = (clusters: ReadonlyArray<DiscriminantCluster>) =>
-  clusters.length === 0
-    ? "- None detected."
-    : pipe(
-        clusters,
-        RA.map(
-          (d) =>
-            `- **${d.targetKey}** compared against [${d.literals.join(", ")}] (${formatLocations(d.locations)})`,
-        ),
-      ).join("\n");
-
-const formatAggregatesSection = (
-  edges: DiscoveryRadarReport["aggregateChildren"],
+const renderClumpLine = (
+  entry: Readonly<
+    Record<"fieldsText" | "suggestedName" | "clumpSitesText", string> &
+      Record<"clumpSiteCount", number>
+  >,
 ) =>
-  edges.length === 0
-    ? "- None detected."
-    : pipe(
-        edges,
-        RA.map((e) => `- **${e.child}** owned by [${e.parents.join(", ")}]`),
-      ).join("\n");
+  `- **(${entry.fieldsText})** → suggest \`${entry.suggestedName}\` (${String(entry.clumpSiteCount)} sites: ${entry.clumpSitesText})`;
 
-const formatContextDrillingSection = (chains: ReadonlyArray<ContextDrillingFinding>) =>
-  chains.length === 0
-    ? "- None detected."
-    : pipe(
-        chains,
-        RA.map(
-          (c) =>
-            `- **${c.paramName}: ${c.typeName}** drilled across ${String(c.depth)} hops (${c.chain.join(" -> ")}) at ${c.rootLocation.file}:${String(c.rootLocation.line)}`,
-        ),
-      ).join("\n");
+const formatClumpLine = flow(prepareClumpLine, renderClumpLine);
 
-const formatSiteLocations = (sites: SkeletonCluster["sites"]) =>
-  formatLocations(pipe(sites, RA.map((site) => site.location)));
+const formatClumpSection = flow(
+  RA.map(formatClumpLine),
+  renderSectionBody,
+  renderSection("## 1. Data Clumps (Missing Value Objects)"),
+);
 
-const formatSkeletonSection = (clusters: ReadonlyArray<SkeletonCluster>) =>
-  clusters.length === 0
-    ? "- None detected."
-    : pipe(
-        clusters,
-        RA.map(
-          (s) =>
-            `- \`${s.preview}\` (${String(s.sites.length)} sites: ${formatSiteLocations(s.sites)})`,
-        ),
-      ).join("\n");
+const formatPolysemyCluster = (cluster: PolysemyFinding["clusters"][number]) =>
+  `  - \`${cluster.modulePath}\`: {${cluster.fields.join(", ")}}`;
 
-const formatWalkerNames = (walkers: CatamorphismFinding["walkers"]) =>
-  pipe(walkers, RA.map((w) => w.functionName)).join(", ");
+const formatPolysemyClusters = flow(RA.map(formatPolysemyCluster), joinLines);
 
-const formatCatamorphismSection = (findings: ReadonlyArray<CatamorphismFinding>) =>
-  findings.length === 0
-    ? "- None detected."
-    : pipe(
-        findings,
-        RA.map(
-          (f) =>
-            `- **${f.adtName}** → suggest \`fold${f.adtName}\` (${String(f.walkers.length)} recursive walkers: ${formatWalkerNames(f.walkers)})`,
-        ),
-      ).join("\n");
+const preparePolysemyLine = (model: PolysemyFinding) => ({
+  modelName: model.modelName,
+  modelLocation: formatLocation(model.location),
+  clustersText: formatPolysemyClusters(model.clusters),
+});
+
+const renderPolysemyLine = (
+  entry: Readonly<Record<"modelName" | "modelLocation" | "clustersText", string>>,
+) => `- **${entry.modelName}** (${entry.modelLocation}):\n${entry.clustersText}`;
+
+const formatPolysemyLine = flow(preparePolysemyLine, renderPolysemyLine);
+
+const formatPolysemySection = flow(
+  RA.map(formatPolysemyLine),
+  renderSectionBody,
+  renderSection("## 2. Model Polysemy (Bounded Context Splits)"),
+);
+
+const prepareGuardLine = (guard: GuardCluster) => ({
+  guardPreview: guard.preview,
+  guardSiteCount: guard.locations.length,
+  guardSitesText: formatLocations(guard.locations),
+});
+
+const renderGuardLine = (
+  entry: Readonly<Record<"guardPreview" | "guardSitesText", string> & Record<"guardSiteCount", number>>,
+) => `- \`${entry.guardPreview}\` (${String(entry.guardSiteCount)} sites: ${entry.guardSitesText})`;
+
+const formatGuardLine = flow(prepareGuardLine, renderGuardLine);
+
+const formatGuardsSection = flow(
+  RA.map(formatGuardLine),
+  renderSectionBody,
+  renderSection("## 3. Repeated Guard Clauses (Missing Specifications)"),
+);
+
+const prepareDiscriminantLine = (cluster: DiscriminantCluster) => ({
+  targetKey: cluster.targetKey,
+  literalsText: joinComma(cluster.literals),
+  discriminantSitesText: formatLocations(cluster.locations),
+});
+
+const renderDiscriminantLine = (
+  entry: Readonly<Record<"targetKey" | "literalsText" | "discriminantSitesText", string>>,
+) => `- **${entry.targetKey}** compared against [${entry.literalsText}] (${entry.discriminantSitesText})`;
+
+const formatDiscriminantLine = flow(prepareDiscriminantLine, renderDiscriminantLine);
+
+const formatDiscriminantsSection = flow(
+  RA.map(formatDiscriminantLine),
+  renderSectionBody,
+  renderSection("## 4. Stringly-Typed Discriminants (Missing Unions / Enums)"),
+);
+
+const formatAggregateLine = (edge: DiscoveryRadarReport["aggregateChildren"][number]) =>
+  `- **${edge.child}** owned by [${edge.parents.join(", ")}]`;
+
+const formatAggregatesSection = flow(
+  RA.map(formatAggregateLine),
+  renderSectionBody,
+  renderSection("## 5. Aggregate Child Entity Ownership"),
+);
+
+const formatContextDrillingLine = (chain: ContextDrillingFinding) =>
+  `- **${chain.paramName}: ${chain.typeName}** drilled across ${String(chain.depth)} hops (${chain.chain.join(" -> ")}) at ${chain.rootLocation.file}:${String(chain.rootLocation.line)}`;
+
+const formatContextDrillingSection = flow(
+  RA.map(formatContextDrillingLine),
+  renderSectionBody,
+  renderSection("## 6. Context Drilling Chains (Missing Reader / ReaderTaskEither)"),
+);
+
+const formatSiteLocations = flow(
+  RA.map((site: SkeletonCluster["sites"][number]) => site.location),
+  formatLocations,
+);
+
+const prepareSkeletonLine = (cluster: SkeletonCluster) => ({
+  skeletonPreview: cluster.preview,
+  skeletonSiteCount: cluster.sites.length,
+  skeletonSitesText: formatSiteLocations(cluster.sites),
+});
+
+const renderSkeletonLine = (
+  entry: Readonly<
+    Record<"skeletonPreview" | "skeletonSitesText", string> & Record<"skeletonSiteCount", number>
+  >,
+) => `- \`${entry.skeletonPreview}\` (${String(entry.skeletonSiteCount)} sites: ${entry.skeletonSitesText})`;
+
+const formatSkeletonLine = flow(prepareSkeletonLine, renderSkeletonLine);
+
+const formatSkeletonSection = flow(
+  RA.map(formatSkeletonLine),
+  renderSectionBody,
+  renderSection("## 7. Structural Skeleton Duplication (Missing Higher-Order Combinators)"),
+);
+
+const formatWalkerNames = flow(
+  RA.map((walker: CatamorphismFinding["walkers"][number]) => walker.functionName),
+  joinComma,
+);
+
+const prepareCatamorphismLine = (finding: CatamorphismFinding) => ({
+  adtName: finding.adtName,
+  walkerCount: finding.walkers.length,
+  walkerNamesText: formatWalkerNames(finding.walkers),
+});
+
+const renderCatamorphismLine = (
+  entry: Readonly<Record<"adtName" | "walkerNamesText", string> & Record<"walkerCount", number>>,
+) =>
+  `- **${entry.adtName}** → suggest \`fold${entry.adtName}\` (${String(entry.walkerCount)} recursive walkers: ${entry.walkerNamesText})`;
+
+const formatCatamorphismLine = flow(prepareCatamorphismLine, renderCatamorphismLine);
+
+const formatCatamorphismSection = flow(
+  RA.map(formatCatamorphismLine),
+  renderSectionBody,
+  renderTrailingSection("## 8. Recursive ADT Walkers (Missing Catamorphisms / fold)"),
+);
 
 const formatMarkdownReport = (report: DiscoveryRadarReport) =>
-  [
+  joinLines([
     "# DDD Concept Discovery Radar",
-    `\n## 1. Data Clumps (Missing Value Objects)\n${formatClumpSection(report.dataClumps)}`,
-    `\n## 2. Model Polysemy (Bounded Context Splits)\n${formatPolysemySection(report.polysemyModels)}`,
-    `\n## 3. Repeated Guard Clauses (Missing Specifications)\n${formatGuardsSection(report.repeatedGuards)}`,
-    `\n## 4. Stringly-Typed Discriminants (Missing Unions / Enums)\n${formatDiscriminantsSection(report.stringlyTypedDiscriminants)}`,
-    `\n## 5. Aggregate Child Entity Ownership\n${formatAggregatesSection(report.aggregateChildren)}`,
+    formatClumpSection(report.dataClumps),
+    formatPolysemySection(report.polysemyModels),
+    formatGuardsSection(report.repeatedGuards),
+    formatDiscriminantsSection(report.stringlyTypedDiscriminants),
+    formatAggregatesSection(report.aggregateChildren),
     "\n# FP Abstraction Discovery Radar",
-    `\n## 6. Context Drilling Chains (Missing Reader / ReaderTaskEither)\n${formatContextDrillingSection(report.contextDrillingChains)}`,
-    `\n## 7. Structural Skeleton Duplication (Missing Higher-Order Combinators)\n${formatSkeletonSection(report.skeletonDuplications)}`,
-    `\n## 8. Recursive ADT Walkers (Missing Catamorphisms / fold)\n${formatCatamorphismSection(report.catamorphismCandidates)}\n`,
-  ].join("\n");
+    formatContextDrillingSection(report.contextDrillingChains),
+    formatSkeletonSection(report.skeletonDuplications),
+    formatCatamorphismSection(report.catamorphismCandidates),
+  ]);
 
 export const formatDiscoveryReport = (
   report: DiscoveryRadarReport,

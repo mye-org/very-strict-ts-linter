@@ -1,10 +1,40 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
-import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { isBooleanTsType, isNullableOrOptionTsType, isNullableOrOptionTypeNode } from "../utils/type-helpers.js";
+import { flow } from "fp-ts/lib/function.js";
+import { match, P } from "ts-pattern";
+import * as ts from "typescript";
+import { createRule } from "../lib/rule-factory.js";
+import { isOptionTsType } from "../lib/ts-option-type.js";
+
+const OPTION_REF_NAMES: ReadonlySet<string> = new Set(["Option"]);
+const NULLABLE_TS_FLAGS = ts.TypeFlags.Null | ts.TypeFlags.Undefined;
+
+const isBooleanTsType = (type: ts.Type) =>
+  (type.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) !== 0 ||
+  (type.isUnion() &&
+    type.types.length > 0 &&
+    RA.every((m: ts.Type) => (m.flags & ts.TypeFlags.BooleanLiteral) !== 0)(type.types));
+
+const isOptionTypeRefName = (typeName: TSESTree.EntityName) =>
+  match(typeName)
+    .with({ type: AST_NODE_TYPES.Identifier }, (id) => OPTION_REF_NAMES.has(id.name))
+    .with({ type: AST_NODE_TYPES.TSQualifiedName }, (q) => OPTION_REF_NAMES.has(q.right.name))
+    .with(P._, () => false)
+    .exhaustive();
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive union type walk
+const isNullableOrOptionTypeNode = (typeNode: TSESTree.TypeNode): boolean =>
+  match(typeNode)
+    .with({ type: AST_NODE_TYPES.TSNullKeyword }, { type: AST_NODE_TYPES.TSUndefinedKeyword }, () => true)
+    .with({ type: AST_NODE_TYPES.TSTypeReference }, (ref) => isOptionTypeRefName(ref.typeName))
+    .with({ type: AST_NODE_TYPES.TSUnionType }, (u) => RA.some(isNullableOrOptionTypeNode)(u.types))
+    .with(P._, () => false)
+    .exhaustive();
+
+const isNullableOrOptionTsType = (type: ts.Type) =>
+  isOptionTsType(type) ||
+  (type.isUnion() && RA.some((m: ts.Type) => (m.flags & NULLABLE_TS_FLAGS) !== 0)(type.types));
 
 type Options = [Readonly<Record<"minBooleans" | "minNullableTimestamps", number>>];
 type MessageIds = "booleanFlagCluster" | "nullableTimestampCluster";
@@ -14,47 +44,56 @@ type PropertyMember = TSESTree.TSPropertySignature | TSESTree.PropertyDefinition
 const TIMESTAMP_SUFFIXES = ["At", "Date", "On", "Timestamp"];
 
 const hasTimestampSuffix = (name: string) =>
-  pipe(TIMESTAMP_SUFFIXES, RA.some((s) => name.endsWith(s)));
+  RA.some((s: string) => name.endsWith(s))(TIMESTAMP_SUFFIXES);
 
-const getMemberName = (member: PropertyMember) =>
+const extractMemberName = (member: PropertyMember) =>
   member.key.type === AST_NODE_TYPES.Identifier ? O.some(member.key.name) : O.none;
 
-const getMemberTsType = (
+const resolveAnnotationTypeNode = flow(
+  (member: PropertyMember) => member.typeAnnotation,
+  O.fromNullable,
+  O.map((ann) => ann.typeAnnotation),
+);
+
+const resolveMemberTsType = (
   member: PropertyMember,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
-    services.esTreeNodeToTSNodeMap.get(member),
+  flow(
+    (m: PropertyMember) => services.esTreeNodeToTSNodeMap.get(m),
     (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
-  );
+  )(member);
 
 const isBooleanProperty = (
   member: PropertyMember,
   services: ParserServicesWithTypeInformation,
 ) =>
-  member.typeAnnotation?.typeAnnotation.type === AST_NODE_TYPES.TSBooleanKeyword ||
-  isBooleanTsType(getMemberTsType(member, services));
+  flow(
+    resolveAnnotationTypeNode,
+    O.exists((t) => t.type === AST_NODE_TYPES.TSBooleanKeyword),
+  )(member) || isBooleanTsType(resolveMemberTsType(member, services));
 
 const isNullableTimestampProperty = (
   member: PropertyMember,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(getMemberName(member), O.exists(hasTimestampSuffix)) &&
+  flow(extractMemberName, O.exists(hasTimestampSuffix))(member) &&
   (member.optional ||
-    pipe(O.fromNullable(member.typeAnnotation?.typeAnnotation), O.exists(isNullableOrOptionTypeNode)) ||
-    isNullableOrOptionTsType(getMemberTsType(member, services)));
+    flow(resolveAnnotationTypeNode, O.exists(isNullableOrOptionTypeNode))(member) ||
+    isNullableOrOptionTsType(resolveMemberTsType(member, services)));
 
-const extractPropertyMembers = (
-  members: ReadonlyArray<TSESTree.TypeElement | TSESTree.ClassElement>,
-) =>
-  pipe(
-    members,
-    RA.filter(
-      (m): m is PropertyMember =>
-        m.type === AST_NODE_TYPES.TSPropertySignature ||
-        m.type === AST_NODE_TYPES.PropertyDefinition,
-    ),
-  );
+const isPropertyMember = (
+  m: TSESTree.TypeElement | TSESTree.ClassElement,
+): m is PropertyMember =>
+  m.type === AST_NODE_TYPES.TSPropertySignature ||
+  m.type === AST_NODE_TYPES.PropertyDefinition;
+
+const extractPropertyMembers = RA.filter(isPropertyMember);
+
+const formatClusterPayload = (fields: ReadonlyArray<string>) => ({
+  count: String(fields.length),
+  fields: fields.join(", "),
+});
 
 const reportCluster = (
   reportNode: TSESTree.Node,
@@ -65,7 +104,7 @@ const reportCluster = (
 ) => {
   match(fields.length >= threshold)
     .with(true, () => {
-      report({ node: reportNode, messageId, data: { count: String(fields.length), fields: fields.join(", ") } });
+      report({ node: reportNode, messageId, data: formatClusterPayload(fields) });
     })
     .with(false, () => {})
     .exhaustive();
@@ -74,7 +113,8 @@ const reportCluster = (
 const collectMatchingMemberNames = (
   members: ReadonlyArray<PropertyMember>,
   predicate: (m: PropertyMember) => boolean,
-) => pipe(members, RA.filter(predicate), RA.filterMap(getMemberName));
+) =>
+  RA.filterMap((m: PropertyMember) => (predicate(m) ? extractMemberName(m) : O.none))(members);
 
 const reportClusterFor = (
   reportNode: TSESTree.Node,
@@ -98,7 +138,7 @@ const checkMembers = (
   reportClusterFor(reportNode, members, options.minNullableTimestamps, "nullableTimestampCluster", (m) => isNullableTimestampProperty(m, services), report);
 };
 
-const createLifecycleListeners = (
+const buildLifecycleListeners = (
   options: Options[0],
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -140,5 +180,5 @@ export const noLifecycleFlagClusters = createRule<Options, MessageIds>({
     defaultOptions: [{ minBooleans: 3, minNullableTimestamps: 3 }],
   },
   create: (context, [options]) =>
-    createLifecycleListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    buildLifecycleListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
 });

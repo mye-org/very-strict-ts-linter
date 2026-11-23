@@ -1,4 +1,4 @@
-import { commonReuseCohesion } from "./common-reuse-cohesion.js";
+import { commonReuseCohesion } from "./reuse-cohesion.js";
 import { domainLayerPurity } from "./domain-layer-purity.js";
 import { fpTsImportConvention } from "./fp-ts-import-convention.js";
 import { functionalCoreBoundary } from "./functional-core-boundary.js";

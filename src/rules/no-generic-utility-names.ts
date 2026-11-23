@@ -2,10 +2,10 @@ import path from "node:path";
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { normalizeFilePath } from "../utils/program-cache.js";
+import { createRule } from "../lib/rule-factory.js";
+import { normalizeFilePath } from "../lib/source-paths.js";
 
 type CheckTarget = "file" | "directory" | "identifier";
 
@@ -52,33 +52,32 @@ const VIRTUAL_FILENAMES = new Set(["", "<input>", "<text>"]);
 const IGNORED_PATH_SEGMENTS = new Set(["", ".", ".."]);
 
 const splitWordTokens = (raw: string) =>
-  pipe(
-    raw.match(WORD_TOKEN_RE) ?? [],
-    RA.map((token) => token.toLowerCase()),
-  );
+  RA.map((token: string) => token.toLowerCase())(raw.match(WORD_TOKEN_RE) ?? []);
 
 const stripFileExtensions = (fileName: string) =>
   fileName.replace(FILE_EXT_RE, "").replace(SECONDARY_SUFFIX_RE, "");
 
 const matchBannedToken = (token: O.Option<string>, bannedSet: ReadonlySet<string>) =>
-  pipe(token, O.filter((t) => bannedSet.has(t)));
+  O.filter((t: string) => bannedSet.has(t))(token);
 
 const findSuffixBannedTerm = (raw: string, bannedSet: ReadonlySet<string>) =>
-  pipe(raw, splitWordTokens, RA.last, (token) => matchBannedToken(token, bannedSet));
+  flow(splitWordTokens, RA.last, (token) => matchBannedToken(token, bannedSet))(raw);
 
 const findEdgeBannedTerm = (raw: string, bannedSet: ReadonlySet<string>) => {
   const tokens = splitWordTokens(raw);
-  return pipe(
-    matchBannedToken(RA.last(tokens), bannedSet),
+  return flow(
+    (t: O.Option<string>) => matchBannedToken(t, bannedSet),
     O.alt(() => matchBannedToken(RA.head(tokens), bannedSet)),
-  );
+  )(RA.last(tokens));
 };
+
+const isWithinWorkingTree = (rel: string) => rel !== ".." && !rel.startsWith("../");
+
+const stripRootPrefix = (normalized: string) => normalized.replace(/^(?:[A-Za-z]:)?\/+/, "");
 
 const toNormalizedRelativePath = (location: FileLocation) => {
   const rel = normalizeFilePath(path.relative(location.cwd, location.filename));
-  return rel !== ".." && !rel.startsWith("../")
-    ? rel
-    : normalizeFilePath(location.filename).replace(/^(?:[A-Za-z]:)?\/+/, "");
+  return isWithinWorkingTree(rel) ? rel : stripRootPrefix(normalizeFilePath(location.filename));
 };
 
 const resolveInspectablePath = (location: FileLocation) =>
@@ -86,28 +85,32 @@ const resolveInspectablePath = (location: FileLocation) =>
     ? toNormalizedRelativePath(location)
     : normalizeFilePath(location.filename);
 
+const splitPathSegments = (normalizedPath: string) => normalizedPath.split("/");
+
+const isInspectableSegmentList = (segments: ReadonlyArray<string>) =>
+  segments.length > 0 && !segments.includes("node_modules");
+
 const splitInspectableSegments = (location: FileLocation) =>
   VIRTUAL_FILENAMES.has(location.filename)
     ? O.none
-    : pipe(
-        resolveInspectablePath(location).split("/"),
+    : flow(
+        resolveInspectablePath,
+        splitPathSegments,
         RA.filter((segment) => !IGNORED_PATH_SEGMENTS.has(segment)),
-        O.fromPredicate((segments) => segments.length > 0 && !segments.includes("node_modules")),
-      );
+        O.fromPredicate(isInspectableSegmentList),
+      )(location);
 
 const matchBannedDirectory = (directory: string, cfg: RuleCheckConfig) =>
-  pipe(
-    findEdgeBannedTerm(directory, cfg.bannedSet),
+  flow(
+    (dir: string) => findEdgeBannedTerm(dir, cfg.bannedSet),
     O.map((term) => ({ directory, term })),
-  );
+  )(directory);
 
 const findBannedDirectory = (directories: ReadonlyArray<string>, cfg: RuleCheckConfig) =>
-  pipe(
-    directories,
-    RA.filter((dir) => !cfg.allowedSet.has(dir)),
-    RA.filterMap((dir) => matchBannedDirectory(dir, cfg)),
+  flow(
+    RA.filterMap((dir: string) => (cfg.allowedSet.has(dir) ? O.none : matchBannedDirectory(dir, cfg))),
     RA.head,
-  );
+  )(directories);
 
 const isAllowedFile = (fileName: string, stem: string, allowedSet: ReadonlySet<string>) =>
   allowedSet.has(fileName) || allowedSet.has(stem);
@@ -116,10 +119,10 @@ const findBannedFileName = (fileName: string, cfg: RuleCheckConfig) => {
   const stem = stripFileExtensions(fileName);
   return isAllowedFile(fileName, stem, cfg.allowedSet)
     ? O.none
-    : pipe(
-        findEdgeBannedTerm(stem, cfg.bannedSet),
+    : flow(
+        (s: string) => findEdgeBannedTerm(s, cfg.bannedSet),
         O.map((term) => ({ fileName, term })),
-      );
+      )(stem);
 };
 
 const checkDirectoryNames = (
@@ -129,13 +132,13 @@ const checkDirectoryNames = (
 ) => {
   match(cfg.directoryNames)
     .with("check", () => {
-      pipe(
-        RA.init(segments),
+      flow(
+        RA.init<string>,
         O.flatMap((dirs) => findBannedDirectory(dirs, cfg)),
         O.map(({ directory, term }) => {
           cfg.report({ node: program, messageId: "genericDirectoryName", data: { directory, term } });
         }),
-      );
+      )(segments);
     })
     .with("skip", () => {})
     .exhaustive();
@@ -148,13 +151,13 @@ const checkFileName = (
 ) => {
   match(cfg.fileNames)
     .with("check", () => {
-      pipe(
-        RA.last(segments),
+      flow(
+        RA.last<string>,
         O.flatMap((fileName) => findBannedFileName(fileName, cfg)),
         O.map(({ fileName, term }) => {
           cfg.report({ node: program, messageId: "genericFileName", data: { fileName, term } });
         }),
-      );
+      )(segments);
     })
     .with("skip", () => {})
     .exhaustive();
@@ -165,22 +168,22 @@ const checkProgramPath = (
   location: FileLocation,
   cfg: RuleCheckConfig,
 ) => {
-  pipe(
-    splitInspectableSegments(location),
+  flow(
+    splitInspectableSegments,
     O.map((segments) => {
       checkDirectoryNames(program, segments, cfg);
       checkFileName(program, segments, cfg);
     }),
-  );
+  )(location);
 };
 
 const reportIfBannedIdentifier = (id: TSESTree.Identifier, cfg: RuleCheckConfig) => {
-  pipe(
-    findSuffixBannedTerm(id.name, cfg.bannedSet),
+  flow(
+    (name: string) => findSuffixBannedTerm(name, cfg.bannedSet),
     O.map((term) => {
       cfg.report({ node: id, messageId: "genericIdentifierName", data: { name: id.name, term } });
     }),
-  );
+  )(id.name);
 };
 
 const checkIdentifierNode = (id: TSESTree.Identifier, cfg: RuleCheckConfig) => {
@@ -191,13 +194,13 @@ const checkIdentifierNode = (id: TSESTree.Identifier, cfg: RuleCheckConfig) => {
 };
 
 const checkOptionalIdentifier = (id: O.Option<TSESTree.Identifier>, cfg: RuleCheckConfig) => {
-  pipe(id, O.map((node) => { checkIdentifierNode(node, cfg); }));
+  O.map((node: TSESTree.Identifier) => { checkIdentifierNode(node, cfg); })(id);
 };
 
-const getIdentifierIfPresent = (node: TSESTree.Node) =>
+const extractIdentifierIfPresent = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.Identifier ? O.some(node) : O.none;
 
-const getExportedAliasIdentifier = (node: TSESTree.ExportSpecifier) =>
+const extractExportedAliasIdentifier = (node: TSESTree.ExportSpecifier) =>
   node.exported.type === AST_NODE_TYPES.Identifier &&
   (node.local.type !== AST_NODE_TYPES.Identifier || node.exported.name !== node.local.name)
     ? O.some(node.exported)
@@ -208,10 +211,10 @@ const buildIdentifierListeners = (cfg: RuleCheckConfig) => ({
   TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => { checkIdentifierNode(node.id, cfg); },
   ClassDeclaration: (node: TSESTree.ClassDeclaration) => { checkOptionalIdentifier(O.fromNullable(node.id), cfg); },
   FunctionDeclaration: (node: TSESTree.FunctionDeclaration) => { checkOptionalIdentifier(O.fromNullable(node.id), cfg); },
-  TSModuleDeclaration: (node: TSESTree.TSModuleDeclaration) => { checkOptionalIdentifier(getIdentifierIfPresent(node.id), cfg); },
-  VariableDeclarator: (node: TSESTree.VariableDeclarator) => { checkOptionalIdentifier(getIdentifierIfPresent(node.id), cfg); },
+  TSModuleDeclaration: (node: TSESTree.TSModuleDeclaration) => { checkOptionalIdentifier(extractIdentifierIfPresent(node.id), cfg); },
+  VariableDeclarator: (node: TSESTree.VariableDeclarator) => { checkOptionalIdentifier(extractIdentifierIfPresent(node.id), cfg); },
   ImportNamespaceSpecifier: (node: TSESTree.ImportNamespaceSpecifier) => { checkIdentifierNode(node.local, cfg); },
-  ExportSpecifier: (node: TSESTree.ExportSpecifier) => { checkOptionalIdentifier(getExportedAliasIdentifier(node), cfg); },
+  ExportSpecifier: (node: TSESTree.ExportSpecifier) => { checkOptionalIdentifier(extractExportedAliasIdentifier(node), cfg); },
 });
 
 const buildListeners = (location: FileLocation, cfg: RuleCheckConfig) => ({
@@ -220,7 +223,7 @@ const buildListeners = (location: FileLocation, cfg: RuleCheckConfig) => ({
 });
 
 const toLowerSet = (items: ReadonlyArray<string>) =>
-  new Set(pipe(items, RA.map((item) => item.toLowerCase())));
+  new Set(RA.map((item: string) => item.toLowerCase())(items));
 
 const toTargetMode = (targets: ReadonlySet<CheckTarget>, target: CheckTarget) =>
   targets.has(target) ? ("check" as const) : ("skip" as const);

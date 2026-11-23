@@ -6,110 +6,124 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow, pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import {
-  isInsideUnsafeOrMustFunction,
-  isTsParameterSymbol,
-  isUnsafeOrMustName,
-} from "../utils/type-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isTsParameterSymbol } from "../lib/ts-parameter-symbol.js";
+import { isInsideUnsafeOrMustFunction, isUnsafeOrMustName } from "../lib/unsafe-function-scope.js";
 
 type MessageIds = "requireKeyofParam" | "requireTypedPathParam";
 
-const getParamSymbol = (
+const SPLIT_METHODS: ReadonlySet<string> = new Set(["split"]);
+
+const resolveParamSymbol = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
-    services.program.getTypeChecker().getSymbolAtLocation(services.esTreeNodeToTSNodeMap.get(node)),
+  flow(
+    (n: TSESTree.Node) => services.esTreeNodeToTSNodeMap.get(n),
+    (tsNode) => services.program.getTypeChecker().getSymbolAtLocation(tsNode),
     O.fromNullable,
     O.filter(isTsParameterSymbol),
-  );
+  )(node);
 
-const isStringType = (type: ts.Type) => Boolean(type.flags & ts.TypeFlags.String);
+const isStringType = (type: ts.Type) => (type.flags & ts.TypeFlags.String) !== 0;
 
 const isObjectLikeType = (type: ts.Type, checker: ts.TypeChecker) =>
-  !(type.flags & (ts.TypeFlags.String | ts.TypeFlags.Number | ts.TypeFlags.Boolean)) &&
+  (type.flags & (ts.TypeFlags.String | ts.TypeFlags.Number | ts.TypeFlags.Boolean)) === 0 &&
   !checker.isArrayType(type) &&
-  (Boolean(type.flags & (ts.TypeFlags.Object | ts.TypeFlags.TypeParameter)) ||
+  ((type.flags & (ts.TypeFlags.Object | ts.TypeFlags.TypeParameter)) !== 0 ||
     type.getProperties().length > 0);
 
-const isEnclosingFnUnsafe = (decl: ts.Declaration) =>
-  ts.isFunctionLike(decl.parent) &&
-  Boolean(
-    (ts.isFunctionDeclaration(decl.parent) || ts.isMethodDeclaration(decl.parent)) &&
-      decl.parent.name &&
-      ts.isIdentifier(decl.parent.name) &&
-      isUnsafeOrMustName(decl.parent.name.text),
-  );
+const isUnsafeNamedParent = (parent: ts.Node) =>
+  (ts.isFunctionDeclaration(parent) || ts.isMethodDeclaration(parent)) &&
+  parent.name !== undefined &&
+  ts.isIdentifier(parent.name) &&
+  isUnsafeOrMustName(parent.name.text);
+
+const isEnclosingFnUnsafe = ({ parent }: ts.Declaration) =>
+  ts.isFunctionLike(parent) && isUnsafeNamedParent(parent);
 
 const isMatchingParamPair = (
   objSym: ts.Symbol,
   keySym: ts.Symbol,
   checker: ts.TypeChecker,
 ) =>
-  Boolean(
-    objSym.valueDeclaration &&
-      keySym.valueDeclaration &&
-      objSym.valueDeclaration.parent === keySym.valueDeclaration.parent &&
-      !isEnclosingFnUnsafe(keySym.valueDeclaration) &&
-      isObjectLikeType(checker.getTypeOfSymbol(objSym), checker) &&
-      isStringType(checker.getTypeOfSymbol(keySym)),
-  );
+  objSym.valueDeclaration !== undefined &&
+  keySym.valueDeclaration !== undefined &&
+  objSym.valueDeclaration.parent === keySym.valueDeclaration.parent &&
+  !isEnclosingFnUnsafe(keySym.valueDeclaration) &&
+  isObjectLikeType(checker.getTypeOfSymbol(objSym), checker) &&
+  isStringType(checker.getTypeOfSymbol(keySym));
 
 const isPairFromSameFn = (
   objNode: TSESTree.Identifier,
   keyNode: TSESTree.Identifier,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
-    O.Do,
-    O.apS("objSym", getParamSymbol(objNode, services)),
-    O.apS("keySym", getParamSymbol(keyNode, services)),
+  flow(
+    O.apS("objSym", resolveParamSymbol(objNode, services)),
+    O.apS("keySym", resolveParamSymbol(keyNode, services)),
     O.exists(({ objSym, keySym }) =>
       isMatchingParamPair(objSym, keySym, services.program.getTypeChecker()),
     ),
-  );
+  )(O.Do);
+
+const hasObjectLikeParam = (
+  params: ReadonlyArray<ts.ParameterDeclaration>,
+  checker: ts.TypeChecker,
+) =>
+  RA.some(
+    flow(
+      (p: ts.ParameterDeclaration) => checker.getTypeAtLocation(p),
+      (t) => isObjectLikeType(t, checker),
+    ),
+  )(params);
+
+const isSplitKeyDecl = (decl: ts.Declaration, checker: ts.TypeChecker) =>
+  ts.isFunctionLike(decl.parent) &&
+  !isEnclosingFnUnsafe(decl) &&
+  hasObjectLikeParam(decl.parent.parameters, checker);
 
 const isSplitKeyParam = (
   keySym: ts.Symbol,
   services: ParserServicesWithTypeInformation,
 ) => {
   const checker = services.program.getTypeChecker();
-  return Boolean(
-    keySym.valueDeclaration &&
-      ts.isFunctionLike(keySym.valueDeclaration.parent) &&
-      !isEnclosingFnUnsafe(keySym.valueDeclaration) &&
-      isStringType(checker.getTypeOfSymbol(keySym)) &&
-      pipe(
-        keySym.valueDeclaration.parent.parameters,
-        RA.some(flow((p) => checker.getTypeAtLocation(p), (t) => isObjectLikeType(t, checker))),
-      ),
+  return (
+    keySym.valueDeclaration !== undefined &&
+    isStringType(checker.getTypeOfSymbol(keySym)) &&
+    isSplitKeyDecl(keySym.valueDeclaration, checker)
   );
 };
+
+const isDotLiteralArg = (arg?: TSESTree.CallExpressionArgument) =>
+  arg?.type === AST_NODE_TYPES.Literal && arg.value === ".";
+
+const isSplitCallOnParam = (
+  callee: TSESTree.Expression,
+  services: ParserServicesWithTypeInformation,
+) =>
+  callee.type === AST_NODE_TYPES.MemberExpression &&
+  callee.object.type === AST_NODE_TYPES.Identifier &&
+  callee.property.type === AST_NODE_TYPES.Identifier &&
+  SPLIT_METHODS.has(callee.property.name) &&
+  flow(
+    resolveParamSymbol,
+    O.exists((keySym) => isSplitKeyParam(keySym, services)),
+  )(callee.object, services);
 
 const isDotPathSplitOnParam = (
   call: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
-) =>
-  call.callee.type === AST_NODE_TYPES.MemberExpression &&
-  call.callee.object.type === AST_NODE_TYPES.Identifier &&
-  call.callee.property.type === AST_NODE_TYPES.Identifier &&
-  call.callee.property.name === "split" &&
-  call.arguments[0]?.type === AST_NODE_TYPES.Literal &&
-  call.arguments[0].value === "." &&
-  pipe(
-    getParamSymbol(call.callee.object, services),
-    O.exists((keySym) => isSplitKeyParam(keySym, services)),
-  );
+) => isDotLiteralArg(call.arguments[0]) && isSplitCallOnParam(call.callee, services);
 
 const reportOpt = (
   node: TSESTree.Node,
   msg: O.Option<MessageIds>,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
 ) => {
-  pipe(msg, O.map((messageId) => { report({ node, messageId }); }));
+  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
 };
 
 const isComputedParamIndex = (

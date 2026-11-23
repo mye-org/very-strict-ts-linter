@@ -1,10 +1,10 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { getDirectFunctionName } from "../utils/type-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { resolveDirectFunctionName } from "../lib/unsafe-function-scope.js";
 
 type Options = [
   Readonly<
@@ -42,8 +42,16 @@ type AnonFunctionNode =
 
 type Reporter = (d: TSESLint.ReportDescriptor<MessageIds>) => void;
 
-const SIZED_HOOKS = new Set(["useEffect", "useLayoutEffect", "useMemo", "useCallback"]);
-const ARRAY_TRANSFORM_METHODS = new Set([
+const SIZED_HOOKS: ReadonlySet<string> = new Set([
+  "useEffect",
+  "useLayoutEffect",
+  "useMemo",
+  "useCallback",
+]);
+const MATCH_CHAIN_METHODS: ReadonlySet<string> = new Set(["exhaustive", "otherwise", "with"]);
+const MATCH_BRANCH_METHODS: ReadonlySet<string> = new Set(["with", "otherwise"]);
+const MAP_METHODS: ReadonlySet<string> = new Set(["map"]);
+const ARRAY_TRANSFORM_METHODS: ReadonlySet<string> = new Set([
   "map",
   "filter",
   "reduce",
@@ -65,15 +73,18 @@ const DEFAULT_OPTIONS: Options[0] = {
   maxDerivedConsts: 1,
 };
 
-const ANON_FN_TYPES = new Set<AST_NODE_TYPES>([
+const ANON_FN_TYPES: ReadonlySet<AST_NODE_TYPES> = new Set<AST_NODE_TYPES>([
   AST_NODE_TYPES.ArrowFunctionExpression,
   AST_NODE_TYPES.FunctionExpression,
 ]);
 
+const toDecimalText = (value: number) => String(value);
+const isTsxFilename = (filename: string) => filename.endsWith(".tsx");
+
 const isAnonFn = (node: TSESTree.Node): node is AnonFunctionNode =>
   ANON_FN_TYPES.has(node.type);
 
-const getMemberPropName = (expr: TSESTree.Expression) =>
+const extractMemberPropName = (expr: TSESTree.Expression) =>
   match(expr.type === AST_NODE_TYPES.MemberExpression)
     .with(true, () => {
       const member = expr as TSESTree.MemberExpression;
@@ -84,30 +95,28 @@ const getMemberPropName = (expr: TSESTree.Expression) =>
     .with(false, () => O.none)
     .exhaustive();
 
-const getCalleeName = (callee: TSESTree.Expression) =>
+const resolveCalleeName = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.Identifier
     ? O.some(callee.name)
-    : getMemberPropName(callee);
+    : extractMemberPropName(callee);
 
 const isUpperChar = (ch: string) => ch >= "A" && ch <= "Z";
 const isDigitChar = (ch: string) => ch >= "0" && ch <= "9";
 
 const isHookName = (name: string) =>
   name.startsWith("use") &&
-  pipe(
-    O.fromNullable(name[3]),
-    O.exists((ch) => isUpperChar(ch) || isDigitChar(ch)),
-  );
+  O.exists((ch: string) => isUpperChar(ch) || isDigitChar(ch))(O.fromNullable(name[3]));
 
-const isHookCallExpr = (expr: O.Option<TSESTree.Expression>) =>
-  pipe(
-    expr,
-    O.filter((n): n is TSESTree.CallExpression => n.type === AST_NODE_TYPES.CallExpression),
-    O.flatMap((c) => getCalleeName(c.callee)),
-    O.exists(isHookName),
-  );
+const isHookCallExpr = flow(
+  O.filter(
+    (n: TSESTree.Expression): n is TSESTree.CallExpression =>
+      n.type === AST_NODE_TYPES.CallExpression,
+  ),
+  O.flatMap((c) => resolveCalleeName(c.callee)),
+  O.exists(isHookName),
+);
 
-const FP_TS_NAMESPACE_NAMES = new Set([
+const FP_TS_NAMESPACE_NAMES: ReadonlySet<string> = new Set([
   "O",
   "E",
   "RA",
@@ -127,81 +136,82 @@ const FP_TS_NAMESPACE_NAMES = new Set([
 const isJsxNode = (e: TSESTree.Expression) =>
   e.type === AST_NODE_TYPES.JSXElement || e.type === AST_NODE_TYPES.JSXFragment;
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- recursive AST predicate
+const extractMatchChainReceiver = (callee: TSESTree.Expression) =>
+  callee.type === AST_NODE_TYPES.MemberExpression &&
+  !callee.computed &&
+  callee.property.type === AST_NODE_TYPES.Identifier &&
+  MATCH_CHAIN_METHODS.has(callee.property.name)
+    ? O.some(callee.object)
+    : O.none;
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST predicate
 const isMatchReturningJsx = (e: TSESTree.Expression): boolean =>
   e.type === AST_NODE_TYPES.CallExpression &&
-  e.callee.type === AST_NODE_TYPES.MemberExpression &&
-  !e.callee.computed &&
-  e.callee.property.type === AST_NODE_TYPES.Identifier &&
-  (e.callee.property.name === "exhaustive" ||
-    e.callee.property.name === "otherwise" ||
-    e.callee.property.name === "with") &&
-  (pipe(
-    e.arguments,
-    RA.some((arg) => isAnonFn(arg) && isJsxReturningFn(arg)),
-  ) ||
-    isMatchReturningJsx(e.callee.object));
+  O.exists(
+    (receiver: TSESTree.Expression) =>
+      RA.some((arg: TSESTree.CallExpressionArgument) => isAnonFn(arg) && isJsxReturningFn(arg))(
+        e.arguments,
+      ) || isMatchReturningJsx(receiver),
+  )(extractMatchChainReceiver(e.callee));
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- recursive AST predicate
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST predicate
 const isJsxExpr = (expr: O.Option<TSESTree.Expression>): boolean =>
-  pipe(
-    expr,
-    O.exists(
-      (e) =>
-        isJsxNode(e) ||
-        isMatchReturningJsx(e) ||
-        (e.type === AST_NODE_TYPES.ConditionalExpression &&
-          (isJsxExpr(O.some(e.consequent)) || isJsxExpr(O.some(e.alternate)))) ||
-        (e.type === AST_NODE_TYPES.LogicalExpression &&
-          (isJsxExpr(O.some(e.left)) || isJsxExpr(O.some(e.right)))),
-    ),
-  );
+  O.exists(
+    (e: TSESTree.Expression) =>
+      isJsxNode(e) ||
+      isMatchReturningJsx(e) ||
+      (e.type === AST_NODE_TYPES.ConditionalExpression &&
+        (isJsxExpr(O.some(e.consequent)) || isJsxExpr(O.some(e.alternate)))) ||
+      (e.type === AST_NODE_TYPES.LogicalExpression &&
+        (isJsxExpr(O.some(e.left)) || isJsxExpr(O.some(e.right)))),
+  )(expr);
 
 const isJsxReturningBlock = (block: TSESTree.BlockStatement) =>
-  pipe(
-    block.body,
-    RA.some(
-      (stmt) =>
-        stmt.type === AST_NODE_TYPES.ReturnStatement &&
-        isJsxExpr(O.fromNullable(stmt.argument)),
-    ),
-  );
+  RA.some(
+    (stmt: TSESTree.Statement) =>
+      stmt.type === AST_NODE_TYPES.ReturnStatement &&
+      isJsxExpr(O.fromNullable(stmt.argument)),
+  )(block.body);
 
 const isJsxReturningFn = (node: FunctionNode) =>
   node.body.type === AST_NODE_TYPES.BlockStatement
     ? isJsxReturningBlock(node.body)
     : isJsxExpr(O.some(node.body));
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- recursive AST predicate
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST predicate
 const isInsideJsxExpr = (node: TSESTree.Node): boolean =>
-  pipe(
-    O.fromNullable(node.parent),
-    O.exists((p) =>
-      p.type === AST_NODE_TYPES.JSXExpressionContainer ? true : isInsideJsxExpr(p),
-    ),
-  );
+  flow(
+    (n: TSESTree.Node) => n.parent,
+    O.fromNullable,
+    O.exists((p) => (p.type === AST_NODE_TYPES.JSXExpressionContainer ? true : isInsideJsxExpr(p))),
+  )(node);
 
-const isJsxAttrHandler = (node: FunctionNode) =>
-  node.parent.type === AST_NODE_TYPES.JSXExpressionContainer &&
-  node.parent.parent.type === AST_NODE_TYPES.JSXAttribute;
+const isJsxAttrContainer = (parent: TSESTree.Node) =>
+  parent.type === AST_NODE_TYPES.JSXExpressionContainer &&
+  parent.parent.type === AST_NODE_TYPES.JSXAttribute;
+
+const isJsxAttrCallback = ({ parent }: FunctionNode) => isJsxAttrContainer(parent);
 
 const isHookCallbackArg = (node: FunctionNode) =>
   node.parent.type === AST_NODE_TYPES.CallExpression &&
-  pipe(getCalleeName(node.parent.callee), O.exists(isHookName));
+  flow(resolveCalleeName, O.exists(isHookName))(node.parent.callee);
 
-const isCustomHookFn = (node: FunctionNode) =>
-  pipe(getDirectFunctionName(node), O.exists(isHookName));
+const isCustomHookFn = flow(resolveDirectFunctionName, O.exists(isHookName));
 
-const isMatchHandlerCallback = (node: FunctionNode) =>
-  node.parent.type === AST_NODE_TYPES.CallExpression &&
-  node.parent.callee.type === AST_NODE_TYPES.MemberExpression &&
-  !node.parent.callee.computed &&
-  node.parent.callee.property.type === AST_NODE_TYPES.Identifier &&
-  (node.parent.callee.property.name === "with" ||
-    node.parent.callee.property.name === "otherwise");
+const isMatchBranchCallee = (callee: TSESTree.Expression) =>
+  callee.type === AST_NODE_TYPES.MemberExpression &&
+  !callee.computed &&
+  callee.property.type === AST_NODE_TYPES.Identifier &&
+  MATCH_BRANCH_METHODS.has(callee.property.name);
 
-const getLineSpan = (node: TSESTree.Node) =>
-  node.loc.end.line - node.loc.start.line + 1;
+const isMatchBranchCallback = ({ parent }: FunctionNode) =>
+  parent.type === AST_NODE_TYPES.CallExpression && isMatchBranchCallee(parent.callee);
+
+const extractStartLine = ({ loc }: TSESTree.Node) => loc.start.line;
+const extractEndLine = ({ loc }: TSESTree.Node) => loc.end.line;
+const measureLineSpan = (node: TSESTree.Node) => extractEndLine(node) - extractStartLine(node) + 1;
+const measureStatementSpan = (first: TSESTree.Statement, last: TSESTree.Statement) =>
+  extractEndLine(last) - extractStartLine(first) + 1;
 
 const checkPreReturnLineCount = (
   stmts: ReadonlyArray<TSESTree.Statement>,
@@ -209,59 +219,70 @@ const checkPreReturnLineCount = (
   maxLines: number,
   report: Reporter,
 ) => {
-  pipe(
-    O.Do,
-    O.bind("first", () => RA.head(stmts)),
-    O.bind("last", () => RA.last(stmts)),
-    O.map(({ first, last }) => last.loc.end.line - first.loc.start.line + 1),
+  flow(
+    O.apS("first", RA.head(stmts)),
+    O.apS("last", RA.last(stmts)),
+    O.map(({ first, last }) => measureStatementSpan(first, last)),
     O.filter((lines) => lines > maxLines),
     O.map((lines) => {
-      report({ node: body, messageId: "tooManyLogicLines", data: { actual: String(lines), max: String(maxLines) } });
+      report({
+        node: body,
+        messageId: "tooManyLogicLines",
+        data: { actual: toDecimalText(lines), max: toDecimalText(maxLines) },
+      });
     }),
-  );
+  )(O.Do);
 };
+
+const toLogicBudgetDescriptor = (
+  body: TSESTree.BlockStatement,
+  actual: number,
+  max: number,
+) => ({
+  node: body,
+  messageId: "tooManyLogicStatements" as const,
+  data: { actual: toDecimalText(actual), max: toDecimalText(max) },
+});
 
 const checkPreReturnBudget = (
   body: TSESTree.BlockStatement,
   opts: Options[0],
   report: Reporter,
 ) => {
-  const stmts = pipe(
-    body.body,
-    RA.takeLeftWhile((s) => s.type !== AST_NODE_TYPES.ReturnStatement),
-  );
+  const stmts = RA.takeLeftWhile(
+    (s: TSESTree.Statement) => s.type !== AST_NODE_TYPES.ReturnStatement,
+  )(body.body);
   match(stmts.length > opts.maxLogicStatements)
-    .with(true, () => {
-      report({ node: body, messageId: "tooManyLogicStatements", data: { actual: String(stmts.length), max: String(opts.maxLogicStatements) } });
-    })
+    .with(true, () => { report(toLogicBudgetDescriptor(body, stmts.length, opts.maxLogicStatements)); })
     .with(false, () => {})
     .exhaustive();
   checkPreReturnLineCount(stmts, body, opts.maxLogicLines, report);
 };
 
-const isJsxHelperInit = (init: O.Option<TSESTree.Expression>) =>
-  pipe(init, O.filter(isAnonFn), O.exists(isJsxReturningFn));
+const isJsxHelperInit = flow(O.filter(isAnonFn), O.exists(isJsxReturningFn));
 
-const getDerivedDeclarators = (body: TSESTree.BlockStatement) =>
-  pipe(
-    body.body,
-    RA.flatMap((stmt) =>
+const collectDerivedDeclarators = (body: TSESTree.BlockStatement) =>
+  flow(
+    RA.flatMap((stmt: TSESTree.Statement) =>
       stmt.type === AST_NODE_TYPES.VariableDeclaration ? stmt.declarations : [],
     ),
-    RA.filter((d) => !isHookCallExpr(O.fromNullable(d.init)) && !isJsxHelperInit(O.fromNullable(d.init))),
-  );
+    RA.filter(
+      (d) => !isHookCallExpr(O.fromNullable(d.init)) && !isJsxHelperInit(O.fromNullable(d.init)),
+    ),
+  )(body.body);
+
+const reportIfObjectPattern = (report: Reporter) => (d: TSESTree.VariableDeclarator) => {
+  match(d.id.type === AST_NODE_TYPES.ObjectPattern)
+    .with(true, () => { report({ node: d.id, messageId: "noViewDestructuring" }); })
+    .with(false, () => {})
+    .exhaustive();
+};
 
 const reportDestructuredView = (
   derived: ReadonlyArray<TSESTree.VariableDeclarator>,
   report: Reporter,
 ) => {
-  pipe(
-    derived,
-    RA.filter((d) => d.id.type === AST_NODE_TYPES.ObjectPattern),
-    RA.map((d) => {
-      report({ node: d.id, messageId: "noViewDestructuring" });
-    }),
-  );
+  RA.map(reportIfObjectPattern(report))(derived);
 };
 
 const checkDerivedConsts = (
@@ -269,11 +290,15 @@ const checkDerivedConsts = (
   maxDerivedConsts: number,
   report: Reporter,
 ) => {
-  const derived = getDerivedDeclarators(body);
+  const derived = collectDerivedDeclarators(body);
   reportDestructuredView(derived, report);
   match(derived.length > maxDerivedConsts)
     .with(true, () => {
-      report({ node: body, messageId: "tooManyDerivedConsts", data: { actual: String(derived.length), max: String(maxDerivedConsts) } });
+      report({
+        node: body,
+        messageId: "tooManyDerivedConsts",
+        data: { actual: toDecimalText(derived.length), max: toDecimalText(maxDerivedConsts) },
+      });
     })
     .with(false, () => {})
     .exhaustive();
@@ -290,10 +315,10 @@ const checkComponentBlock = (
 
 const checkNonComponentFn = (node: FunctionNode, report: Reporter) => {
   match(
-    !isJsxAttrHandler(node) &&
+    !isJsxAttrCallback(node) &&
       !isHookCallbackArg(node) &&
       !isCustomHookFn(node) &&
-      !isMatchHandlerCallback(node) &&
+      !isMatchBranchCallback(node) &&
       !isInsideJsxExpr(node),
   )
     .with(true, () => { report({ node, messageId: "nonJsxHelperInTsx" }); })
@@ -318,26 +343,31 @@ const checkComponentFunction = (
 };
 
 const extractHookCallback = (node: TSESTree.CallExpression) => (name: string) =>
-  pipe(
-    O.fromNullable(node.arguments[0]),
+  flow(
+    (call: TSESTree.CallExpression) => call.arguments[0],
+    O.fromNullable,
     O.filter(isAnonFn),
-    O.map((fn) => ({ name, fn, lines: getLineSpan(fn.body) })),
-  );
+    O.map((fn) => ({ name, fn, lines: measureLineSpan(fn.body) })),
+  )(node);
 
 const checkSizedHookCall = (
   node: TSESTree.CallExpression,
   maxHookBodyLines: number,
   report: Reporter,
 ) => {
-  pipe(
-    getCalleeName(node.callee),
+  flow(
+    resolveCalleeName,
     O.filter((name) => SIZED_HOOKS.has(name)),
     O.flatMap(extractHookCallback(node)),
     O.filter(({ lines }) => lines > maxHookBodyLines),
     O.map(({ name, fn, lines }) => {
-      report({ node: fn, messageId: "fatHookCallback", data: { hook: name, actual: String(lines), max: String(maxHookBodyLines) } });
+      report({
+        node: fn,
+        messageId: "fatHookCallback",
+        data: { hook: name, actual: toDecimalText(lines), max: toDecimalText(maxHookBodyLines) },
+      });
     }),
-  );
+  )(node.callee);
 };
 
 const isFpTsNamespaceReceiver = (callee: TSESTree.Expression) =>
@@ -345,36 +375,53 @@ const isFpTsNamespaceReceiver = (callee: TSESTree.Expression) =>
   callee.object.type === AST_NODE_TYPES.Identifier &&
   FP_TS_NAMESPACE_NAMES.has(callee.object.name);
 
-const checkArrayTransformCall = (node: TSESTree.CallExpression, report: Reporter) => {
-  if (isFpTsNamespaceReceiver(node.callee)) {
-    return;
-  }
-  pipe(
-    getMemberPropName(node.callee),
+const reportNonJsxArrayTransform = (node: TSESTree.CallExpression, report: Reporter) => {
+  flow(
+    extractMemberPropName,
     O.filter((method) => ARRAY_TRANSFORM_METHODS.has(method)),
-    O.filter((method) => !(method === "map" && isInsideJsxExpr(node))),
+    O.filter((method) => !(MAP_METHODS.has(method) && isInsideJsxExpr(node))),
     O.map((method) => {
       report({ node, messageId: "nonJsxArrayTransform", data: { method } });
     }),
-  );
+  )(node.callee);
 };
+
+const checkArrayTransformCall = (node: TSESTree.CallExpression, report: Reporter) => {
+  match(isFpTsNamespaceReceiver(node.callee))
+    .with(true, () => {})
+    .with(false, () => { reportNonJsxArrayTransform(node, report); })
+    .exhaustive();
+};
+
+const toFatJsxHandlerDescriptor = (fn: AnonFunctionNode, lines: number, maxLines: number) => ({
+  node: fn,
+  messageId: "fatJsxHandler" as const,
+  data: { actual: toDecimalText(lines), max: toDecimalText(maxLines) },
+});
+
+const extractJsxAttrCallback = flow(
+  (node: TSESTree.JSXAttribute) => node.value,
+  O.fromNullable,
+  O.filter(
+    (v): v is TSESTree.JSXExpressionContainer => v.type === AST_NODE_TYPES.JSXExpressionContainer,
+  ),
+  O.map((c) => c.expression),
+  O.filter(isAnonFn),
+  O.map((fn) => ({ fn, lines: measureLineSpan(fn.body) })),
+);
 
 const checkJsxHandlerAttr = (
   node: TSESTree.JSXAttribute,
   maxHandlerLines: number,
   report: Reporter,
 ) => {
-  pipe(
-    O.fromNullable(node.value),
-    O.filter((v): v is TSESTree.JSXExpressionContainer => v.type === AST_NODE_TYPES.JSXExpressionContainer),
-    O.map((c) => c.expression),
-    O.filter(isAnonFn),
-    O.map((fn) => ({ fn, lines: getLineSpan(fn.body) })),
+  flow(
+    extractJsxAttrCallback,
     O.filter(({ lines }) => lines > maxHandlerLines),
     O.map(({ fn, lines }) => {
-      report({ node: fn, messageId: "fatJsxHandler", data: { actual: String(lines), max: String(maxHandlerLines) } });
+      report(toFatJsxHandlerDescriptor(fn, lines, maxHandlerLines));
     }),
-  );
+  )(node);
 };
 
 const buildControlFlowListeners = (report: Reporter) => ({
@@ -454,7 +501,7 @@ export const thinReactComponent = createRule<Options, MessageIds>({
     defaultOptions: [DEFAULT_OPTIONS],
   },
   create: (context, [options]) =>
-    context.filename.endsWith(".tsx")
+    isTsxFilename(context.filename)
       ? buildTsxListeners(options, (d) => {
           context.report(d);
         })

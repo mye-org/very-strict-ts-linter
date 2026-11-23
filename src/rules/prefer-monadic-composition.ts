@@ -2,10 +2,12 @@ import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { isEsTreeAnonymousFunctionNode, isFlowCallExpression, isPipeCallExpression } from "../utils/type-helpers.js";
+import { isEsTreeAnonymousFunctionNode } from "../lib/estree-function-nodes.js";
+import { isFlowCallExpression } from "../lib/flow-call.js";
+import { isPipeCallExpression } from "../lib/pipe-call.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds =
   | "nestedChain"
@@ -15,6 +17,9 @@ type MessageIds =
 
 const MATCH_OR_FOLD_METHODS = new Set(["match", "matchW", "fold", "foldW"]);
 const MONAD_GUARD_METHODS = new Set(["isSome", "isNone", "isRight", "isLeft"]);
+const CHAIN_METHOD_NAMES: ReadonlySet<string> = new Set(["chain"]);
+const MAP_METHOD_NAMES: ReadonlySet<string> = new Set(["map"]);
+const FLATTEN_METHOD_NAMES: ReadonlySet<string> = new Set(["flatten"]);
 
 const MONAD_REWRAP_CONSTRUCTORS = {
   O: new Set(["some", "none", "fromNullable"]),
@@ -23,27 +28,35 @@ const MONAD_REWRAP_CONSTRUCTORS = {
   T: new Set(["of"]),
 } as const satisfies Readonly<Record<string, ReadonlySet<string>>>;
 
-const getMemberCallInfo = (node: TSESTree.CallExpression) =>
-  node.callee.type === AST_NODE_TYPES.MemberExpression &&
-  node.callee.object.type === AST_NODE_TYPES.Identifier &&
-  node.callee.property.type === AST_NODE_TYPES.Identifier
-    ? O.some({ namespace: node.callee.object.name, method: node.callee.property.name })
+type MemberCallTarget = Readonly<Record<"namespace" | "method", string>>;
+
+const resolveMemberIdentifiers = (callee: TSESTree.MemberExpression) =>
+  match(callee)
+    .with(
+      { object: { type: AST_NODE_TYPES.Identifier }, property: { type: AST_NODE_TYPES.Identifier } },
+      (m) => O.some<MemberCallTarget>({ namespace: m.object.name, method: m.property.name }),
+    )
+    .with(P._, () => O.none)
+    .exhaustive();
+
+const resolveMemberCall = (node: TSESTree.CallExpression) =>
+  node.callee.type === AST_NODE_TYPES.MemberExpression
+    ? resolveMemberIdentifiers(node.callee)
     : O.none;
 
-const getPipeStepNamespaceAndMethod = (arg: TSESTree.CallExpressionArgument) =>
+const resolvePipeStepTarget = (arg: TSESTree.CallExpressionArgument) =>
   match(arg)
-    .with({ type: AST_NODE_TYPES.CallExpression }, getMemberCallInfo)
-    .with(
-      { type: AST_NODE_TYPES.MemberExpression, object: { type: AST_NODE_TYPES.Identifier }, property: { type: AST_NODE_TYPES.Identifier } },
-      (m) => O.some({ namespace: m.object.name, method: m.property.name }),
-    )
+    .with({ type: AST_NODE_TYPES.CallExpression }, resolveMemberCall)
+    .with({ type: AST_NODE_TYPES.MemberExpression }, resolveMemberIdentifiers)
     .with(P._, () => O.none)
     .exhaustive();
 
 const isChainCallbackParent = (node: TSESTree.Node) =>
   isEsTreeAnonymousFunctionNode(node) &&
   node.parent.type === AST_NODE_TYPES.CallExpression &&
-  pipe(getMemberCallInfo(node.parent), O.exists((info) => info.method === "chain"));
+  O.exists((target: MemberCallTarget) => CHAIN_METHOD_NAMES.has(target.method))(
+    resolveMemberCall(node.parent),
+  );
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
 const isInsideOuterChainCallback = (node: TSESTree.Node): boolean =>
@@ -51,7 +64,7 @@ const isInsideOuterChainCallback = (node: TSESTree.Node): boolean =>
     ? isChainCallbackParent(node.parent) || isInsideOuterChainCallback(node.parent)
     : false;
 
-const getSingleBlockReturnExpr = (body: TSESTree.BlockStatement) => {
+const resolveSingleBlockReturnExpr = (body: TSESTree.BlockStatement) => {
   const firstStmt = body.body[0];
   return body.body.length === 1 &&
     firstStmt?.type === AST_NODE_TYPES.ReturnStatement &&
@@ -60,11 +73,11 @@ const getSingleBlockReturnExpr = (body: TSESTree.BlockStatement) => {
     : O.none;
 };
 
-const getCallbackReturnExpression = (arg: TSESTree.CallExpressionArgument) =>
+const resolveCallbackReturnExpression = (arg: TSESTree.CallExpressionArgument) =>
   match(arg)
     .with({ type: AST_NODE_TYPES.ArrowFunctionExpression }, (fn) =>
       match(fn.body)
-        .with({ type: AST_NODE_TYPES.BlockStatement }, getSingleBlockReturnExpr)
+        .with({ type: AST_NODE_TYPES.BlockStatement }, resolveSingleBlockReturnExpr)
         .with(P._, O.some)
         .exhaustive(),
     )
@@ -82,97 +95,91 @@ const isMonadConstructorExpr = (
     expr.property.type === AST_NODE_TYPES.Identifier &&
     constructors.has(expr.property.name)) ||
   (expr.type === AST_NODE_TYPES.CallExpression &&
-    pipe(
-      getMemberCallInfo(expr),
-      O.exists((info) => info.namespace === namespace && constructors.has(info.method)),
-    ));
+    O.exists(
+      (target: MemberCallTarget) =>
+        target.namespace === namespace && constructors.has(target.method),
+    )(resolveMemberCall(expr)));
 
 const isMatchingMonadConstructor = (
   arg: TSESTree.CallExpressionArgument,
   namespace: string,
   constructors: ReadonlySet<string>,
 ) =>
-  pipe(
-    getCallbackReturnExpression(arg),
-    O.exists((expr) => isMonadConstructorExpr(expr, namespace, constructors)),
+  O.exists((expr: TSESTree.Expression) => isMonadConstructorExpr(expr, namespace, constructors))(
+    resolveCallbackReturnExpression(arg),
   );
 
 const isReturningSameMonadConstructor = (
   arg: TSESTree.CallExpressionArgument,
   namespace: string,
 ) =>
-  pipe(
-    RR.lookup(namespace, MONAD_REWRAP_CONSTRUCTORS),
-    O.exists((constructors) => isMatchingMonadConstructor(arg, namespace, constructors)),
-  );
+  O.exists((constructors: ReadonlySet<string>) =>
+    isMatchingMonadConstructor(arg, namespace, constructors),
+  )(RR.lookup(namespace, MONAD_REWRAP_CONSTRUCTORS));
+
+const isNegatedTernaryTest = (unary: TSESTree.UnaryExpression) =>
+  unary.operator === "!" &&
+  unary.parent.type === AST_NODE_TYPES.ConditionalExpression &&
+  unary.parent.test === unary;
 
 const isInTernaryTest = (node: TSESTree.CallExpression) =>
   (node.parent.type === AST_NODE_TYPES.ConditionalExpression &&
     node.parent.test === node) ||
-  (node.parent.type === AST_NODE_TYPES.UnaryExpression &&
-    node.parent.operator === "!" &&
-    node.parent.parent.type === AST_NODE_TYPES.ConditionalExpression &&
-    node.parent.parent.test === node.parent);
+  (node.parent.type === AST_NODE_TYPES.UnaryExpression && isNegatedTernaryTest(node.parent));
 
 const isMapThenFlattenPair = (
   curr: TSESTree.CallExpressionArgument,
   next: TSESTree.CallExpressionArgument,
 ) =>
-  pipe(
-    O.Do,
-    O.apS("c", getPipeStepNamespaceAndMethod(curr)),
-    O.apS("n", getPipeStepNamespaceAndMethod(next)),
-    O.exists(({ c, n }) => c.namespace === n.namespace && c.method === "map" && n.method === "flatten"),
-  );
+  match([resolvePipeStepTarget(curr), resolvePipeStepTarget(next)] as const)
+    .with([{ _tag: "Some" }, { _tag: "Some" }], ([{ value: c }, { value: n }]) =>
+      c.namespace === n.namespace &&
+      MAP_METHOD_NAMES.has(c.method) &&
+      FLATTEN_METHOD_NAMES.has(n.method),
+    )
+    .otherwise(() => false);
 
 const findMapThenFlattenTargets = (
   args: ReadonlyArray<TSESTree.CallExpressionArgument>,
   startIndex: number,
 ) =>
-  pipe(
-    args,
-    RA.filterMapWithIndex((i, arg) => {
-      const next = args[i + 1];
-      return i >= startIndex && next && isMapThenFlattenPair(arg, next) ? O.some(next) : O.none;
-    }),
-  );
+  RA.filterMapWithIndex((i: number, arg: TSESTree.CallExpressionArgument) => {
+    const next = args[i + 1];
+    return i >= startIndex && next && isMapThenFlattenPair(arg, next) ? O.some(next) : O.none;
+  })(args);
 
-const isUnwrapAndRewrap = (
-  node: TSESTree.CallExpression,
-  namespace: string,
-  method: string,
-) => {
+const isUnwrapAndRewrap = (node: TSESTree.CallExpression, target: MemberCallTarget) => {
   const firstArg = node.arguments[0];
   const secondArg = node.arguments[1];
   return (
-    MATCH_OR_FOLD_METHODS.has(method) &&
+    MATCH_OR_FOLD_METHODS.has(target.method) &&
     node.arguments.length === 2 &&
     firstArg !== undefined &&
     secondArg !== undefined &&
-    isReturningSameMonadConstructor(firstArg, namespace) &&
-    isReturningSameMonadConstructor(secondArg, namespace)
+    isReturningSameMonadConstructor(firstArg, target.namespace) &&
+    isReturningSameMonadConstructor(secondArg, target.namespace)
   );
 };
 
 const makeReport = (messageId: MessageIds, data: Readonly<Record<string, string>>) =>
   O.some([messageId, data] as const);
 
-const classifyMemberCall = (
-  node: TSESTree.CallExpression,
-  namespace: string,
-  method: string,
-) =>
+const formatGuardLabel = (target: MemberCallTarget) => `${target.namespace}.${target.method}`;
+
+const classifyMemberCall = (node: TSESTree.CallExpression, target: MemberCallTarget) =>
   match({
-    isNestedChain: method === "chain" && isInsideOuterChainCallback(node),
-    isUnwrapRewrap: isUnwrapAndRewrap(node, namespace, method),
-    isImperativeGuard: MONAD_GUARD_METHODS.has(method) && isInTernaryTest(node),
+    isNestedChain: CHAIN_METHOD_NAMES.has(target.method) && isInsideOuterChainCallback(node),
+    isUnwrapRewrap: isUnwrapAndRewrap(node, target),
+    isImperativeGuard: MONAD_GUARD_METHODS.has(target.method) && isInTernaryTest(node),
   })
     .with({ isNestedChain: true }, () => makeReport("nestedChain", {}))
-    .with({ isUnwrapRewrap: true }, () => makeReport("unwrapAndRewrap", { method }))
-    .with({ isImperativeGuard: true }, () => makeReport("imperativeMonadCheck", { guard: `${namespace}.${method}` }))
+    .with({ isUnwrapRewrap: true }, () => makeReport("unwrapAndRewrap", { method: target.method }))
+    .with({ isImperativeGuard: true }, () =>
+      makeReport("imperativeMonadCheck", { guard: formatGuardLabel(target) }),
+    )
     .otherwise(() => O.none);
 
-const getPipelineStartIndex = (node: TSESTree.CallExpression) =>
+const resolvePipelineStartIndex = (node: TSESTree.CallExpression) =>
   match([isPipeCallExpression(node), isFlowCallExpression(node)] as const)
     .with([true, false], () => O.some(1))
     .with([false, true], () => O.some(0))
@@ -182,11 +189,11 @@ const reportMemberCall = (
   node: TSESTree.CallExpression,
   report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
 ) => {
-  pipe(
-    getMemberCallInfo(node),
-    O.flatMap(({ namespace, method }) => classifyMemberCall(node, namespace, method)),
+  flow(
+    resolveMemberCall,
+    O.flatMap((target) => classifyMemberCall(node, target)),
     O.map(([messageId, data]) => { report(node, messageId, data); }),
-  );
+  )(node);
 };
 
 const reportPipelineCall = (
@@ -194,9 +201,8 @@ const reportPipelineCall = (
   startIndex: number,
   report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
 ) => {
-  pipe(
+  RA.map((target: TSESTree.CallExpressionArgument) => { report(target, "mapThenFlatten", {}); })(
     findMapThenFlattenTargets(node.arguments, startIndex),
-    RA.map((target) => { report(target, "mapThenFlatten", {}); }),
   );
 };
 
@@ -204,13 +210,10 @@ const checkCallNode = (
   node: TSESTree.CallExpression,
   report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
 ) => {
-  pipe(
-    getPipelineStartIndex(node),
-    O.match(
-      () => { reportMemberCall(node, report); },
-      (startIndex) => { reportPipelineCall(node, startIndex, report); },
-    ),
-  );
+  O.match(
+    () => { reportMemberCall(node, report); },
+    (startIndex: number) => { reportPipelineCall(node, startIndex, report); },
+  )(resolvePipelineStartIndex(node));
 };
 
 export const preferMonadicComposition = createRule<[], MessageIds>({

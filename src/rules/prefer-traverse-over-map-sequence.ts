@@ -1,10 +1,11 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { isFlowCallExpression, isPipeCallExpression } from "../utils/type-helpers.js";
+import { isFlowCallExpression } from "../lib/flow-call.js";
+import { isPipeCallExpression } from "../lib/pipe-call.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "mapThenSequence" | "manualMonadicReduce";
 type StepPair = Readonly<{
@@ -12,98 +13,114 @@ type StepPair = Readonly<{
   readonly second: TSESTree.CallExpressionArgument;
 }>;
 
-const COLLECTION_NAMESPACES = new Set(["RA", "A", "RNEA", "RR", "R"]);
-const SEQUENCE_ARRAY_NAMESPACES = new Set(["O", "E", "TE", "T", "IO", "IOE", "RTE", "RE", "RT", "R"]);
-const SEQUENCE_ARRAY_METHODS = new Set(["sequenceArray", "sequenceSeqArray"]);
-const MONAD_EMPTY_ARRAY_CONSTRUCTORS = new Set(["some", "right", "of"]);
+const COLLECTION_NAMESPACES: ReadonlySet<string> = new Set(["RA", "A", "RNEA", "RR", "R"]);
+const SEQUENCE_ARRAY_NAMESPACES: ReadonlySet<string> = new Set([
+  "O",
+  "E",
+  "TE",
+  "T",
+  "IO",
+  "IOE",
+  "RTE",
+  "RE",
+  "RT",
+  "R",
+]);
+const SEQUENCE_ARRAY_METHODS: ReadonlySet<string> = new Set(["sequenceArray", "sequenceSeqArray"]);
+const MONAD_EMPTY_ARRAY_CONSTRUCTORS: ReadonlySet<string> = new Set(["some", "right", "of"]);
+const MAP_METHODS: ReadonlySet<string> = new Set(["map"]);
+const SEQUENCE_METHODS: ReadonlySet<string> = new Set(["sequence"]);
+const REDUCE_METHODS: ReadonlySet<string> = new Set(["reduce"]);
 
-const getMemberExprInfo = (m: TSESTree.MemberExpression) =>
+const extractMemberCallee = (m: TSESTree.MemberExpression) =>
   !m.computed &&
   m.object.type === AST_NODE_TYPES.Identifier &&
   m.property.type === AST_NODE_TYPES.Identifier
     ? O.some({ namespace: m.object.name, method: m.property.name })
     : O.none;
 
-const getMemberInfo = (node: TSESTree.CallExpressionArgument) =>
+const resolveMemberCallee = (node: TSESTree.CallExpressionArgument) =>
   match(node)
     .with(
       { type: AST_NODE_TYPES.CallExpression, callee: { type: AST_NODE_TYPES.MemberExpression } },
-      (c) => getMemberExprInfo(c.callee),
+      (c) => extractMemberCallee(c.callee),
     )
-    .with({ type: AST_NODE_TYPES.MemberExpression }, getMemberExprInfo)
+    .with({ type: AST_NODE_TYPES.MemberExpression }, extractMemberCallee)
     .with(P._, () => O.none)
     .exhaustive();
 
-const isCollectionMapStep = (arg: TSESTree.CallExpressionArgument) =>
-  pipe(
-    getMemberInfo(arg),
-    O.filter((info) => COLLECTION_NAMESPACES.has(info.namespace) && info.method === "map"),
-  );
+const resolveCollectionMapStep = flow(
+  resolveMemberCallee,
+  O.filter(({ namespace, method }) => COLLECTION_NAMESPACES.has(namespace) && MAP_METHODS.has(method)),
+);
 
 const isSequenceStepFor = (arg: TSESTree.CallExpressionArgument, collectionNs: string) =>
-  pipe(
-    getMemberInfo(arg),
+  flow(
+    resolveMemberCallee,
     O.exists(
       ({ namespace, method }) =>
         (SEQUENCE_ARRAY_NAMESPACES.has(namespace) && SEQUENCE_ARRAY_METHODS.has(method)) ||
-        (namespace === collectionNs && method === "sequence"),
+        (namespace === collectionNs && SEQUENCE_METHODS.has(method)),
     ),
-  );
+  )(arg);
 
 const isMapThenSequencePair = ({ first, second }: StepPair) =>
-  pipe(
-    isCollectionMapStep(first),
+  flow(
+    resolveCollectionMapStep,
     O.exists(({ namespace }) => isSequenceStepFor(second, namespace)),
-  );
+  )(first);
 
 const matchNextMapSequence = (
   step: TSESTree.CallExpressionArgument,
   nextOpt: O.Option<TSESTree.CallExpressionArgument>,
-) =>
-  pipe(
-    nextOpt,
-    O.filter((second) => isMapThenSequencePair({ first: step, second })),
-  );
+) => O.filter((second: TSESTree.CallExpressionArgument) => isMapThenSequencePair({ first: step, second }))(nextOpt);
 
 const findMapThenSequenceTargets = (steps: ReadonlyArray<TSESTree.CallExpressionArgument>) =>
-  pipe(
-    steps,
-    RA.filterMapWithIndex((i, step) => matchNextMapSequence(step, O.fromNullable(steps[i + 1]))),
-  );
+  RA.filterMapWithIndex((i: number, step: TSESTree.CallExpressionArgument) =>
+    matchNextMapSequence(step, O.fromNullable(steps[i + 1])),
+  )(steps);
+
+const isEmptyArrayLiteral = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.ArrayExpression && node.elements.length === 0;
 
 const isEmptyArrayExpr = (arg: TSESTree.CallExpressionArgument) =>
-  (arg.type === AST_NODE_TYPES.ArrayExpression && arg.elements.length === 0) ||
+  isEmptyArrayLiteral(arg) ||
   ((arg.type === AST_NODE_TYPES.TSAsExpression || arg.type === AST_NODE_TYPES.TSSatisfiesExpression) &&
-    arg.expression.type === AST_NODE_TYPES.ArrayExpression &&
-    arg.expression.elements.length === 0);
+    isEmptyArrayLiteral(arg.expression));
 
-const hasEmptyArrayFirstArg = (call: TSESTree.CallExpression) =>
-  pipe(O.fromNullable(call.arguments[0]), O.exists(isEmptyArrayExpr));
+const hasEmptyArrayFirstArg = flow(
+  (call: TSESTree.CallExpression) => call.arguments[0],
+  O.fromNullable,
+  O.exists(isEmptyArrayExpr),
+);
 
 const isMonadicEmptyArraySeed = (arg: TSESTree.CallExpressionArgument) =>
   arg.type === AST_NODE_TYPES.CallExpression &&
   hasEmptyArrayFirstArg(arg) &&
-  pipe(
-    getMemberInfo(arg),
+  flow(
+    resolveMemberCallee,
     O.exists(
       ({ namespace, method }) =>
         SEQUENCE_ARRAY_NAMESPACES.has(namespace) && MONAD_EMPTY_ARRAY_CONSTRUCTORS.has(method),
     ),
-  );
+  )(arg);
 
-const hasMonadicSeedFirstArg = (call: TSESTree.CallExpression) =>
-  pipe(O.fromNullable(call.arguments[0]), O.exists(isMonadicEmptyArraySeed));
+const hasMonadicSeedFirstArg = flow(
+  (call: TSESTree.CallExpression) => call.arguments[0],
+  O.fromNullable,
+  O.exists(isMonadicEmptyArraySeed),
+);
 
 const isManualMonadicReduceCall = (node: TSESTree.CallExpression) =>
   hasMonadicSeedFirstArg(node) &&
-  pipe(
-    getMemberInfo(node),
-    O.exists(({ namespace, method }) => COLLECTION_NAMESPACES.has(namespace) && method === "reduce"),
-  );
+  flow(
+    resolveMemberCallee,
+    O.exists(({ namespace, method }) => COLLECTION_NAMESPACES.has(namespace) && REDUCE_METHODS.has(method)),
+  )(node);
 
-const getPipelineSteps = (node: TSESTree.CallExpression) =>
+const extractPipelineSteps = (node: TSESTree.CallExpression) =>
   match([isPipeCallExpression(node), isFlowCallExpression(node)] as const)
-    .with([true, false], () => O.some(node.arguments.slice(1)))
+    .with([true, false], () => O.some(RA.dropLeft(1)(node.arguments)))
     .with([false, true], () => O.some(node.arguments))
     .otherwise(() => O.none);
 
@@ -111,32 +128,32 @@ const reportManualReduce = (
   node: TSESTree.CallExpression,
   report: (target: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  pipe(
-    O.fromPredicate(isManualMonadicReduceCall)(node),
+  flow(
+    O.fromPredicate(isManualMonadicReduceCall),
     O.map((n) => {
       report(n, "manualMonadicReduce");
     }),
-  );
+  )(node);
 };
 
 const reportMapSequenceTargets = (
   steps: ReadonlyArray<TSESTree.CallExpressionArgument>,
   report: (target: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  pipe(
-    findMapThenSequenceTargets(steps),
+  flow(
+    findMapThenSequenceTargets,
     RA.map((target) => {
       report(target, "mapThenSequence");
     }),
-  );
+  )(steps);
 };
 
 const checkCallExpression = (
   node: TSESTree.CallExpression,
   report: (target: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  pipe(
-    getPipelineSteps(node),
+  flow(
+    extractPipelineSteps,
     O.match(
       () => {
         reportManualReduce(node, report);
@@ -145,7 +162,7 @@ const checkCallExpression = (
         reportMapSequenceTargets(steps, report);
       },
     ),
-  );
+  )(node);
 };
 
 export const preferTraverseOverMapSequence = createRule<[], MessageIds>({

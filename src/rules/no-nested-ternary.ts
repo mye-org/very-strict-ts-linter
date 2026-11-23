@@ -1,8 +1,23 @@
-import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
-import { match, P } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
+import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
+import { match } from "ts-pattern";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "noNestedTernary";
+
+const isNestedTernary = (node: TSESTree.ConditionalExpression) =>
+  node.test.type === AST_NODE_TYPES.ConditionalExpression ||
+  node.consequent.type === AST_NODE_TYPES.ConditionalExpression ||
+  node.alternate.type === AST_NODE_TYPES.ConditionalExpression;
+
+const reportIfNestedTernary = (
+  node: TSESTree.ConditionalExpression,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  match(isNestedTernary(node))
+    .with(true, () => { report({ node, messageId: "noNestedTernary" }); })
+    .with(false, () => {})
+    .exhaustive();
+};
 
 export const noNestedTernary = createRule<[], MessageIds>({
   name: "no-nested-ternary",
@@ -21,22 +36,7 @@ export const noNestedTernary = createRule<[], MessageIds>({
   },
   create: (context) => ({
     ConditionalExpression: (node: TSESTree.ConditionalExpression) => {
-      match({
-        testType: node.test.type,
-        consequentType: node.consequent.type,
-        alternateType: node.alternate.type,
-      })
-        .with(
-          P.union(
-            { testType: AST_NODE_TYPES.ConditionalExpression },
-            { consequentType: AST_NODE_TYPES.ConditionalExpression },
-            { alternateType: AST_NODE_TYPES.ConditionalExpression },
-          ),
-          () => {
-            context.report({ node, messageId: "noNestedTernary" });
-          },
-        )
-        .otherwise(() => {});
+      reportIfNestedTernary(node, (d) => { context.report(d); });
     },
   }),
 });

@@ -5,24 +5,30 @@ import {
   TSESTree,
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import {
   analyzeSkeletonDuplications,
   SkeletonCluster,
 } from "../analyzers/skeleton-duplication-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsNodeOwnLocation, makeLocationKey } from "../utils/ts-ast-helpers.js";
-import { isFlowCallExpression, isPipeCallExpression } from "../utils/type-helpers.js";
+import { isFlowCallExpression } from "../lib/flow-call.js";
+import { isPipeCallExpression } from "../lib/pipe-call.js";
+import { createRule } from "../lib/rule-factory.js";
+import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
 type Options = [
   Readonly<Record<"minSteps" | "minDistinctCombinators" | "minOccurrences", number>>,
 ];
 type MessageIds = "structuralSkeletonDuplication";
 
-const getCallLocationKey = (
+const resolveCallLocationKey = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
-) => pipe(services.esTreeNodeToTSNodeMap.get(node), getTsNodeOwnLocation, makeLocationKey);
+) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
+
+const formatClusterFields = (cluster: SkeletonCluster) => ({
+  count: String(cluster.sites.length),
+  preview: cluster.preview,
+});
 
 const reportCluster = (
   node: TSESTree.CallExpression,
@@ -30,22 +36,19 @@ const reportCluster = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(locationIndex[getCallLocationKey(node, services)]?.[0]),
-    O.map((cluster) => {
-      report({
-        node,
-        messageId: "structuralSkeletonDuplication",
-        data: { count: String(cluster.sites.length), preview: cluster.preview },
-      });
-    }),
-  );
+  O.map((cluster: SkeletonCluster) => {
+    report({
+      node,
+      messageId: "structuralSkeletonDuplication",
+      data: formatClusterFields(cluster),
+    });
+  })(O.fromNullable(locationIndex[resolveCallLocationKey(node, services)]?.[0]));
 };
 
 const isPipeOrFlowNode = (n: TSESTree.CallExpression) =>
   isPipeCallExpression(n) || isFlowCallExpression(n);
 
-const getSkeletonIndex = (options: Options[0], services: ParserServicesWithTypeInformation) =>
+const resolveSkeletonIndex = (options: Options[0], services: ParserServicesWithTypeInformation) =>
   analyzeSkeletonDuplications(
     services.program,
     options.minSteps,
@@ -59,15 +62,15 @@ const checkPipelineCall = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromPredicate(isPipeOrFlowNode)(node),
+  flow(
+    O.fromPredicate(isPipeOrFlowNode),
     O.map((n) => {
-      reportCluster(n, getSkeletonIndex(options, services), services, report);
+      reportCluster(n, resolveSkeletonIndex(options, services), services, report);
     }),
-  );
+  )(node);
 };
 
-const createSkeletonListeners = (
+const buildSkeletonListeners = (
   options: Options[0],
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -103,7 +106,7 @@ export const noStructuralSkeletonDuplication = createRule<Options, MessageIds>({
     defaultOptions: [{ minSteps: 4, minDistinctCombinators: 3, minOccurrences: 2 }],
   },
   create: (context, [options]) =>
-    createSkeletonListeners(options, ESLintUtils.getParserServices(context), (d) => {
+    buildSkeletonListeners(options, ESLintUtils.getParserServices(context), (d) => {
       context.report(d);
     }),
 });

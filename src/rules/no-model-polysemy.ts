@@ -1,10 +1,10 @@
 import { ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { analyzePolysemy, PolysemyFinding } from "../analyzers/polysemy-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsNodeOwnLocation, makeLocationKey } from "../utils/ts-ast-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
 type Options = [
   Readonly<
@@ -18,16 +18,26 @@ type ModelDeclNode =
   | TSESTree.TSInterfaceDeclaration
   | TSESTree.ClassDeclaration;
 
-const formatClusters = (finding: PolysemyFinding) =>
-  pipe(
-    finding.clusters,
-    RA.map((c) => `{${c.fields.join(", ")}}`),
-  ).join(" vs ");
+const formatClusterFields = (cluster: PolysemyFinding["clusters"][number]) =>
+  `{${cluster.fields.join(", ")}}`;
 
-const getModelKey = (
+const joinWithVs = (items: ReadonlyArray<string>) => items.join(" vs ");
+
+const formatClusters = flow(
+  (finding: PolysemyFinding) => finding.clusters,
+  RA.map(formatClusterFields),
+  joinWithVs,
+);
+
+const resolveModelKey = (
   node: ModelDeclNode,
   services: ParserServicesWithTypeInformation,
-) => pipe(services.esTreeNodeToTSNodeMap.get(node), getTsNodeOwnLocation, makeLocationKey);
+) =>
+  flow(
+    (n: ModelDeclNode) => services.esTreeNodeToTSNodeMap.get(n),
+    resolveTsNodeOwnLocation,
+    makeLocationKey,
+  )(node);
 
 const checkModelNode = (
   node: ModelDeclNode,
@@ -35,8 +45,9 @@ const checkModelNode = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(byLocation[getModelKey(node, services)]),
+  flow(
+    (n: ModelDeclNode) => byLocation[resolveModelKey(n, services)],
+    O.fromNullable,
     O.map((finding) => {
       report({
         node: node.id ?? node,
@@ -44,10 +55,10 @@ const checkModelNode = (
         data: { model: finding.modelName, clusters: formatClusters(finding) },
       });
     }),
-  );
+  )(node);
 };
 
-const createPolysemyListeners = (
+const buildPolysemyListeners = (
   options: Options[0],
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -93,5 +104,5 @@ export const noModelPolysemy = createRule<Options, MessageIds>({
     defaultOptions: [{ minFields: 4, minClusterFields: 2, maxOverlap: 0.2 }],
   },
   create: (context, [options]) =>
-    createPolysemyListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    buildPolysemyListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
 });

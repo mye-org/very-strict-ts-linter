@@ -2,11 +2,18 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as ts from "typescript";
+import { analyzeAggregateGraph } from "../analyzers/aggregate-graph-analyzer.js";
+import { analyzeCatamorphisms } from "../analyzers/catamorphism-analyzer.js";
+import { analyzeContextDrilling } from "../analyzers/context-drilling-analyzer.js";
+import { analyzeDataClumps } from "../analyzers/data-clump-analyzer.js";
+import { analyzeGuardClauses } from "../analyzers/guard-clause-analyzer.js";
+import { analyzePolysemy } from "../analyzers/polysemy-analyzer.js";
 import {
-  buildDiscoveryRadarReport,
   formatDiscoveryReport,
   type DiscoveryRadarReport,
 } from "../analyzers/radar-report.js";
+import { analyzeSkeletonDuplications } from "../analyzers/skeleton-duplication-analyzer.js";
+import { analyzeStringlyTypedDiscriminants } from "../analyzers/stringly-typed-analyzer.js";
 import {
   computeProjectFingerprint,
   loadParsedTsConfig,
@@ -16,6 +23,19 @@ import {
   resolveTsConfigPath,
   writeCachedArtifact,
 } from "./incremental-cache.js";
+
+export const buildDiscoveryRadarReport = (program: ts.Program) => ({
+  dataClumps: analyzeDataClumps(program).findings,
+  polysemyModels: analyzePolysemy(program).findings,
+  repeatedGuards: analyzeGuardClauses(program).clusters,
+  stringlyTypedDiscriminants: analyzeStringlyTypedDiscriminants(program).clusters,
+  aggregateChildren: Object.entries(analyzeAggregateGraph(program).childToParentAggregates).map(
+    ([child, parents]) => ({ child, parents }),
+  ),
+  contextDrillingChains: analyzeContextDrilling(program).chains,
+  skeletonDuplications: analyzeSkeletonDuplications(program).groups,
+  catamorphismCandidates: analyzeCatamorphisms(program).candidates,
+});
 
 export type RadarRunOptions = {
   readonly cwd?: string;
@@ -32,7 +52,7 @@ export type RadarRunResult = {
   readonly tsBuildInfoPath?: string;
 };
 
-const parseRadarArgs = (args: ReadonlyArray<string>): RadarRunOptions => {
+const parseRadarArgs = (args: ReadonlyArray<string>) => {
   let tsconfig: string | undefined;
   let format: "markdown" | "json" = "markdown";
   let cache: boolean | undefined;
@@ -61,10 +81,10 @@ const parseRadarArgs = (args: ReadonlyArray<string>): RadarRunOptions => {
     ...(tsconfig !== undefined ? { tsconfig } : {}),
     ...(cache !== undefined ? { cache } : {}),
     ...(cacheLocation !== undefined ? { cacheLocation } : {}),
-  };
+  } satisfies RadarRunOptions;
 };
 
-export const runDiscoveryRadar = (options: RadarRunOptions = {}): RadarRunResult => {
+export const runDiscoveryRadar = (options: RadarRunOptions = {}) => {
   const cwd = options.cwd ?? process.cwd();
   const format = options.format ?? "markdown";
   const useCache = options.cache !== false;
@@ -95,12 +115,13 @@ export const runDiscoveryRadar = (options: RadarRunOptions = {}): RadarRunResult
       fingerprint,
     );
     if (cachedReport) {
-      return {
+      const cachedResult: RadarRunResult = {
         report: cachedReport,
         formatted: formatDiscoveryReport(cachedReport, format),
         cacheHit: true,
         ...(tsBuildInfoPath !== undefined ? { tsBuildInfoPath } : {}),
       };
+      return cachedResult;
     }
   }
 
@@ -142,21 +163,23 @@ export const runDiscoveryRadar = (options: RadarRunOptions = {}): RadarRunResult
     if (cacheDir && fingerprint) {
       writeCachedArtifact(cacheDir, "radar", scopeKey, fingerprint, report);
     }
-    return {
+    const incrementalResult: RadarRunResult = {
       report,
       formatted: formatDiscoveryReport(report, format),
       cacheHit: false,
       tsBuildInfoPath,
     };
+    return incrementalResult;
   }
 
   program = ts.createProgram(parsed.fileNames, parsed.options);
   const report = buildDiscoveryRadarReport(program);
-  return {
+  const freshResult: RadarRunResult = {
     report,
     formatted: formatDiscoveryReport(report, format),
     cacheHit: false,
   };
+  return freshResult;
 };
 
 const runRadarCli = () => {

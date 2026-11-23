@@ -10,6 +10,7 @@ import { ESLint } from "eslint";
 import * as ts from "typescript";
 import type { LintTier, PluginRuleTier } from "../configs/recommended.js";
 import {
+  buildEslintCacheOptions,
   computeConfigFingerprint,
   computeProjectFingerprint,
   hashShort,
@@ -63,22 +64,61 @@ type CachedSourceEntry = {
   readonly sourceFile: ts.SourceFile;
 };
 
+type KeyValueStore<V> = Readonly<{
+  readonly get: (key: string) => V | undefined;
+  readonly set: (key: string, value: V) => void;
+  readonly remove: (key: string) => void;
+  readonly clear: () => void;
+}>;
+
+const buildKeyValueStore = <V>() => {
+  const entries = new Map<string, V>();
+  return {
+    get: (key: string) => entries.get(key),
+    set: (key: string, value: V) => {
+      entries.set(key, value);
+    },
+    remove: (key: string) => {
+      entries.delete(key);
+    },
+    clear: () => {
+      entries.clear();
+    },
+  } satisfies KeyValueStore<V>;
+};
+
 type WarmTypeCheckerState = {
   readonly tsconfigPath: string;
   readonly configFingerprint: string;
   readonly tsBuildInfoPath: string | undefined;
-  readonly projectSourceCache: Map<string, CachedSourceEntry>;
-  readonly librarySourceCache: Map<string, ts.SourceFile>;
+  readonly projectSourceCache: KeyValueStore<CachedSourceEntry>;
+  readonly librarySourceCache: KeyValueStore<ts.SourceFile>;
   builderProgram: ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined;
 };
 
 type WarmWorkspaceState = {
   readonly cwd: string;
   configFingerprint: string;
-  eslintInstances: Map<string, ESLint>;
+  eslintInstances: KeyValueStore<ESLint>;
   typeChecker: WarmTypeCheckerState | undefined;
-  trackedProjectFileContents: Map<string, string>;
+  trackedProjectFileContents: ReadonlyMap<string, string>;
 };
+
+type WarmTier0Target = Readonly<{
+  readonly configPath: string | undefined;
+  readonly cacheRoot: string | undefined;
+  readonly configFingerprint: string;
+}>;
+
+type LintPassOutput = Readonly<{
+  readonly lintResults: ReadonlyArray<ESLint.LintResult>;
+  readonly lintFormatter: ESLint.Formatter;
+}>;
+
+const isPongResponse = (
+  resp: DaemonResponse,
+): resp is Extract<DaemonResponse, { readonly type: "pong" }> =>
+  resp.ok && resp.type === "pong";
 
 const safeRealpath = (targetPath: string) => {
   try {
@@ -102,10 +142,10 @@ const isLibraryOrNodeModulesPath = (fileName: string) => {
   return normalized.includes("/node_modules/") || normalized.endsWith(".d.ts");
 };
 
-const createWarmCompilerHost = (
+const buildWarmCompilerHost = (
   options: ts.CompilerOptions,
   state: WarmTypeCheckerState,
-): ts.CompilerHost => {
+) => {
   const baseHost = ts.createIncrementalCompilerHost(options);
   const originalGetSourceFile = baseHost.getSourceFile.bind(baseHost);
 
@@ -139,7 +179,7 @@ const createWarmCompilerHost = (
       try {
         diskText = fs.readFileSync(resolved, "utf8");
       } catch {
-        state.projectSourceCache.delete(resolved);
+        state.projectSourceCache.remove(resolved);
         return undefined;
       }
 
@@ -159,7 +199,7 @@ const createWarmCompilerHost = (
       }
       return sourceFile;
     },
-  };
+  } satisfies ts.CompilerHost;
 };
 
 const formatDiagnosticsOutput = (
@@ -179,46 +219,44 @@ const formatDiagnosticsOutput = (
 
 const runWarmTier0 = (
   workspace: WarmWorkspaceState,
-  tsconfig: string | undefined,
-  cacheDir: string | undefined,
-  configFingerprint: string,
-): TierRunSummary => {
-  const tsconfigPath = resolveTsConfigPath(workspace.cwd, tsconfig);
+  target: WarmTier0Target,
+) => {
+  const tsconfigPath = resolveTsConfigPath(workspace.cwd, target.configPath);
   if (!tsconfigPath || !fs.existsSync(tsconfigPath)) {
     return {
-      tier: 0,
+      tier: 0 as const,
       errorCount: 1,
       warningCount: 0,
-      output: `error TS5058: The specified path does not exist: '${tsconfig ?? "tsconfig.json"}'.`,
-    };
+      output: `error TS5058: The specified path does not exist: '${target.configPath ?? "tsconfig.json"}'.`,
+    } satisfies TierRunSummary;
   }
 
   const parsed = loadParsedTsConfig(tsconfigPath);
   if (!parsed) {
     return {
-      tier: 0,
+      tier: 0 as const,
       errorCount: 1,
       warningCount: 0,
       output: `error TS5023: Failed to parse TypeScript config '${tsconfigPath}'.`,
-    };
+    } satisfies TierRunSummary;
   }
 
-  const tsBuildInfoPath = cacheDir
-    ? resolveTsBuildInfoPath(cacheDir, "tsc", tsconfigPath)
+  const tsBuildInfoPath = target.cacheRoot
+    ? resolveTsBuildInfoPath(target.cacheRoot, "tsc", tsconfigPath)
     : undefined;
 
   if (
     !workspace.typeChecker ||
     workspace.typeChecker.tsconfigPath !== tsconfigPath ||
-    workspace.typeChecker.configFingerprint !== configFingerprint ||
+    workspace.typeChecker.configFingerprint !== target.configFingerprint ||
     workspace.typeChecker.tsBuildInfoPath !== tsBuildInfoPath
   ) {
     workspace.typeChecker = {
       tsconfigPath,
-      configFingerprint,
+      configFingerprint: target.configFingerprint,
       tsBuildInfoPath,
-      projectSourceCache: new Map(),
-      librarySourceCache: new Map(),
+      projectSourceCache: buildKeyValueStore<CachedSourceEntry>(),
+      librarySourceCache: buildKeyValueStore<ts.SourceFile>(),
       builderProgram: undefined,
     };
   }
@@ -232,7 +270,7 @@ const runWarmTier0 = (
       : {}),
   };
 
-  const host = createWarmCompilerHost(incrementalOptions, tcState);
+  const host = buildWarmCompilerHost(incrementalOptions, tcState);
   const builderProgram = tcState.builderProgram
     ? ts.createEmitAndSemanticDiagnosticsBuilderProgram(
         parsed.fileNames,
@@ -254,7 +292,7 @@ const runWarmTier0 = (
 
   tcState.builderProgram = builderProgram;
 
-  const allDiagnostics: Array<ts.Diagnostic> = [
+  const allDiagnostics: ReadonlyArray<ts.Diagnostic> = [
     ...builderProgram.getConfigFileParsingDiagnostics(),
     ...builderProgram.getOptionsDiagnostics(),
     ...builderProgram.getGlobalDiagnostics(),
@@ -276,11 +314,11 @@ const runWarmTier0 = (
   const output = formatDiagnosticsOutput(allDiagnostics, workspace.cwd);
 
   return {
-    tier: 0,
+    tier: 0 as const,
     errorCount: errorDiagnostics.length,
     warningCount: 0,
     output,
-  };
+  } satisfies TierRunSummary;
 };
 
 const detectChangedNonTargetProjectFiles = (
@@ -340,13 +378,12 @@ const tiersUpTo: Record<LintTier, ReadonlyArray<LintTier>> = {
 
 const buildTierSummary = async (
   tier: PluginRuleTier,
-  results: Array<ESLint.LintResult>,
-  formatter: ESLint.Formatter,
-): Promise<TierRunSummary> => {
-  const errorCount = results.reduce((sum, r) => sum + r.errorCount, 0);
-  const warningCount = results.reduce((sum, r) => sum + r.warningCount, 0);
-  const output = await formatter.format(results);
-  return { tier, errorCount, warningCount, output };
+  pass: LintPassOutput,
+) => {
+  const errorCount = pass.lintResults.reduce((sum, r) => sum + r.errorCount, 0);
+  const warningCount = pass.lintResults.reduce((sum, r) => sum + r.warningCount, 0);
+  const output = await pass.lintFormatter.format([...pass.lintResults]);
+  return { tier, errorCount, warningCount, output } satisfies TierRunSummary;
 };
 
 const buildLintCacheScopeKey = (options: PhasedLintOptions) =>
@@ -362,7 +399,7 @@ const buildLintCacheScopeKey = (options: PhasedLintOptions) =>
 const handleWarmLint = async (
   workspace: WarmWorkspaceState,
   options: PhasedLintOptions,
-): Promise<PhasedLintResult> => {
+) => {
   const useCache = options.cache !== false;
   const cacheDir = useCache ? resolveCacheDir(workspace.cwd, options.cacheLocation) : undefined;
   const tsconfigPath = resolveTsConfigPath(workspace.cwd, options.tsconfig);
@@ -372,7 +409,7 @@ const handleWarmLint = async (
     clearCaches();
     workspace.eslintInstances.clear();
     workspace.typeChecker = undefined;
-    workspace.trackedProjectFileContents.clear();
+    workspace.trackedProjectFileContents = new Map();
     workspace.configFingerprint = configFingerprint;
   }
 
@@ -396,7 +433,7 @@ const handleWarmLint = async (
       projectFingerprint,
     );
     if (cached) {
-      return { ...cached, cacheHit: true };
+      return { ...cached, cacheHit: true } satisfies PhasedLintResult;
     }
   }
 
@@ -417,14 +454,9 @@ const handleWarmLint = async (
       ? `only:${String(options.onlyTier)}:${String(options.eslintCache === true)}`
       : `max:${String(options.maxTier)}:${String(options.eslintCache === true)}`;
 
-  let singlePass:
-    | {
-        readonly results: Array<ESLint.LintResult>;
-        readonly formatter: ESLint.Formatter;
-      }
-    | undefined;
+  let singlePass: LintPassOutput | undefined;
 
-  const getSinglePass = async () => {
+  const loadSinglePass = async () => {
     if (!singlePass) {
       let eslint = workspace.eslintInstances.get(filterKey);
       if (!eslint) {
@@ -436,20 +468,14 @@ const handleWarmLint = async (
           cwd: workspace.cwd,
           fix: false,
           ruleFilter,
-          ...(options.eslintCache === true && cacheDir
-            ? {
-                cache: true,
-                cacheStrategy: "content" as const,
-                cacheLocation: path.join(cacheDir, "eslint-cache.json"),
-              }
-            : {}),
+          ...buildEslintCacheOptions(options.eslintCache, cacheDir),
         };
         eslint = new ESLint(eslintOptions);
         workspace.eslintInstances.set(filterKey, eslint);
       }
-      const results = await eslint.lintFiles([...options.targets]);
-      const formatter = await eslint.loadFormatter(options.format);
-      singlePass = { results, formatter };
+      const lintResults = await eslint.lintFiles([...options.targets]);
+      const lintFormatter = await eslint.loadFormatter(options.format);
+      singlePass = { lintResults, lintFormatter };
     }
     return singlePass;
   };
@@ -458,14 +484,21 @@ const handleWarmLint = async (
   for (const tier of tiers) {
     let summary: TierRunSummary;
     if (tier === 0) {
-      summary = runWarmTier0(workspace, options.tsconfig, cacheDir, configFingerprint);
+      summary = runWarmTier0(workspace, {
+        configPath: options.tsconfig,
+        cacheRoot: cacheDir,
+        configFingerprint,
+      });
     } else {
-      const pass = await getSinglePass();
+      const pass = await loadSinglePass();
       const tierResults =
         options.onlyTier !== undefined
-          ? pass.results
-          : sliceLintResultsForTier(pass.results, tier);
-      summary = await buildTierSummary(tier, tierResults, pass.formatter);
+          ? pass.lintResults
+          : sliceLintResultsForTier(pass.lintResults, tier);
+      summary = await buildTierSummary(tier, {
+        lintResults: tierResults,
+        lintFormatter: pass.lintFormatter,
+      });
     }
 
     summaries = [...summaries, summary];
@@ -517,7 +550,7 @@ const startDaemonServer = (cwd: string) => {
   const workspace: WarmWorkspaceState = {
     cwd,
     configFingerprint: "",
-    eslintInstances: new Map(),
+    eslintInstances: buildKeyValueStore<ESLint>(),
     typeChecker: undefined,
     trackedProjectFileContents: new Map(),
   };
@@ -635,8 +668,8 @@ const sendDaemonRequest = (
   socketPath: string,
   request: DaemonRequest,
   timeoutMs: number,
-): Promise<DaemonResponse> =>
-  new Promise((resolve, reject) => {
+) =>
+  new Promise<DaemonResponse>((resolve, reject) => {
     const client = net.createConnection({ path: socketPath });
     let buffer = "";
     let settled = false;
@@ -699,7 +732,7 @@ const ensureDaemonRunning = async (cwd: string) => {
   const { socketPath, pidPath } = resolveDaemonEndpoints(cwd);
   try {
     const pong = await sendDaemonRequest(socketPath, { type: "ping" }, 1000);
-    if (pong.ok && pong.type === "pong") {
+    if (isPongResponse(pong)) {
       return socketPath;
     }
   } catch {
@@ -721,7 +754,7 @@ const ensureDaemonRunning = async (cwd: string) => {
     await sleep(50);
     try {
       const pong = await sendDaemonRequest(socketPath, { type: "ping" }, 500);
-      if (pong.ok && pong.type === "pong") {
+      if (isPongResponse(pong)) {
         return socketPath;
       }
     } catch {
@@ -732,26 +765,28 @@ const ensureDaemonRunning = async (cwd: string) => {
   throw new Error(`Failed to start strict-fp daemon for workspace ${cwd}`);
 };
 
-export const requestDaemonStatus = async (cwd: string): Promise<DaemonStatus> => {
+export const requestDaemonStatus = async (cwd: string) => {
   const { socketPath } = resolveDaemonEndpoints(cwd);
   try {
     const resp = await sendDaemonRequest(socketPath, { type: "ping" }, 1000);
-    if (resp.ok && resp.type === "pong") {
-      return {
+    if (isPongResponse(resp)) {
+      const runningStatus: DaemonStatus = {
         running: true,
         socketPath,
         pid: resp.pid,
         uptimeMs: resp.uptimeMs,
         requestsServed: resp.requestsServed,
       };
+      return runningStatus;
     }
   } catch {
     // Not running.
   }
-  return { running: false, socketPath };
+  const stoppedStatus: DaemonStatus = { running: false, socketPath };
+  return stoppedStatus;
 };
 
-export const stopWorkspaceDaemon = async (cwd: string): Promise<boolean> => {
+export const stopWorkspaceDaemon = async (cwd: string) => {
   const { socketPath, pidPath } = resolveDaemonEndpoints(cwd);
   try {
     const resp = await sendDaemonRequest(socketPath, { type: "stop" }, 2000);
@@ -781,7 +816,7 @@ export const stopWorkspaceDaemon = async (cwd: string): Promise<boolean> => {
 
 export const runLintViaDaemon = async (
   options: PhasedLintOptions,
-): Promise<PhasedLintResult> => {
+) => {
   const cwd = options.cwd ?? process.cwd();
   const socketPath = await ensureDaemonRunning(cwd);
   const resp = await sendDaemonRequest(
