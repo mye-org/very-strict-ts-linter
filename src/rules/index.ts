@@ -63,6 +63,7 @@ import { preferTypeOverInterface } from "./prefer-type-over-interface.js";
 import { preferUnionOverBoolean } from "./prefer-union-over-boolean.js";
 import { repositoryAggregateRootOnly } from "./repository-aggregate-root-only.js";
 import { requireExhaustiveMatch } from "./require-exhaustive-match.js";
+import { requireJsThreadScheduleOnRn } from "./require-js-thread-schedule-on-rn.js";
 import { requireKeyofPath } from "./require-keyof-path.js";
 import { singleLevelOfAbstraction } from "./single-level-of-abstraction.js";
 import { singleTestResponsibility } from "./single-test-responsibility.js";
@@ -135,6 +136,7 @@ export const rules = {
   "prefer-union-over-boolean": preferUnionOverBoolean,
   "repository-aggregate-root-only": repositoryAggregateRootOnly,
   "require-exhaustive-match": requireExhaustiveMatch,
+  "require-js-thread-schedule-on-rn": requireJsThreadScheduleOnRn,
   "require-keyof-path": requireKeyofPath,
   "single-level-of-abstraction": singleLevelOfAbstraction,
   "single-test-responsibility": singleTestResponsibility,

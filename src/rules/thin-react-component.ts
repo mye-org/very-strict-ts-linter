@@ -2,7 +2,14 @@ import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
-import { match } from "ts-pattern";
+import { match, P } from "ts-pattern";
+import { collectEstreeChildNodes } from "../lib/estree-children.js";
+import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
+import {
+  isScheduleOnRnCall,
+  isWorkletFunction,
+  resolveCalleeName,
+} from "../lib/reanimated-worklet.js";
 import { createRule } from "../lib/rule-factory.js";
 import { resolveDirectFunctionName } from "../lib/unsafe-function-scope.js";
 
@@ -94,11 +101,6 @@ const extractMemberPropName = (expr: TSESTree.Expression) =>
     })
     .with(false, () => O.none)
     .exhaustive();
-
-const resolveCalleeName = (callee: TSESTree.Expression) =>
-  callee.type === AST_NODE_TYPES.Identifier
-    ? O.some(callee.name)
-    : extractMemberPropName(callee);
 
 const isUpperChar = (ch: string) => ch >= "A" && ch <= "Z";
 const isDigitChar = (ch: string) => ch >= "0" && ch <= "9";
@@ -259,17 +261,171 @@ const checkPreReturnBudget = (
   checkPreReturnLineCount(stmts, body, opts.maxLogicLines, report);
 };
 
+type TsxCheckEnv = {
+  readonly opts: Options[0];
+  readonly report: Reporter;
+  readonly visitorKeys: TSESLint.SourceCode["visitorKeys"];
+  readonly scheduleOnRnTargets: ReadonlySet<string>;
+};
+
 const isJsxHelperInit = flow(O.filter(isAnonFn), O.exists(isJsxReturningFn));
 
-const collectDerivedDeclarators = (body: TSESTree.BlockStatement) =>
+const isJsBridgeCall = (node: TSESTree.CallExpression) =>
+  isScheduleOnRnCall(node) ||
+  O.exists((name: string) => name === "runOnJS")(resolveCalleeName(node.callee));
+
+const extractFirstIdentifierArg = flow(
+  (args: ReadonlyArray<TSESTree.CallExpressionArgument>) => args[0],
+  O.fromNullable,
+  O.filter((arg): arg is TSESTree.Identifier => arg.type === AST_NODE_TYPES.Identifier),
+  O.match(
+    () => [] as ReadonlyArray<string>,
+    (id) => [id.name],
+  ),
+);
+
+const extractBridgeTargetName = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.CallExpression && isJsBridgeCall(node)
+    ? extractFirstIdentifierArg(node.arguments)
+    : ([] as ReadonlyArray<string>);
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
+const collectBridgeTargetList = (node: TSESTree.Node, visitorKeys: TSESLint.SourceCode["visitorKeys"]): ReadonlyArray<string> => [
+  ...extractBridgeTargetName(node),
+  ...RA.flatMap((child: TSESTree.Node) => collectBridgeTargetList(child, visitorKeys))(
+    collectEstreeChildNodes(node, visitorKeys),
+  ),
+];
+
+const collectScheduleOnRnTargets = (
+  ast: TSESTree.Program,
+  visitorKeys: TSESLint.SourceCode["visitorKeys"],
+) => new Set<string>(collectBridgeTargetList(ast, visitorKeys));
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
+const hasWorkletDescendant = (node: TSESTree.Node, visitorKeys: TSESLint.SourceCode["visitorKeys"]): boolean =>
+  (isEsTreeFunctionNode(node) && isWorkletFunction(node)) ||
+  RA.some((child: TSESTree.Node) => hasWorkletDescendant(child, visitorKeys))(
+    collectEstreeChildNodes(node, visitorKeys),
+  );
+
+const isWorkletOrGestureInit = (
+  init: O.Option<TSESTree.Expression>,
+  visitorKeys: TSESLint.SourceCode["visitorKeys"],
+) => O.exists((expr: TSESTree.Expression) => hasWorkletDescendant(expr, visitorKeys))(init);
+
+const isNonRefPropertyKey = (id: TSESTree.Identifier) =>
+  id.parent.type === AST_NODE_TYPES.Property &&
+  id.parent.key === id &&
+  !id.parent.computed &&
+  !id.parent.shorthand;
+
+const isNonComputedMemberProp = (id: TSESTree.Identifier) =>
+  id.parent.type === AST_NODE_TYPES.MemberExpression &&
+  id.parent.property === id &&
+  !id.parent.computed;
+
+const isIdentifierValueRef = (node: TSESTree.Node): node is TSESTree.Identifier =>
+  node.type === AST_NODE_TYPES.Identifier &&
+  !isNonRefPropertyKey(node) &&
+  !isNonComputedMemberProp(node);
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
+const collectIdentifierRefs = (node: TSESTree.Node, visitorKeys: TSESLint.SourceCode["visitorKeys"]): ReadonlyArray<string> => [
+  ...(isIdentifierValueRef(node) ? [node.name] : []),
+  ...RA.flatMap((child: TSESTree.Node) => collectIdentifierRefs(child, visitorKeys))(
+    collectEstreeChildNodes(node, visitorKeys),
+  ),
+];
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
+const collectWorkletRefList = (node: TSESTree.Node, visitorKeys: TSESLint.SourceCode["visitorKeys"]): ReadonlyArray<string> =>
+  isEsTreeFunctionNode(node) && isWorkletFunction(node)
+    ? collectIdentifierRefs(node.body, visitorKeys)
+    : RA.flatMap((child: TSESTree.Node) => collectWorkletRefList(child, visitorKeys))(
+        collectEstreeChildNodes(node, visitorKeys),
+      );
+
+const collectWorkletCapturedNames = (block: TSESTree.BlockStatement, env: TsxCheckEnv) =>
+  new Set<string>(collectWorkletRefList(block, env.visitorKeys));
+
+const extractObjectPropNode = (prop: TSESTree.Property | TSESTree.RestElement) =>
+  prop.type === AST_NODE_TYPES.RestElement ? prop.argument : prop.value;
+
+const extractArrayPatternEl = flow(
+  O.fromNullable<TSESTree.ArrayPattern["elements"][number]>,
+  O.match(
+    () => [] as ReadonlyArray<TSESTree.Node>,
+    (el) => [el] as ReadonlyArray<TSESTree.Node>,
+  ),
+);
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive pattern walk
+const extractBoundNames = (pattern: TSESTree.Node): ReadonlyArray<string> =>
+  match(pattern.type)
+    .with(AST_NODE_TYPES.Identifier, () => [(pattern as TSESTree.Identifier).name])
+    .with(AST_NODE_TYPES.ObjectPattern, () =>
+      RA.flatMap(flow(extractObjectPropNode, extractBoundNames))((pattern as TSESTree.ObjectPattern).properties),
+    )
+    .with(AST_NODE_TYPES.ArrayPattern, () =>
+      RA.flatMap(flow(extractArrayPatternEl, RA.flatMap(extractBoundNames)))((pattern as TSESTree.ArrayPattern).elements),
+    )
+    .with(AST_NODE_TYPES.AssignmentPattern, () => extractBoundNames((pattern as TSESTree.AssignmentPattern).left))
+    .with(P._, () => [] as ReadonlyArray<string>)
+    .exhaustive();
+
+const isClosureExtractionExpr = (idType: AST_NODE_TYPES, init: TSESTree.Expression) =>
+  init.type === AST_NODE_TYPES.MemberExpression ||
+  init.type === AST_NODE_TYPES.ChainExpression ||
+  (init.type === AST_NODE_TYPES.Identifier && idType !== AST_NODE_TYPES.Identifier);
+
+const isClosureExtractionInit = (d: TSESTree.VariableDeclarator) =>
   flow(
-    RA.flatMap((stmt: TSESTree.Statement) =>
-      stmt.type === AST_NODE_TYPES.VariableDeclaration ? stmt.declarations : [],
-    ),
-    RA.filter(
-      (d) => !isHookCallExpr(O.fromNullable(d.init)) && !isJsxHelperInit(O.fromNullable(d.init)),
-    ),
-  )(body.body);
+    O.fromNullable<TSESTree.VariableDeclarator["init"]>,
+    O.exists((init) => isClosureExtractionExpr(d.id.type, init)),
+  )(d.init);
+
+const hasAllNamesCaptured = (captured: ReadonlySet<string>, names: ReadonlyArray<string>) =>
+  names.length > 0 && RA.every((name: string) => captured.has(name))(names);
+
+const isWorkletClosureExtraction = (
+  d: TSESTree.VariableDeclarator,
+  workletCapturedNames: ReadonlySet<string>,
+) =>
+  isClosureExtractionInit(d) &&
+  hasAllNamesCaptured(workletCapturedNames, extractBoundNames(d.id));
+
+const isScheduleOnRnTargetDeclarator = (
+  d: TSESTree.VariableDeclarator,
+  targets: ReadonlySet<string>,
+) =>
+  d.id.type === AST_NODE_TYPES.Identifier &&
+  targets.has(d.id.name) &&
+  O.exists(isAnonFn)(O.fromNullable(d.init));
+
+const isExemptDeclarator = (
+  d: TSESTree.VariableDeclarator,
+  env: TsxCheckEnv,
+  workletCapturedNames: ReadonlySet<string>,
+) =>
+  isHookCallExpr(O.fromNullable(d.init)) ||
+  isJsxHelperInit(O.fromNullable(d.init)) ||
+  isWorkletOrGestureInit(O.fromNullable(d.init), env.visitorKeys) ||
+  isScheduleOnRnTargetDeclarator(d, env.scheduleOnRnTargets) ||
+  isWorkletClosureExtraction(d, workletCapturedNames);
+
+const filterDerivedDeclarators =
+  (env: TsxCheckEnv, captured: ReadonlySet<string>) =>
+  (stmts: ReadonlyArray<TSESTree.Statement>) =>
+    flow(
+      RA.flatMap((stmt: TSESTree.Statement) =>
+        stmt.type === AST_NODE_TYPES.VariableDeclaration ? stmt.declarations : [],
+      ),
+      RA.filter((d) => !isExemptDeclarator(d, env, captured)),
+    )(stmts);
+
+const collectDerivedDeclarators = (body: TSESTree.BlockStatement, env: TsxCheckEnv) =>
+  filterDerivedDeclarators(env, collectWorkletCapturedNames(body, env))(body.body);
 
 const reportIfObjectPattern = (report: Reporter) => (d: TSESTree.VariableDeclarator) => {
   match(d.id.type === AST_NODE_TYPES.ObjectPattern)
@@ -285,60 +441,60 @@ const reportDestructuredView = (
   RA.map(reportIfObjectPattern(report))(derived);
 };
 
-const checkDerivedConsts = (
+const toTooManyDerivedDescriptor = (
   body: TSESTree.BlockStatement,
-  maxDerivedConsts: number,
-  report: Reporter,
-) => {
-  const derived = collectDerivedDeclarators(body);
-  reportDestructuredView(derived, report);
-  match(derived.length > maxDerivedConsts)
+  actual: number,
+  max: number,
+) => ({
+  node: body,
+  messageId: "tooManyDerivedConsts" as const,
+  data: { actual: toDecimalText(actual), max: toDecimalText(max) },
+});
+
+const checkDerivedConsts = (body: TSESTree.BlockStatement, env: TsxCheckEnv) => {
+  const derived = collectDerivedDeclarators(body, env);
+  reportDestructuredView(derived, env.report);
+  match(derived.length > env.opts.maxDerivedConsts)
     .with(true, () => {
-      report({
-        node: body,
-        messageId: "tooManyDerivedConsts",
-        data: { actual: toDecimalText(derived.length), max: toDecimalText(maxDerivedConsts) },
-      });
+      env.report(toTooManyDerivedDescriptor(body, derived.length, env.opts.maxDerivedConsts));
     })
     .with(false, () => {})
     .exhaustive();
 };
 
-const checkComponentBlock = (
-  block: TSESTree.BlockStatement,
-  opts: Options[0],
-  report: Reporter,
-) => {
-  checkPreReturnBudget(block, opts, report);
-  checkDerivedConsts(block, opts.maxDerivedConsts, report);
+const checkComponentBlock = (block: TSESTree.BlockStatement, env: TsxCheckEnv) => {
+  checkPreReturnBudget(block, env.opts, env.report);
+  checkDerivedConsts(block, env);
 };
 
-const checkNonComponentFn = (node: FunctionNode, report: Reporter) => {
-  match(
-    !isJsxAttrCallback(node) &&
-      !isHookCallbackArg(node) &&
-      !isCustomHookFn(node) &&
-      !isMatchBranchCallback(node) &&
-      !isInsideJsxExpr(node),
-  )
-    .with(true, () => { report({ node, messageId: "nonJsxHelperInTsx" }); })
-    .with(false, () => {})
+const isScheduleOnRnTargetFn = (node: FunctionNode, targets: ReadonlySet<string>) =>
+  O.exists((name: string) => targets.has(name))(resolveDirectFunctionName(node));
+
+const isAllowedNonComponentFn = (node: FunctionNode, env: TsxCheckEnv) =>
+  isJsxAttrCallback(node) ||
+  isHookCallbackArg(node) ||
+  isCustomHookFn(node) ||
+  isMatchBranchCallback(node) ||
+  isInsideJsxExpr(node) ||
+  isWorkletFunction(node) ||
+  isScheduleOnRnTargetFn(node, env.scheduleOnRnTargets);
+
+const checkNonComponentFn = (node: FunctionNode, env: TsxCheckEnv) => {
+  match(isAllowedNonComponentFn(node, env))
+    .with(false, () => { env.report({ node, messageId: "nonJsxHelperInTsx" }); })
+    .with(true, () => {})
     .exhaustive();
 };
 
-const checkComponentFunction = (
-  node: FunctionNode,
-  opts: Options[0],
-  report: Reporter,
-) => {
+const checkComponentFunction = (node: FunctionNode, env: TsxCheckEnv) => {
   match(isJsxReturningFn(node))
     .with(true, () => {
       match(node.body.type === AST_NODE_TYPES.BlockStatement)
-        .with(true, () => { checkComponentBlock(node.body as TSESTree.BlockStatement, opts, report); })
+        .with(true, () => { checkComponentBlock(node.body as TSESTree.BlockStatement, env); })
         .with(false, () => {})
         .exhaustive();
     })
-    .with(false, () => { checkNonComponentFn(node, report); })
+    .with(false, () => { checkNonComponentFn(node, env); })
     .exhaustive();
 };
 
@@ -442,17 +598,30 @@ const checkNestedTernary = (node: TSESTree.ConditionalExpression, report: Report
     .exhaustive();
 };
 
-const buildTsxListeners = (opts: Options[0], report: Reporter) => ({
-  ...buildControlFlowListeners(report),
-  FunctionDeclaration: (node: TSESTree.FunctionDeclaration) => { checkComponentFunction(node, opts, report); },
-  FunctionExpression: (node: TSESTree.FunctionExpression) => { checkComponentFunction(node, opts, report); },
-  ArrowFunctionExpression: (node: TSESTree.ArrowFunctionExpression) => { checkComponentFunction(node, opts, report); },
+const buildTsxListeners = (env: TsxCheckEnv) => ({
+  ...buildControlFlowListeners(env.report),
+  FunctionDeclaration: (node: TSESTree.FunctionDeclaration) => { checkComponentFunction(node, env); },
+  FunctionExpression: (node: TSESTree.FunctionExpression) => { checkComponentFunction(node, env); },
+  ArrowFunctionExpression: (node: TSESTree.ArrowFunctionExpression) => { checkComponentFunction(node, env); },
   CallExpression: (node: TSESTree.CallExpression) => {
-    checkSizedHookCall(node, opts.maxHookBodyLines, report);
-    checkArrayTransformCall(node, report);
+    checkSizedHookCall(node, env.opts.maxHookBodyLines, env.report);
+    checkArrayTransformCall(node, env.report);
   },
-  JSXAttribute: (node: TSESTree.JSXAttribute) => { checkJsxHandlerAttr(node, opts.maxHandlerLines, report); },
-  ConditionalExpression: (node: TSESTree.ConditionalExpression) => { checkNestedTernary(node, report); },
+  JSXAttribute: (node: TSESTree.JSXAttribute) => { checkJsxHandlerAttr(node, env.opts.maxHandlerLines, env.report); },
+  ConditionalExpression: (node: TSESTree.ConditionalExpression) => { checkNestedTernary(node, env.report); },
+});
+
+const buildTsxCheckEnv = (
+  context: TSESLint.RuleContext<MessageIds, Options>,
+  opts: Options[0],
+) => ({
+  opts,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => { context.report(d); },
+  visitorKeys: context.sourceCode.visitorKeys,
+  scheduleOnRnTargets: collectScheduleOnRnTargets(
+    context.sourceCode.ast,
+    context.sourceCode.visitorKeys,
+  ),
 });
 
 export const thinReactComponent = createRule<Options, MessageIds>({
@@ -502,8 +671,6 @@ export const thinReactComponent = createRule<Options, MessageIds>({
   },
   create: (context, [options]) =>
     isTsxFilename(context.filename)
-      ? buildTsxListeners(options, (d) => {
-          context.report(d);
-        })
+      ? buildTsxListeners(buildTsxCheckEnv(context, options))
       : {},
 });

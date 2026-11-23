@@ -53,6 +53,7 @@ export const ruleTiers = {
   "no-single-caller-export": 2,
   "no-unit-suffixed-primitives": 2,
   "repository-aggregate-root-only": 2,
+  "require-js-thread-schedule-on-rn": 2,
   "thin-react-component": 2,
   "ubiquitous-language": 2,
   "no-data-clumps": 2,
@@ -438,6 +439,7 @@ export const reactTsRules = {
 } as const satisfies TSESLint.FlatConfig.Rules;
 
 export const reactTsxRules = {
+  "strict-fp/require-js-thread-schedule-on-rn": "error",
   "strict-fp/thin-react-component": "error",
 } as const satisfies TSESLint.FlatConfig.Rules;
 

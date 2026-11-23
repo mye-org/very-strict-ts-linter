@@ -109,7 +109,10 @@ describe("tiered configs and React/Expo exclusions", () => {
     expect(mainBlock?.files).toEqual(["**/*.ts"]);
     expect(mainBlock?.ignores).toEqual(["**/*.tsx", "**/*.config.ts"]);
     expect(tsxBlock?.files).toEqual(["**/*.tsx"]);
-    expect(tsxBlock?.rules).toEqual({ "strict-fp/thin-react-component": "error" });
+    expect(tsxBlock?.rules).toEqual({
+      "strict-fp/require-js-thread-schedule-on-rn": "error",
+      "strict-fp/thin-react-component": "error",
+    });
   });
 
   it("builds cumulative tier1, tier2, and tier3 presets with all plugin rules at error severity and no duplicate consistent-type-definitions", () => {
