@@ -53,6 +53,8 @@ export type ProgramSymbolGraph = Readonly<{
 export const DEFAULT_TEST_PATTERNS: ReadonlyArray<string> = [
   "**/*.test.ts",
   "**/*.spec.ts",
+  "**/*.test.tsx",
+  "**/*.spec.tsx",
   "**/__tests__/**",
 ];
 

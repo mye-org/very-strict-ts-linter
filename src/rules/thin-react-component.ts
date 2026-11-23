@@ -4,6 +4,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
+import { getDirectFunctionName } from "../utils/type-helpers.js";
 
 type Options = [
   Readonly<
@@ -106,8 +107,40 @@ const isHookCallExpr = (expr: O.Option<TSESTree.Expression>) =>
     O.exists(isHookName),
   );
 
+const FP_TS_NAMESPACE_NAMES = new Set([
+  "O",
+  "E",
+  "RA",
+  "RR",
+  "RNEA",
+  "A",
+  "R",
+  "T",
+  "TE",
+  "IO",
+  "IOE",
+  "RE",
+  "RTE",
+  "RT",
+]);
+
 const isJsxNode = (e: TSESTree.Expression) =>
   e.type === AST_NODE_TYPES.JSXElement || e.type === AST_NODE_TYPES.JSXFragment;
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- recursive AST predicate
+const isMatchReturningJsx = (e: TSESTree.Expression): boolean =>
+  e.type === AST_NODE_TYPES.CallExpression &&
+  e.callee.type === AST_NODE_TYPES.MemberExpression &&
+  !e.callee.computed &&
+  e.callee.property.type === AST_NODE_TYPES.Identifier &&
+  (e.callee.property.name === "exhaustive" ||
+    e.callee.property.name === "otherwise" ||
+    e.callee.property.name === "with") &&
+  (pipe(
+    e.arguments,
+    RA.some((arg) => isAnonFn(arg) && isJsxReturningFn(arg)),
+  ) ||
+    isMatchReturningJsx(e.callee.object));
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- recursive AST predicate
 const isJsxExpr = (expr: O.Option<TSESTree.Expression>): boolean =>
@@ -116,6 +149,7 @@ const isJsxExpr = (expr: O.Option<TSESTree.Expression>): boolean =>
     O.exists(
       (e) =>
         isJsxNode(e) ||
+        isMatchReturningJsx(e) ||
         (e.type === AST_NODE_TYPES.ConditionalExpression &&
           (isJsxExpr(O.some(e.consequent)) || isJsxExpr(O.some(e.alternate)))) ||
         (e.type === AST_NODE_TYPES.LogicalExpression &&
@@ -154,6 +188,17 @@ const isJsxAttrHandler = (node: FunctionNode) =>
 const isHookCallbackArg = (node: FunctionNode) =>
   node.parent.type === AST_NODE_TYPES.CallExpression &&
   pipe(getCalleeName(node.parent.callee), O.exists(isHookName));
+
+const isCustomHookFn = (node: FunctionNode) =>
+  pipe(getDirectFunctionName(node), O.exists(isHookName));
+
+const isMatchHandlerCallback = (node: FunctionNode) =>
+  node.parent.type === AST_NODE_TYPES.CallExpression &&
+  node.parent.callee.type === AST_NODE_TYPES.MemberExpression &&
+  !node.parent.callee.computed &&
+  node.parent.callee.property.type === AST_NODE_TYPES.Identifier &&
+  (node.parent.callee.property.name === "with" ||
+    node.parent.callee.property.name === "otherwise");
 
 const getLineSpan = (node: TSESTree.Node) =>
   node.loc.end.line - node.loc.start.line + 1;
@@ -244,7 +289,13 @@ const checkComponentBlock = (
 };
 
 const checkNonComponentFn = (node: FunctionNode, report: Reporter) => {
-  match(!isJsxAttrHandler(node) && !isHookCallbackArg(node) && !isInsideJsxExpr(node))
+  match(
+    !isJsxAttrHandler(node) &&
+      !isHookCallbackArg(node) &&
+      !isCustomHookFn(node) &&
+      !isMatchHandlerCallback(node) &&
+      !isInsideJsxExpr(node),
+  )
     .with(true, () => { report({ node, messageId: "nonJsxHelperInTsx" }); })
     .with(false, () => {})
     .exhaustive();
@@ -289,7 +340,15 @@ const checkSizedHookCall = (
   );
 };
 
+const isFpTsNamespaceReceiver = (callee: TSESTree.Expression) =>
+  callee.type === AST_NODE_TYPES.MemberExpression &&
+  callee.object.type === AST_NODE_TYPES.Identifier &&
+  FP_TS_NAMESPACE_NAMES.has(callee.object.name);
+
 const checkArrayTransformCall = (node: TSESTree.CallExpression, report: Reporter) => {
+  if (isFpTsNamespaceReceiver(node.callee)) {
+    return;
+  }
   pipe(
     getMemberPropName(node.callee),
     O.filter((method) => ARRAY_TRANSFORM_METHODS.has(method)),

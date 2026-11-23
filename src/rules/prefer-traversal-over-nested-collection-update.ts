@@ -3,7 +3,11 @@ import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { createRule } from "../utils/create-rule.js";
-import { isPipeCallExpression, isSameEsTreeAccessExpr } from "../utils/type-helpers.js";
+import {
+  isFlowCallExpression,
+  isPipeCallExpression,
+  isSameEsTreeAccessExpr,
+} from "../utils/type-helpers.js";
 
 type MessageIds = "preferTraversal";
 type TargetProp = Readonly<
@@ -43,6 +47,7 @@ const isSpreadUpdateArrow = (fn: TSESTree.ArrowFunctionExpression) =>
   fn.params.length >= 1 &&
   fn.params[0]?.type === AST_NODE_TYPES.Identifier &&
   fn.body.type === AST_NODE_TYPES.ObjectExpression &&
+  fn.body.properties.length >= 2 &&
   pipe(
     fn.body.properties,
     RA.some(
@@ -67,6 +72,7 @@ const isSpreadUpdateMapper = (arg: O.Option<TSESTree.CallExpressionArgument>) =>
 const isCollectionMapStep = (step: TSESTree.CallExpressionArgument) =>
   step.type === AST_NODE_TYPES.CallExpression &&
   step.callee.type === AST_NODE_TYPES.MemberExpression &&
+  !step.callee.computed &&
   step.callee.object.type === AST_NODE_TYPES.Identifier &&
   COLLECTION_NAMESPACES.has(step.callee.object.name) &&
   step.callee.property.type === AST_NODE_TYPES.Identifier &&
@@ -75,8 +81,16 @@ const isCollectionMapStep = (step: TSESTree.CallExpressionArgument) =>
 
 const isPipeCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
   isPipeCallExpression(call) &&
+  call.arguments.length >= 2 &&
   isTargetPropAccess(O.fromNullable(call.arguments[0]), target) &&
-  pipe(call.arguments.slice(1), RA.some(isCollectionMapStep));
+  pipe(call.arguments.slice(1), RA.every(isCollectionMapStep));
+
+const isFlowCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
+  call.callee.type === AST_NODE_TYPES.CallExpression &&
+  isFlowCallExpression(call.callee) &&
+  call.callee.arguments.length >= 1 &&
+  isTargetPropAccess(O.fromNullable(call.arguments[0]), target) &&
+  pipe(call.callee.arguments, RA.every(isCollectionMapStep));
 
 const isCurriedCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
   call.callee.type === AST_NODE_TYPES.CallExpression &&
@@ -85,6 +99,7 @@ const isCurriedCollectionUpdate = (call: TSESTree.CallExpression, target: Target
 
 const isMethodCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
   call.callee.type === AST_NODE_TYPES.MemberExpression &&
+  !call.callee.computed &&
   call.callee.property.type === AST_NODE_TYPES.Identifier &&
   call.callee.property.name === "map" &&
   isTargetPropAccess(O.some(call.callee.object), target) &&
@@ -99,6 +114,7 @@ const isNestedCollectionUpdateProp = (
   prop.key.type === AST_NODE_TYPES.Identifier &&
   prop.value.type === AST_NODE_TYPES.CallExpression &&
   (isPipeCollectionUpdate(prop.value, { outerTarget, propName: prop.key.name }) ||
+    isFlowCollectionUpdate(prop.value, { outerTarget, propName: prop.key.name }) ||
     isCurriedCollectionUpdate(prop.value, { outerTarget, propName: prop.key.name }) ||
     isMethodCollectionUpdate(prop.value, { outerTarget, propName: prop.key.name }));
 
@@ -113,11 +129,11 @@ export const preferTraversalOverNestedCollectionUpdate = createRule<[], MessageI
     type: "suggestion",
     docs: {
       description:
-        "Prefer `monocle-ts` `Traversal` (`fromTraversable`) over immutable object spreads that map-and-spread elements of a nested collection.",
+        "Prefer `monocle-ts` `Traversal` (`L.traverse`) over immutable object spreads that map-and-spread elements of a nested collection.",
     },
     messages: {
       preferTraversal:
-        "Nested collection spread-update inside an object spread. Use a `monocle-ts` `Traversal` (`Lens.fromProp` + `fromTraversable`) to update nested collection elements declaratively.",
+        "Nested collection spread-update inside an object spread. Use a `monocle-ts` `Traversal` (`flow(L.id<S>(), L.prop(...), L.traverse(RA.Traversable))`) to update nested collection elements declaratively.",
     },
     schema: [],
     defaultOptions: [],

@@ -8,7 +8,11 @@ import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
 import { getProjectSourceFiles, isMatchingAnyPattern, memoizeByProgram } from "../utils/program-cache.js";
 import { collectTsNodes } from "../utils/ts-ast-helpers.js";
-import { getBarePrimitiveOrLiteralKind, isBrandedOrNewtypeTsType } from "../utils/type-helpers.js";
+import {
+  getBarePrimitiveOrLiteralKind,
+  isBrandedOrNewtypeTsType,
+  unwrapContainerTsTypes,
+} from "../utils/type-helpers.js";
 
 type Options = [Readonly<{ readonly valueObjectPathPatterns: ReadonlyArray<string> }>];
 type MessageIds = "scatteredRegex" | "scatteredNormalization" | "scatteredValidationCall";
@@ -42,32 +46,17 @@ const isDuplicatedNonVoRegex = (
     RA.uniq(S.Eq),
   ).length >= 2;
 
+const isFunctionLikeAstNode = (p: TSESTree.Node) =>
+  p.type === AST_NODE_TYPES.FunctionDeclaration ||
+  p.type === AST_NODE_TYPES.FunctionExpression ||
+  p.type === AST_NODE_TYPES.ArrowFunctionExpression ||
+  p.type === AST_NODE_TYPES.MethodDefinition;
+
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
 const isInsideFunctionLike = (node: TSESTree.Node): boolean =>
   pipe(
     O.fromNullable(node.parent),
-    O.exists(
-      (p) =>
-        p.type === AST_NODE_TYPES.FunctionDeclaration ||
-        p.type === AST_NODE_TYPES.FunctionExpression ||
-        p.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-        p.type === AST_NODE_TYPES.MethodDefinition ||
-        isInsideFunctionLike(p),
-    ),
-  );
-
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
-const getEnclosingFunction = (node: TSESTree.Node): O.Option<TSESTree.Node> =>
-  pipe(
-    O.fromNullable(node.parent),
-    O.flatMap((p) =>
-      p.type === AST_NODE_TYPES.FunctionDeclaration ||
-      p.type === AST_NODE_TYPES.FunctionExpression ||
-      p.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-      p.type === AST_NODE_TYPES.MethodDefinition
-        ? O.some(p)
-        : getEnclosingFunction(p),
-    ),
+    O.exists((p) => isFunctionLikeAstNode(p) || isInsideFunctionLike(p)),
   );
 
 const isConstructorMethod = (fn: TSESTree.Node) =>
@@ -86,9 +75,28 @@ const hasBrandedReturnType = (
       ),
     ),
     O.map((sig) => checker.getReturnTypeOfSignature(sig)),
-    O.exists(isBrandedOrNewtypeTsType),
+    O.exists(
+      (retType) =>
+        isBrandedOrNewtypeTsType(retType) ||
+        pipe(unwrapContainerTsTypes(retType, checker), RA.some(isBrandedOrNewtypeTsType)),
+    ),
   );
 };
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
+const hasVoFactoryAncestor = (
+  node: TSESTree.Node,
+  services: ParserServicesWithTypeInformation,
+): boolean =>
+  pipe(
+    O.fromNullable(node.parent),
+    O.exists(
+      (p) =>
+        (isFunctionLikeAstNode(p) &&
+          (isConstructorMethod(p) || hasBrandedReturnType(p, services))) ||
+        hasVoFactoryAncestor(p, services),
+    ),
+  );
 
 const isInsideVoFactory = (
   node: TSESTree.Node,
@@ -96,11 +104,7 @@ const isInsideVoFactory = (
   voPatterns: ReadonlyArray<string>,
   services: ParserServicesWithTypeInformation,
 ) =>
-  isMatchingAnyPattern(fileName, voPatterns) ||
-  pipe(
-    getEnclosingFunction(node),
-    O.exists((fn) => isConstructorMethod(fn) || hasBrandedReturnType(fn, services)),
-  );
+  isMatchingAnyPattern(fileName, voPatterns) || hasVoFactoryAncestor(node, services);
 
 const VALIDATION_REGEX_METHODS = new Set(["test", "match", "exec"]);
 

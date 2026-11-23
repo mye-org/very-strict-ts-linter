@@ -275,11 +275,11 @@ export const preferTypeLevelDispatch = createRule<[], MessageIds>({
     type: "suggestion",
     docs: {
       description:
-        "Encourage generic indexed access (`<K extends keyof M>(k: K) => M[K]`) or conditional return types when a function maps a finite union parameter to distinct return types.",
+        "Encourage generic indexed access (`<K extends keyof typeof map>(k: K) => map[k]`) when a function maps a finite union parameter to distinct return types.",
     },
     messages: {
       preferTypeLevelDispatch:
-        "Avoid returning a wide union from a finite-union dispatch. Use a generic type parameter with an indexed lookup (`<K extends keyof Map>(k: K) => Map[K]`) or conditional return type so callers get the exact output type at compile time.",
+        "Avoid returning a wide union from a finite-union dispatch. Use a generic indexed lookup (`<K extends keyof typeof map>(k: K) => map[k]`) so TypeScript infers the exact output type at compile time.",
     },
     schema: [],
     defaultOptions: [],

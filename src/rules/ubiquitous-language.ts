@@ -74,15 +74,18 @@ const extractSfTokens = (sf: ts.SourceFile) =>
   pipe(collectTsNodes(sf, sf), RA.filterMap(getDeclaredNameFromTsNode), RA.flatMap(extractPascalTokens));
 
 const getProgramContextTerms = (program: ts.Program) =>
-  memoizeByProgram(program, contextTermCache, (p) =>
-    pipe(
-      getProjectSourceFiles(p),
-      RA.reduce({}, (acc: Readonly<Record<string, ReadonlySet<string>>>, sf) => {
-        const dir = getContextDir(sf.fileName);
-        return { ...acc, [dir]: new Set([...(acc[dir] ?? []), ...extractSfTokens(sf)]) };
-      }),
-    ),
-  );
+  memoizeByProgram(program, contextTermCache, (p) => {
+    const byDir: Record<string, Set<string>> = {};
+    for (const sf of getProjectSourceFiles(p)) {
+      const dir = getContextDir(sf.fileName);
+      const set = byDir[dir] ?? new Set<string>();
+      for (const token of extractSfTokens(sf)) {
+        set.add(token);
+      }
+      byDir[dir] = set;
+    }
+    return byDir as Readonly<Record<string, ReadonlySet<string>>>;
+  });
 
 const findGenericSuffix = (name: string, suffixes: ReadonlyArray<string>) =>
   pipe(suffixes, RA.findFirst((s) => hasStrictSuffix(name, s)));
@@ -104,31 +107,45 @@ type SynonymContext = Readonly<{
 
 const findGroupConflict = (
   token: string,
+  ownTokens: ReadonlySet<string>,
   group: ReadonlyArray<string>,
   ctx: SynonymContext,
 ) =>
   pipe(
     group,
-    RA.filter((term) => term !== token && ctx.contextTerms.has(term) && !ctx.allowed.has(term)),
+    RA.filter(
+      (term) =>
+        term !== token &&
+        !ownTokens.has(term) &&
+        ctx.contextTerms.has(term) &&
+        !ctx.allowed.has(term),
+    ),
     RA.uniq(S.Eq),
     (conflicting) =>
       conflicting.length > 0 ? O.some({ token, conflicting: conflicting.join(", ") }) : O.none,
   );
 
-const matchTokenGroupConflict = (token: string, ctx: SynonymContext) =>
+const matchTokenGroupConflict = (
+  token: string,
+  ownTokens: ReadonlySet<string>,
+  ctx: SynonymContext,
+) =>
   pipe(
     ctx.synonymGroups,
     RA.findFirst((group) => group.includes(token)),
-    O.flatMap((group) => findGroupConflict(token, group, ctx)),
+    O.flatMap((group) => findGroupConflict(token, ownTokens, group, ctx)),
   );
 
-const findSynonymCollision = (name: string, ctx: SynonymContext) =>
-  pipe(
-    extractPascalTokens(name),
+const findSynonymCollision = (name: string, ctx: SynonymContext) => {
+  const tokens = extractPascalTokens(name);
+  const ownTokens = new Set(tokens);
+  return pipe(
+    tokens,
     RA.filter((token) => !ctx.allowed.has(token)),
-    RA.filterMap((token) => matchTokenGroupConflict(token, ctx)),
+    RA.filterMap((token) => matchTokenGroupConflict(token, ownTokens, ctx)),
     RA.head,
   );
+};
 
 const reportGenericAndCrud = (
   id: TSESTree.Identifier,

@@ -175,6 +175,10 @@ typeAwareRuleTester.run("prefer-exhaustive-record", preferExhaustiveRecord, {
       declare const k: Kind;
       const v = handlers[k];
     `,
+    `
+      declare const headers: Record<string, string>;
+      const ct = headers["content-type"];
+    `,
   ],
   invalid: [
     {
@@ -236,6 +240,13 @@ typeAwareRuleTester.run("prefer-nonempty-tuple", preferNonemptyTuple, {
       code: `
         declare const O: { none: unknown; some: <A>(a: A) => unknown };
         const headOrNone = (xs: ReadonlyArray<number>) => xs.length === 0 ? O.none : O.some(xs[0]);
+      `,
+      errors: [{ messageId: "preferNonEmptyOrFixedTuple" }],
+    },
+    {
+      code: `
+        declare const E: { left: <E>(e: E) => unknown; right: <A>(a: A) => unknown };
+        const headOrErr = (xs: ReadonlyArray<number>) => xs.length === 0 ? E.left("empty") : E.right(xs[0]);
       `,
       errors: [{ messageId: "preferNonEmptyOrFixedTuple" }],
     },

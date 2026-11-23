@@ -165,28 +165,28 @@ const getProgramPipelines = (program: ts.Program) =>
     pipe(getProjectSourceFiles(p), RA.flatMap(extractFilePipelines)),
   );
 
-const groupBySignature = (occurrences: ReadonlyArray<PipelineOccurrence>) =>
-  pipe(
-    occurrences,
-    RA.reduce<PipelineOccurrence, Readonly<Record<string, ReadonlyArray<PipelineOccurrence>>>>(
-      {},
-      (acc, occ) => ({ ...acc, [occ.signature]: [...(acc[occ.signature] ?? []), occ] }),
-    ),
-  );
+const groupBySignature = (occurrences: ReadonlyArray<PipelineOccurrence>) => {
+  const map: Record<string, Array<PipelineOccurrence>> = {};
+  for (const occ of occurrences) {
+    const list = map[occ.signature] ?? [];
+    list.push(occ);
+    map[occ.signature] = list;
+  }
+  return map as Readonly<Record<string, ReadonlyArray<PipelineOccurrence>>>;
+};
 
-const hasLocationKey = (acc: ReadonlyArray<PipelineOccurrence>, occ: PipelineOccurrence) =>
-  pipe(
-    acc,
-    RA.some((a) => makeLocationKey(a.location) === makeLocationKey(occ.location)),
-  );
-
-const deduplicateOccurrences = (group: ReadonlyArray<PipelineOccurrence>) =>
-  pipe(
-    group,
-    RA.reduce<PipelineOccurrence, ReadonlyArray<PipelineOccurrence>>([], (acc, occ) =>
-      hasLocationKey(acc, occ) ? acc : [...acc, occ],
-    ),
-  );
+const deduplicateOccurrences = (group: ReadonlyArray<PipelineOccurrence>) => {
+  const seen = new Set<string>();
+  const unique: Array<PipelineOccurrence> = [];
+  for (const occ of group) {
+    const key = makeLocationKey(occ.location);
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(occ);
+    }
+  }
+  return unique as ReadonlyArray<PipelineOccurrence>;
+};
 
 const toSiteList = (occurrences: ReadonlyArray<PipelineOccurrence>) =>
   pipe(
@@ -212,26 +212,18 @@ const toCluster = (
   );
 };
 
-const addClusterSitesToIndex = (
-  acc: Readonly<Record<string, ReadonlyArray<SkeletonCluster>>>,
-  cluster: SkeletonCluster,
-) =>
-  pipe(
-    cluster.sites,
-    RA.reduce(acc, (inner, site) => {
+const indexClustersByLocation = (groups: ReadonlyArray<SkeletonCluster>) => {
+  const map: Record<string, Array<SkeletonCluster>> = {};
+  for (const cluster of groups) {
+    for (const site of cluster.sites) {
       const key = makeLocationKey(site.location);
-      return { ...inner, [key]: [...(inner[key] ?? []), cluster] };
-    }),
-  );
-
-const indexClustersByLocation = (groups: ReadonlyArray<SkeletonCluster>) =>
-  pipe(
-    groups,
-    RA.reduce<SkeletonCluster, Readonly<Record<string, ReadonlyArray<SkeletonCluster>>>>(
-      {},
-      addClusterSitesToIndex,
-    ),
-  );
+      const list = map[key] ?? [];
+      list.push(cluster);
+      map[key] = list;
+    }
+  }
+  return map as Readonly<Record<string, ReadonlyArray<SkeletonCluster>>>;
+};
 
 const computeSkeletonDuplications = (
   program: ts.Program,

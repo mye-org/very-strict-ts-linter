@@ -87,6 +87,19 @@ typeAwareRuleTester.run("require-exhaustive-match", requireExhaustiveMatch, {
       `,
       errors: [{ messageId: "preferExhaustive" }],
     },
+    {
+      code: `
+        declare function match<T>(v: T): {
+          with: (p: unknown, fn: () => number) => {
+            run: () => number;
+          };
+        };
+        type Q = { kind: "a" } | { kind: "b" };
+        declare const q: Q;
+        const r = match(q).with({ kind: "a" }, () => 1).run();
+      `,
+      errors: [{ messageId: "preferExhaustive" }],
+    },
   ],
 });
 
@@ -109,7 +122,7 @@ ruleTester.run("no-imperative-loops", noImperativeLoops, {
 });
 
 ruleTester.run("no-let-or-var", noLetOrVar, {
-  valid: [`const x = 1;`],
+  valid: [`const x = 1;`, `declare var globalFlag: boolean;`],
   invalid: [
     {
       code: `let x = 1; x = 2;`,
@@ -126,6 +139,7 @@ ruleTester.run("no-throw-outside-unsafe", noThrowOutsideUnsafe, {
   valid: [
     `const fromStringUnsafe = (s: string): number => { if (!s) throw new Error("bad"); return 1; };`,
     `function mustGet(x: number): number { if (x < 0) throw new Error("neg"); return x; }`,
+    `const parseUnsafe = (ok: boolean): number => match(ok).with(false, () => { throw new Error("bad"); }).with(true, () => 1).exhaustive();`,
   ],
   invalid: [
     {
@@ -141,6 +155,8 @@ ruleTester.run("no-async-await", noAsyncAwait, {
     `const loadTask = (): T.Task<number> => T.of(1);`,
     `const run = (p: Promise<number>): Promise<number> => p.then((x) => x + 1);`,
     `function fetchValue(): Promise<string> { return new Promise((resolve) => resolve("ok")); }`,
+    `const fetchUnsafe = async (): Promise<number> => await Promise.resolve(1);`,
+    `async function mustLoad(): Promise<number> { return await Promise.resolve(1); }`,
   ],
   invalid: [
     {

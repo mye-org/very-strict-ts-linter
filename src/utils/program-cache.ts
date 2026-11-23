@@ -56,8 +56,12 @@ export const isProjectSourceFile = (sf: ts.SourceFile) =>
 export const getProjectSourceFiles = (program: ts.Program) =>
   pipe(program.getSourceFiles(), RA.filter(isProjectSourceFile));
 
-const globToRegExp = (pattern: string) =>
-  new RegExp(
+const globRegexCache = new Map<string, RegExp>();
+
+const globToRegExp = (pattern: string) => {
+  const cached = globRegexCache.get(pattern);
+  if (cached) return cached;
+  const compiled = new RegExp(
     `^${pattern
       .replace(/\\/g, "/")
       .replace(/[.+^${}()|[\]\\]/g, "\\$&")
@@ -67,6 +71,9 @@ const globToRegExp = (pattern: string) =>
       .replace(/__GLOBSTAR_SLASH__/g, "(?:.*/)?")
       .replace(/__GLOBSTAR__/g, ".*")}$`,
   );
+  globRegexCache.set(pattern, compiled);
+  return compiled;
+};
 
 export const isMatchingPattern = (filePath: string, pattern: string) =>
   globToRegExp(pattern).test(normalizeFilePath(filePath));

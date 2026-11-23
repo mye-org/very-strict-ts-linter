@@ -40,10 +40,16 @@ const isDiscriminantComparisonOf = ({ expr, targetName }: GuardCheck) =>
   (isDiscriminantAccessOf({ expr: expr.left, targetName }) ||
     isDiscriminantAccessOf({ expr: expr.right, targetName }));
 
+const MONAD_GUARD_METHODS = new Set(["isSome", "isNone", "isRight", "isLeft"]);
+
 const isPredicateCallee = (callee: TSESTree.Expression) =>
-  (callee.type === AST_NODE_TYPES.Identifier && PREDICATE_NAME_RE.test(callee.name)) ||
+  (callee.type === AST_NODE_TYPES.Identifier &&
+    !MONAD_GUARD_METHODS.has(callee.name) &&
+    PREDICATE_NAME_RE.test(callee.name)) ||
   (callee.type === AST_NODE_TYPES.MemberExpression &&
+    !callee.computed &&
     callee.property.type === AST_NODE_TYPES.Identifier &&
+    !MONAD_GUARD_METHODS.has(callee.property.name) &&
     PREDICATE_NAME_RE.test(callee.property.name));
 
 const isPredicateCallOn = ({ expr, targetName }: GuardCheck) =>
@@ -78,6 +84,7 @@ const hasDiscriminantProperty = (obj: TSESTree.ObjectExpression) =>
     RA.some(
       (p) =>
         p.type === AST_NODE_TYPES.Property &&
+        !p.computed &&
         p.key.type === AST_NODE_TYPES.Identifier &&
         DISCRIMINANT_KEYS.has(p.key.name),
     ),

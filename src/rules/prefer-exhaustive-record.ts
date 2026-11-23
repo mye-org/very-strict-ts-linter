@@ -10,7 +10,8 @@ import { flow, pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
-import { isFiniteExhaustiveCandidate } from "../utils/type-helpers.js";
+import { normalizeFilePath } from "../utils/program-cache.js";
+import { isFiniteExhaustiveCandidate, isFiniteUnionOrEnumKey } from "../utils/type-helpers.js";
 
 type MessageIds =
   | "noPartialFiniteRecord"
@@ -94,7 +95,7 @@ const getNodeTsType = (
     .getTypeChecker()
     .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(node));
 
-const isNodeModulesFile = (file: string) => file.includes("/node_modules/");
+const isNodeModulesFile = (file: string) => normalizeFilePath(file).includes("/node_modules/");
 
 const getFirstDeclFile = (
   tsNode: ts.Node,
@@ -109,7 +110,7 @@ const getFirstDeclFile = (
     )?.getSourceFile().fileName,
   );
 
-const BUILTIN_MAP_OR_RECORD = new Set(["Record", "ReadonlyMap", "Map"]);
+const BUILTIN_MAP_OR_RECORD = new Set(["Record", "ReadonlyRecord", "ReadonlyMap", "Map"]);
 
 const isExternalLibraryType = (
   node: TSESTree.Node,
@@ -131,19 +132,20 @@ const isWideRecordIndexedByFiniteKey = (
   node.computed &&
   !isExternalLibraryType(node.object, services) &&
   isWideStringIndexRecord(getNodeTsType(node.object, services), services.program.getTypeChecker()) &&
-  isFiniteNonBooleanKey(getNodeTsType(node.property, services));
+  isFiniteUnionOrEnumKey(getNodeTsType(node.property, services));
 
 const isWideMapGetWithFiniteKey = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
 ) =>
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
+  !node.callee.computed &&
   node.callee.property.type === AST_NODE_TYPES.Identifier &&
   node.callee.property.name === "get" &&
   !isExternalLibraryType(node.callee.object, services) &&
   Boolean(node.arguments[0]) &&
   isWideStringMap(getNodeTsType(node.callee.object, services), services.program.getTypeChecker()) &&
-  Boolean(node.arguments[0] && isFiniteNonBooleanKey(getNodeTsType(node.arguments[0], services)));
+  Boolean(node.arguments[0] && isFiniteUnionOrEnumKey(getNodeTsType(node.arguments[0], services)));
 
 const hasKnownFiniteProperties = (type: ts.Type, checker: ts.TypeChecker) =>
   type.getProperties().length > 0 && !checker.getIndexInfoOfType(type, ts.IndexKind.String);
@@ -153,6 +155,7 @@ const isObjectKeysOnFiniteObject = (
   services: ParserServicesWithTypeInformation,
 ) =>
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
+  !node.callee.computed &&
   node.callee.object.type === AST_NODE_TYPES.Identifier &&
   node.callee.object.name === "Object" &&
   node.callee.property.type === AST_NODE_TYPES.Identifier &&
@@ -200,9 +203,9 @@ export const preferExhaustiveRecord = createRule<[], MessageIds>({
       noPartialFiniteRecord:
         "Avoid `Partial<Record<K, V>>` on finite union keys. Use `Record<K, V>` (with `Option<V>` values if optional) so missing variants fail at compile time.",
       preferFiniteRecordLookup:
-        "Avoid looking up a finite union/literal key in a wide `string`-keyed `Record` or `Map`. Type the collection as `Record<KeyUnion, V>` for compile-time key checks.",
+        "Avoid looking up a finite union/enum key in a wide `string`-keyed `Record` or `Map`. Type the collection as `Record<KeyUnion, V>` for compile-time key checks.",
       noObjectKeysWidening:
-        "`Object.keys`/`Object.entries` widens finite keys to `string`. Use `fp-ts/ReadonlyRecord` or typed key iteration to preserve `keyof T` at compile time.",
+        "`Object.keys`/`Object.entries` widens finite keys to `string`. Use `fp-ts/lib/ReadonlyRecord` or typed key iteration to preserve `keyof T` at compile time.",
     },
     schema: [],
     defaultOptions: [],

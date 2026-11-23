@@ -31,53 +31,53 @@ export const defaultStrictFpIgnores = ["**/*.tsx", "**/*.config.ts"] as const;
 export type PluginRuleName = keyof typeof rules;
 
 export const ruleTiers = {
-  // Tier 1: Architecture & DDD
-  "common-reuse-cohesion": 1,
-  "domain-layer-purity": 1,
-  "functional-core-boundary": 1,
-  "module-cohesion": 1,
-  "no-cross-aggregate-reference": 1,
-  "no-domain-raw-primitives": 1,
-  "no-generic-utility-names": 1,
-  "no-react-in-ts": 1,
-  "no-single-caller-export": 1,
-  "no-unit-suffixed-primitives": 1,
-  "repository-aggregate-root-only": 1,
-  "thin-react-component": 1,
-  "ubiquitous-language": 1,
-  "no-data-clumps": 1,
-  "no-external-entity-mutation": 1,
-  "no-inline-infra-side-effects": 1,
-  "no-lifecycle-flag-clusters": 1,
-  "no-model-polysemy": 1,
-  "no-multi-repo-orchestration": 1,
-  "no-repeated-guard-clauses": 1,
-  "no-scattered-validation": 1,
-  "no-stringly-typed-discriminants": 1,
-  "no-structural-skeleton-duplication": 1,
-  "no-train-wreck-navigation": 1,
-  "no-redundant-test-scope": 1,
-  "prefer-catamorphism-over-recursive-adt-walk": 1,
-  "prefer-lowest-test-level": 1,
-  "prefer-reader-over-context-drilling": 1,
-  "single-test-responsibility": 1,
+  // Tier 1: Type Safety & Correctness
+  "no-any-or-unknown": 1,
+  "no-explicit-return-type": 1,
+  "no-null-undefined": 1,
+  "no-optional-state-bags": 1,
+  "parse-dont-validate": 1,
+  "prefer-const-satisfies": 1,
+  "prefer-exhaustive-record": 1,
+  "prefer-nonempty-tuple": 1,
+  "prefer-readonly-collections": 1,
+  "prefer-template-literal-type": 1,
+  "prefer-type-level-dispatch": 1,
+  "prefer-type-over-interface": 1,
+  "prefer-union-over-boolean": 1,
+  "require-exhaustive-match": 1,
+  "require-keyof-path": 1,
 
-  // Tier 2: Type Safety & Correctness
-  "no-any-or-unknown": 2,
-  "no-explicit-return-type": 2,
-  "no-null-undefined": 2,
-  "no-optional-state-bags": 2,
-  "parse-dont-validate": 2,
-  "prefer-const-satisfies": 2,
-  "prefer-exhaustive-record": 2,
-  "prefer-nonempty-tuple": 2,
-  "prefer-readonly-collections": 2,
-  "prefer-template-literal-type": 2,
-  "prefer-type-level-dispatch": 2,
-  "prefer-type-over-interface": 2,
-  "prefer-union-over-boolean": 2,
-  "require-exhaustive-match": 2,
-  "require-keyof-path": 2,
+  // Tier 2: Architecture & DDD
+  "common-reuse-cohesion": 2,
+  "domain-layer-purity": 2,
+  "functional-core-boundary": 2,
+  "module-cohesion": 2,
+  "no-cross-aggregate-reference": 2,
+  "no-domain-raw-primitives": 2,
+  "no-generic-utility-names": 2,
+  "no-react-in-ts": 2,
+  "no-single-caller-export": 2,
+  "no-unit-suffixed-primitives": 2,
+  "repository-aggregate-root-only": 2,
+  "thin-react-component": 2,
+  "ubiquitous-language": 2,
+  "no-data-clumps": 2,
+  "no-external-entity-mutation": 2,
+  "no-inline-infra-side-effects": 2,
+  "no-lifecycle-flag-clusters": 2,
+  "no-model-polysemy": 2,
+  "no-multi-repo-orchestration": 2,
+  "no-repeated-guard-clauses": 2,
+  "no-scattered-validation": 2,
+  "no-stringly-typed-discriminants": 2,
+  "no-structural-skeleton-duplication": 2,
+  "no-train-wreck-navigation": 2,
+  "no-redundant-test-scope": 2,
+  "prefer-catamorphism-over-recursive-adt-walk": 2,
+  "prefer-lowest-test-level": 2,
+  "prefer-reader-over-context-drilling": 2,
+  "single-test-responsibility": 2,
 
   // Tier 3: FP & Style
   "fp-ts-import-convention": 3,
@@ -154,13 +154,14 @@ export const testScopeRules = {
   "strict-fp/single-test-responsibility": "error",
 } as const satisfies TSESLint.FlatConfig.Rules;
 
-export const tier1Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(1);
-
-export const tier2Rules: TSESLint.FlatConfig.Rules = {
-  ...buildRulesForTier(2),
-  "@typescript-eslint/consistent-type-definitions": ["error", "type"],
+export const tier1Rules: TSESLint.FlatConfig.Rules = {
+  ...buildRulesForTier(1),
   "@typescript-eslint/no-explicit-any": "off",
+  "@typescript-eslint/use-unknown-in-catch-callback-variable": "off",
+  "@typescript-eslint/no-unnecessary-type-parameters": "off",
 };
+
+export const tier2Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(2);
 
 export const tier3Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(3);
 
@@ -219,9 +220,9 @@ const buildTestScopeOptions = (options: StrictFpConfigOptions) =>
       }
     : {};
 
-const buildTier1WithOverrides = (options: StrictFpConfigOptions) =>
+const buildTier2WithOverrides = (options: StrictFpConfigOptions) =>
   ({
-    ...tier1Rules,
+    ...tier2Rules,
     ...(options.domainFiles
       ? { "strict-fp/domain-layer-purity": ["error", { domainPatterns: options.domainFiles }] as TSESLint.FlatConfig.RuleEntry }
       : {}),
@@ -232,8 +233,8 @@ const buildTier1WithOverrides = (options: StrictFpConfigOptions) =>
 
 export const buildTieredRules = (maxTier: LintTier, maxLines = 15, options: StrictFpConfigOptions = {}) =>
   ({
-    ...(maxTier >= 1 ? buildTier1WithOverrides(options) : {}),
-    ...(maxTier >= 2 ? tier2Rules : {}),
+    ...(maxTier >= 1 ? tier1Rules : {}),
+    ...(maxTier >= 2 ? buildTier2WithOverrides(options) : {}),
     ...(maxTier >= 3
       ? { ...tier3Rules, "strict-fp/max-function-lines": ["error", { maxLines }] as TSESLint.FlatConfig.RuleEntry }
       : {}),
@@ -248,6 +249,8 @@ const boundaryOverrideRules = {
   "strict-fp/no-if-else-or-switch": "off",
   "strict-fp/no-imperative-loops": "off",
   "strict-fp/no-let-or-var": "off",
+  "strict-fp/no-classes": "off",
+  "strict-fp/no-nested-ternary": "off",
   "strict-fp/max-function-lines": "off",
   "strict-fp/no-unnecessary-local-const": "off",
   "strict-fp/prefer-applicative-over-independent-bind": "off",
@@ -272,6 +275,10 @@ const boundaryOverrideRules = {
   "strict-fp/no-scattered-validation": "off",
   "strict-fp/no-inline-infra-side-effects": "off",
   "strict-fp/no-multi-repo-orchestration": "off",
+  "strict-fp/no-external-entity-mutation": "off",
+  "strict-fp/no-train-wreck-navigation": "off",
+  "strict-fp/no-lifecycle-flag-clusters": "off",
+  "strict-fp/no-stringly-typed-discriminants": "off",
   "strict-fp/domain-layer-purity": "off",
   "strict-fp/no-optional-state-bags": "off",
   "strict-fp/parse-dont-validate": "off",
@@ -292,9 +299,22 @@ const testOverrideRules = {
   "strict-fp/module-cohesion": "off",
   "strict-fp/no-single-caller-export": "off",
   "strict-fp/max-function-lines": "off",
+  "strict-fp/no-any-or-unknown": "off",
+  "strict-fp/no-classes": "off",
+  "strict-fp/no-if-else-or-switch": "off",
+  "strict-fp/no-imperative-loops": "off",
+  "strict-fp/no-nested-ternary": "off",
+  "strict-fp/no-unnecessary-local-const": "off",
+  "strict-fp/no-fp-ts-chain": "off",
+  "strict-fp/no-fp-ts-pipe": "off",
+  "strict-fp/no-nested-pipe": "off",
   "strict-fp/no-domain-raw-primitives": "off",
   "strict-fp/no-unit-suffixed-primitives": "off",
   "strict-fp/no-data-clumps": "off",
+  "strict-fp/no-external-entity-mutation": "off",
+  "strict-fp/no-inline-infra-side-effects": "off",
+  "strict-fp/no-multi-repo-orchestration": "off",
+  "strict-fp/no-train-wreck-navigation": "off",
   "strict-fp/no-scattered-validation": "off",
   "strict-fp/no-stringly-typed-discriminants": "off",
   "strict-fp/no-structural-skeleton-duplication": "off",
@@ -469,7 +489,7 @@ const createReactTsxBlock = (
 });
 
 const buildReactTsxBlocks = (plugin: TSESLint.FlatConfig.Plugin, maxTier: LintTier) =>
-  maxTier > tier0TypeChecker.tier ? [createReactTsxBlock(plugin, {})] : [];
+  maxTier >= 2 ? [createReactTsxBlock(plugin, {})] : [];
 
 export const createTieredConfig = (
   plugin: TSESLint.FlatConfig.Plugin,
@@ -478,7 +498,7 @@ export const createTieredConfig = (
   const maxTier = options.maxTier ?? 3;
   const targetFiles = resolveFiles(options);
   return [
-    ...(maxTier >= 2 ? scopeTypeCheckedConfigs(targetFiles) : []),
+    ...(maxTier >= 1 ? scopeTypeCheckedConfigs(targetFiles) : []),
     createTierRuleBlock(plugin, maxTier, targetFiles, options),
     ...buildReactTsxBlocks(plugin, maxTier),
     ...createBoundaryConfig(O.fromNullable(options.boundaryFiles)),

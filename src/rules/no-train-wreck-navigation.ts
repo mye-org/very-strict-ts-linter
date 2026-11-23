@@ -48,7 +48,7 @@ const countPropertyHops = (
 const countMemberHops = (
   expr: TSESTree.MemberExpression,
   services: ParserServicesWithTypeInformation,
-) => (isHopRoot(expr, services) ? 1 : 1 + countPropertyHops(expr.object, services));
+) => (isHopRoot(expr, services) ? 0 : 1 + countPropertyHops(expr.object, services));
 
 const checkMemberChain = (
   node: TSESTree.MemberExpression,
@@ -92,14 +92,17 @@ export const noTrainWreckNavigation = createRule<Options, MessageIds>({
     ],
     defaultOptions: [{ maxHops: 2 }],
   },
-  create: (context, [options]) => ({
-    MemberExpression: (node) => {
-      checkMemberChain(
-        node,
-        options.maxHops,
-        ESLintUtils.getParserServices(context),
-        (d) => { context.report(d); },
-      );
-    },
-  }),
+  create: (context, [options]) => {
+    const services = ESLintUtils.getParserServices(context);
+    return {
+      MemberExpression: (node) => {
+        checkMemberChain(
+          node,
+          options.maxHops,
+          services,
+          (d) => { context.report(d); },
+        );
+      },
+    };
+  },
 });

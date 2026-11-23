@@ -397,6 +397,10 @@ ruleTester.run("no-nested-pipe", noNestedPipe, {
       `,
       errors: [{ messageId: "noNestedPipe" }, { messageId: "noNestedPipe" }],
     },
+    {
+      code: `const fn = flow(f, flow(g, h));`,
+      errors: [{ messageId: "noNestedPipe" }],
+    },
   ],
 });
 

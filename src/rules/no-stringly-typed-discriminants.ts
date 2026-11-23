@@ -56,11 +56,11 @@ export const noStringlyTypedDiscriminants = createRule<Options, MessageIds>({
     type: "suggestion",
     docs: {
       description:
-        "Flag bare string or magic-number comparisons in conditionals, switch cases, and pattern matches; prefer explicit discriminated unions, enums, or policy objects.",
+        "Flag bare string or magic-number comparisons in conditionals, switch cases, and pattern matches; prefer explicit discriminated unions or policy objects.",
     },
     messages: {
       stringlyTypedDiscriminant:
-        "Stringly-typed discriminant `{{target}}` compared against literals [{{literals}}]. Model this with a discriminated union, enum, or policy object.",
+        "Stringly-typed discriminant `{{target}}` compared against literals [{{literals}}]. Model this with a discriminated union or policy object.",
     },
     schema: [
       {

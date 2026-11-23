@@ -248,31 +248,31 @@ const buildCluster = (occs: ReadonlyArray<DiscriminantOccurrence>, literals: Rea
 
 const toCluster = (occs: ReadonlyArray<DiscriminantOccurrence>, minBranches: number) => {
   const literals = pipe(occs, RA.map((o) => o.literalValue), RA.uniq(S.Eq), RA.sort(S.Ord));
-  return match(literals.length >= minBranches || occs.length >= minBranches)
+  return match(literals.length >= minBranches)
     .with(true, () => buildCluster(occs, literals))
     .with(false, () => O.none as O.Option<DiscriminantCluster>)
     .exhaustive();
 };
 
-const groupByTargetKey = (
-  acc: Readonly<Record<string, ReadonlyArray<DiscriminantOccurrence>>>,
-  occ: DiscriminantOccurrence,
-) => ({
-  ...acc,
-  [occ.targetKey]: [...(acc[occ.targetKey] ?? []), occ],
-});
+const groupAllByTargetKey = (occurrences: ReadonlyArray<DiscriminantOccurrence>) => {
+  const map: Record<string, Array<DiscriminantOccurrence>> = {};
+  for (const occ of occurrences) {
+    const list = map[occ.targetKey] ?? [];
+    list.push(occ);
+    map[occ.targetKey] = list;
+  }
+  return map as Readonly<Record<string, ReadonlyArray<DiscriminantOccurrence>>>;
+};
 
-const indexClusterLocations = (
-  acc: Readonly<Record<string, DiscriminantCluster>>,
-  cluster: DiscriminantCluster,
-) =>
-  pipe(
-    cluster.locations,
-    RA.reduce(acc, (inner, loc) => ({ ...inner, [makeLocationKey(loc)]: cluster })),
-  );
-
-const indexByLocation = (clusters: ReadonlyArray<DiscriminantCluster>) =>
-  pipe(clusters, RA.reduce({}, indexClusterLocations));
+const indexByLocation = (clusters: ReadonlyArray<DiscriminantCluster>) => {
+  const map: Record<string, DiscriminantCluster> = {};
+  for (const cluster of clusters) {
+    for (const loc of cluster.locations) {
+      map[makeLocationKey(loc)] = cluster;
+    }
+  }
+  return map as Readonly<Record<string, DiscriminantCluster>>;
+};
 
 type DiscriminantIndex = Readonly<{
   readonly clusters: ReadonlyArray<DiscriminantCluster>;
@@ -292,7 +292,7 @@ export const analyzeStringlyTypedDiscriminants = (
     (p) =>
       pipe(
         getProgramOccurrences(p),
-        RA.reduce({}, groupByTargetKey),
+        groupAllByTargetKey,
         R.toEntries,
         RA.filterMap(([, occs]) => toCluster(occs, minBranches)),
         (clusters) => ({ clusters, byLocation: indexByLocation(clusters) }),

@@ -10,6 +10,7 @@ type MessageIds = "unterminatedMatch" | "preferExhaustive";
 const TERMINATOR_METHODS = new Set(["exhaustive", "otherwise", "run"]);
 
 const getTerminatorPropName = (member: TSESTree.MemberExpression) =>
+  !member.computed &&
   member.property.type === AST_NODE_TYPES.Identifier &&
   TERMINATOR_METHODS.has(member.property.name)
     ? O.some(member.property.name)
@@ -66,6 +67,7 @@ const checkTerminator = (
     isFinite: Boolean(node.arguments[0] && isExhaustiveCandidateArg(node.arguments[0], services)),
   })
     .with({ methodName: "otherwise", isFinite: true }, () => { report(terminator, "preferExhaustive"); })
+    .with({ methodName: "run", isFinite: true }, () => { report(terminator, "preferExhaustive"); })
     .otherwise(() => {});
 };
 
@@ -94,22 +96,25 @@ export const requireExhaustiveMatch = createRule<[], MessageIds>({
     type: "problem",
     docs: {
       description:
-        "Require `ts-pattern` `match(...)` chains to terminate with `.exhaustive()`, and flag `.otherwise()` on finite unions/enums/booleans.",
+        "Require `ts-pattern` `match(...)` chains to terminate with `.exhaustive()`, and flag `.otherwise()`/`.run()` on finite unions/enums/booleans.",
     },
     messages: {
       unterminatedMatch:
         "`match(...)` chain must terminate with `.exhaustive()` (or `.otherwise()` when exhaustive matching is not feasible).",
       preferExhaustive:
-        "Use `.exhaustive()` instead of `.otherwise()` for finite union, boolean, or enum types.",
+        "Use `.exhaustive()` instead of `.otherwise()` or `.run()` for finite union, boolean, or enum types.",
     },
     schema: [],
     defaultOptions: [],
   },
-  create: (context) => ({
-    CallExpression: (node) => {
-      checkMatchCall(node, ESLintUtils.getParserServices(context), (n, messageId) => {
-        context.report({ node: n, messageId });
-      });
-    },
-  }),
+  create: (context) => {
+    const services = ESLintUtils.getParserServices(context);
+    return {
+      CallExpression: (node) => {
+        checkMatchCall(node, services, (n, messageId) => {
+          context.report({ node: n, messageId });
+        });
+      },
+    };
+  },
 });

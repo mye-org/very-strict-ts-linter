@@ -119,12 +119,17 @@ const getNumericLiteralValue = (expr: TSESTree.Expression) =>
 
 const isFixedArityThreshold = (n: number) => n >= 2;
 
-const isFailureReturnExpr = (expr: TSESTree.Expression) =>
+const isFailureMember = (expr: TSESTree.Expression) =>
   expr.type === AST_NODE_TYPES.MemberExpression &&
+  !expr.computed &&
   expr.object.type === AST_NODE_TYPES.Identifier &&
   (expr.object.name === "O" || expr.object.name === "E") &&
   expr.property.type === AST_NODE_TYPES.Identifier &&
   (expr.property.name === "none" || expr.property.name === "left");
+
+const isFailureReturnExpr = (expr: TSESTree.Expression) =>
+  isFailureMember(expr) ||
+  (expr.type === AST_NODE_TYPES.CallExpression && isFailureMember(expr.callee));
 
 const isInFailureTernaryGuard = (node: TSESTree.BinaryExpression) =>
   node.parent.type === AST_NODE_TYPES.ConditionalExpression &&
@@ -193,13 +198,13 @@ export const preferNonemptyTuple = createRule<[], MessageIds>({
     type: "suggestion",
     docs: {
       description:
-        "Encourage length-encoded tuple types (`readonly [T, ...T[]]` / fixed tuples) instead of destructuring or checking fixed/non-empty `.length` guards on `ReadonlyArray<T>` at runtime.",
+        "Encourage length-encoded tuple types (`readonly [T, ...ReadonlyArray<T>]` / fixed tuples) instead of destructuring or checking fixed/non-empty `.length` guards on `ReadonlyArray<T>` at runtime.",
     },
     messages: {
       preferTupleDestructuring:
-        "Avoid destructuring a plain `ReadonlyArray<T>`. Require a tuple or `ReadonlyNonEmptyArray<T>` (`readonly [T, ...T[]]`) so element existence is proven at compile time.",
+        "Avoid destructuring a plain `ReadonlyArray<T>`. Require a tuple or `ReadonlyNonEmptyArray<T>` (`readonly [T, ...ReadonlyArray<T>]`) so element existence is proven at compile time.",
       preferNonEmptyOrFixedTuple:
-        "Avoid runtime `.length` guards on a `ReadonlyArray<T>` parameter. Encode non-emptiness or exact arity using tuple types (`readonly [T, ...T[]]` or `readonly [T, T]`).",
+        "Avoid runtime `.length` guards on a `ReadonlyArray<T>` parameter. Encode non-emptiness or exact arity using tuple types (`readonly [T, ...ReadonlyArray<T>]` or `readonly [T, T]`).",
     },
     schema: [],
     defaultOptions: [],

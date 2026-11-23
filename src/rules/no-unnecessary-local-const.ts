@@ -4,7 +4,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { createRule } from "../utils/create-rule.js";
-import { hasFunctionInit } from "../utils/type-helpers.js";
+import { hasFunctionInit, isFlowCallExpression } from "../utils/type-helpers.js";
 
 type MessageIds = "unnecessaryLocalConst";
 
@@ -19,7 +19,10 @@ const isFunctionNode = (node: O.Option<TSESTree.Node>) =>
     ),
   );
 
-const isLocalHelperFunction = hasFunctionInit;
+const isLocalHelperFunction = (declarator: TSESTree.VariableDeclarator) =>
+  hasFunctionInit(declarator) ||
+  (declarator.init?.type === AST_NODE_TYPES.CallExpression &&
+    isFlowCallExpression(declarator.init));
 
 const hasSingleReadRef = (v: TSESLint.Scope.Variable) =>
   pipe(v.references, RA.filter((ref) => ref.isRead())).length === 1;

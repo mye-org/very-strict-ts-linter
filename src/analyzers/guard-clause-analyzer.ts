@@ -115,13 +115,15 @@ const getProgramGuards = (program: ts.Program) =>
     pipe(getProjectSourceFiles(p), RA.flatMap(extractFileGuards)),
   );
 
-const groupBySignature = (
-  acc: Readonly<Record<string, ReadonlyArray<GuardOccurrence>>>,
-  occ: GuardOccurrence,
-) => ({
-  ...acc,
-  [occ.signature]: [...(acc[occ.signature] ?? []), occ],
-});
+const groupAllBySignature = (occurrences: ReadonlyArray<GuardOccurrence>) => {
+  const map: Record<string, Array<GuardOccurrence>> = {};
+  for (const occ of occurrences) {
+    const list = map[occ.signature] ?? [];
+    list.push(occ);
+    map[occ.signature] = list;
+  }
+  return map as Readonly<Record<string, ReadonlyArray<GuardOccurrence>>>;
+};
 
 const extractGuardLocations = (occs: ReadonlyArray<GuardOccurrence>) =>
   pipe(occs, RA.map((o) => o.location));
@@ -141,18 +143,6 @@ const toGuardCluster = (
       )
     : (O.none as O.Option<GuardCluster>);
 
-const addClusterByLocation = (
-  acc: Readonly<Record<string, ReadonlyArray<GuardCluster>>>,
-  cluster: GuardCluster,
-) =>
-  pipe(
-    cluster.locations,
-    RA.reduce(acc, (inner, loc) => {
-      const key = makeLocationKey(loc);
-      return { ...inner, [key]: [...(inner[key] ?? []), cluster] };
-    }),
-  );
-
 type GuardIndex = Readonly<{
   readonly clusters: ReadonlyArray<GuardCluster>;
   readonly byLocation: Readonly<Record<string, ReadonlyArray<GuardCluster>>>;
@@ -160,14 +150,24 @@ type GuardIndex = Readonly<{
 
 const guardIndexCache = new WeakMap<ts.Program, Readonly<Record<string, GuardIndex>>>();
 
-const indexClustersByLocation = (clusters: ReadonlyArray<GuardCluster>) =>
-  pipe(clusters, RA.reduce({}, addClusterByLocation));
+const indexClustersByLocation = (clusters: ReadonlyArray<GuardCluster>) => {
+  const map: Record<string, Array<GuardCluster>> = {};
+  for (const cluster of clusters) {
+    for (const loc of cluster.locations) {
+      const key = makeLocationKey(loc);
+      const list = map[key] ?? [];
+      list.push(cluster);
+      map[key] = list;
+    }
+  }
+  return map as Readonly<Record<string, ReadonlyArray<GuardCluster>>>;
+};
 
 const computeGuardIndex = (program: ts.Program, minClauses: number, minOccurrences: number) =>
   pipe(
     getProgramGuards(program),
     RA.filter((occ) => occ.clauseCount >= minClauses),
-    RA.reduce({}, groupBySignature),
+    groupAllBySignature,
     R.toEntries,
     RA.filterMap((entry) => toGuardCluster(entry, minOccurrences)),
     (clusters) => ({

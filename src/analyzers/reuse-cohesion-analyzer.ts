@@ -189,6 +189,11 @@ const computeSingleCallerAnalysis = (
           continue;
         }
 
+        // Deadlock Guard 4: React View-Model Boundary (.ts helper consumed solely by .tsx component)
+        if (!fileGraph.fileName.endsWith(".tsx") && soleConsumer.endsWith(".tsx")) {
+          continue;
+        }
+
         const finding: SingleCallerExportFinding = {
           kind: "singleCallerExport",
           exportName: exp.exportName,

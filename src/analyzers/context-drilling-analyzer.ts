@@ -215,6 +215,9 @@ const lookupDeclEntry = (decl: ts.Declaration, fnByKey: Readonly<Record<string, 
     )
     .otherwise(() => O.none);
 
+const resolveAliasSymbol = (sym: ts.Symbol, checker: ts.TypeChecker) =>
+  sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym;
+
 const resolveCalleeFn = (
   call: ts.CallExpression,
   fnByKey: Readonly<Record<string, FunctionEntry>>,
@@ -222,6 +225,7 @@ const resolveCalleeFn = (
 ) =>
   pipe(
     O.fromNullable(checker.getSymbolAtLocation(call.expression)),
+    O.map((sym) => resolveAliasSymbol(sym, checker)),
     O.flatMap((sym) => O.fromNullable(sym.valueDeclaration ?? sym.declarations?.[0])),
     O.flatMap((decl) => lookupDeclEntry(decl, fnByKey)),
   );
@@ -279,59 +283,53 @@ const collectSlotEdges = (
     : ([] as ReadonlyArray<ForwardEdge>);
 };
 
-const indexFunctions = (entries: ReadonlyArray<FunctionEntry>) =>
-  pipe(
-    entries,
-    RA.reduce<FunctionEntry, Readonly<Record<string, FunctionEntry>>>({}, (acc, entry) => ({
-      ...acc,
-      [entry.key]: entry,
-    })),
-  );
+const indexFunctions = (entries: ReadonlyArray<FunctionEntry>) => {
+  const index: Record<string, FunctionEntry> = {};
+  for (const entry of entries) {
+    index[entry.key] = entry;
+  }
+  return index as Readonly<Record<string, FunctionEntry>>;
+};
 
-const makeSlotMetaPair = (fn: FunctionEntry, p: ParamSlot) =>
-  [
-    makeSlotKey(fn.key, p.index),
-    {
-      fnKey: fn.key,
-      fnName: fn.name,
-      paramName: p.name,
-      typeName: p.typeName,
-      location: fn.location,
-    },
-  ] as const;
+const indexNodeInfo = (entries: ReadonlyArray<FunctionEntry>) => {
+  const index: Record<string, SlotMeta> = {};
+  for (const fn of entries) {
+    for (const p of fn.paramSlots) {
+      index[makeSlotKey(fn.key, p.index)] = {
+        fnKey: fn.key,
+        fnName: fn.name,
+        paramName: p.name,
+        typeName: p.typeName,
+        location: fn.location,
+      };
+    }
+  }
+  return index as Readonly<Record<string, SlotMeta>>;
+};
 
-const toSlotMetaPairs = (fn: FunctionEntry) =>
-  pipe(fn.paramSlots, RA.map((p) => makeSlotMetaPair(fn, p)));
+const buildOutgoingMap = (edges: ReadonlyArray<ForwardEdge>) => {
+  const map: Record<string, Array<string>> = {};
+  const seen: Record<string, Set<string>> = {};
+  for (const edge of edges) {
+    const targetSet = seen[edge.fromNode] ?? new Set<string>();
+    if (!targetSet.has(edge.toNode)) {
+      targetSet.add(edge.toNode);
+      seen[edge.fromNode] = targetSet;
+      const list = map[edge.fromNode] ?? [];
+      list.push(edge.toNode);
+      map[edge.fromNode] = list;
+    }
+  }
+  return map as Readonly<Record<string, ReadonlyArray<string>>>;
+};
 
-const indexNodeInfo = (entries: ReadonlyArray<FunctionEntry>) =>
-  pipe(
-    entries,
-    RA.flatMap(toSlotMetaPairs),
-    RA.reduce<readonly [string, SlotMeta], Readonly<Record<string, SlotMeta>>>(
-      {},
-      (acc, [key, info]) => ({ ...acc, [key]: info }),
-    ),
-  );
-
-const buildOutgoingMap = (edges: ReadonlyArray<ForwardEdge>) =>
-  pipe(
-    edges,
-    RA.reduce<ForwardEdge, Readonly<Record<string, ReadonlyArray<string>>>>({}, (acc, edge) => {
-      const existing = acc[edge.fromNode] ?? [];
-      return existing.includes(edge.toNode)
-        ? acc
-        : { ...acc, [edge.fromNode]: [...existing, edge.toNode] };
-    }),
-  );
-
-const buildIncomingCount = (edges: ReadonlyArray<ForwardEdge>) =>
-  pipe(
-    edges,
-    RA.reduce<ForwardEdge, Readonly<Record<string, number>>>({}, (acc, edge) => ({
-      ...acc,
-      [edge.toNode]: (acc[edge.toNode] ?? 0) + 1,
-    })),
-  );
+const buildIncomingCount = (edges: ReadonlyArray<ForwardEdge>) => {
+  const counts: Record<string, number> = {};
+  for (const edge of edges) {
+    counts[edge.toNode] = (counts[edge.toNode] ?? 0) + 1;
+  }
+  return counts as Readonly<Record<string, number>>;
+};
 
 const collectFileEntries = (sf: ts.SourceFile, checker: ts.TypeChecker) =>
   pipe(
@@ -367,14 +365,6 @@ const buildProgramGraph = (program: ts.Program) => {
   };
 };
 
-const pickLongestSuffix = (candidates: ReadonlyArray<ReadonlyArray<string>>) =>
-  pipe(
-    candidates,
-    RA.reduce<ReadonlyArray<string>, ReadonlyArray<string>>([], (best, curr) =>
-      curr.length > best.length ? curr : best,
-    ),
-  );
-
 const getOutgoingNeighbors = (
   nodeId: string,
   outgoing: Readonly<Record<string, ReadonlyArray<string>>>,
@@ -384,23 +374,36 @@ const getOutgoingNeighbors = (
     O.getOrElse(() => [] as ReadonlyArray<string>),
   );
 
-const findLongestPath = (
-  nodeId: string,
-  visited: ReadonlySet<string>,
+const findLongestPathMemoized = (
+  startId: string,
   outgoing: Readonly<Record<string, ReadonlyArray<string>>>,
-  // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive graph DFS
+  memo: Map<string, ReadonlyArray<string>>,
 ): ReadonlyArray<string> => {
-  const nextVisited = new Set([...visited, nodeId]);
-  return [
-    nodeId,
-    ...pipe(
-      getOutgoingNeighbors(nodeId, outgoing),
-      RA.filterMap((next) =>
-        nextVisited.has(next) ? O.none : O.some(findLongestPath(next, nextVisited, outgoing)),
-      ),
-      pickLongestSuffix,
-    ),
-  ];
+  const visiting = new Set<string>();
+  const dfs = (nodeId: string): ReadonlyArray<string> => {
+    const cached = memo.get(nodeId);
+    if (cached) return cached;
+    visiting.add(nodeId);
+    let bestSuffix: ReadonlyArray<string> = [];
+    let hitCycle = false;
+    for (const next of getOutgoingNeighbors(nodeId, outgoing)) {
+      if (visiting.has(next)) {
+        hitCycle = true;
+        continue;
+      }
+      const candidate = dfs(next);
+      if (candidate.length > bestSuffix.length) {
+        bestSuffix = candidate;
+      }
+    }
+    visiting.delete(nodeId);
+    const result = [nodeId, ...bestSuffix];
+    if (!hitCycle) {
+      memo.set(nodeId, result);
+    }
+    return result;
+  };
+  return dfs(startId);
 };
 
 const lookupSlotMeta = (id: string, nodeInfo: Readonly<Record<string, SlotMeta>>) =>
@@ -439,25 +442,25 @@ const pathToFinding = (path: ReadonlyArray<string>, graph: ProgramGraph) =>
     O.map((rootInfo) => buildFindingFromRoot(rootInfo, { path, nodeInfo: graph.nodeInfo })),
   );
 
-const indexChainsByLocation = (chains: ReadonlyArray<ContextDrillingFinding>) =>
-  pipe(
-    chains,
-    RA.reduce<ContextDrillingFinding, Readonly<Record<string, ReadonlyArray<ContextDrillingFinding>>>>(
-      {},
-      (acc, f) => {
-        const key = makeLocationKey(f.rootLocation);
-        return { ...acc, [key]: [...(acc[key] ?? []), f] };
-      },
-    ),
-  );
+const indexChainsByLocation = (chains: ReadonlyArray<ContextDrillingFinding>) => {
+  const index: Record<string, Array<ContextDrillingFinding>> = {};
+  for (const f of chains) {
+    const key = makeLocationKey(f.rootLocation);
+    const list = index[key] ?? [];
+    list.push(f);
+    index[key] = list;
+  }
+  return index as Readonly<Record<string, ReadonlyArray<ContextDrillingFinding>>>;
+};
 
 const computeContextDrilling = (program: ts.Program, minDepth: number) => {
   const graph = memoizeByProgram(program, graphCache, buildProgramGraph);
+  const memo = new Map<string, ReadonlyArray<string>>();
   const chains = pipe(
     RR.keys(graph.outgoing),
     RA.filterMap((nodeId) =>
       (graph.incomingCount[nodeId] ?? 0) === 0
-        ? O.some(findLongestPath(nodeId, new Set(), graph.outgoing))
+        ? O.some(findLongestPathMemoized(nodeId, graph.outgoing, memo))
         : O.none,
     ),
     RA.filter((path) => path.length - 1 >= minDepth),

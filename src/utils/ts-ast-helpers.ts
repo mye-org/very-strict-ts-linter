@@ -8,17 +8,18 @@ export type TsLocation = Readonly<Record<"file", string> & Record<"line", number
 
 const sfNodesCache = new WeakMap<ts.SourceFile, ReadonlyArray<ts.Node>>();
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
-const walkTsNodes = (root: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> => [
-  root,
-  ...pipe(
-    root.getChildren(sf),
-    RA.flatMap((child) => walkTsNodes(child, sf)),
-  ),
-];
+const walkTsNodes = (root: ts.Node): ReadonlyArray<ts.Node> => {
+  const nodes: Array<ts.Node> = [];
+  const visit = (node: ts.Node) => {
+    nodes.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return nodes;
+};
 
 const computeAndCacheSfNodes = (sf: ts.SourceFile) => {
-  const nodes = walkTsNodes(sf, sf);
+  const nodes = walkTsNodes(sf);
   sfNodesCache.set(sf, nodes);
   return nodes;
 };
@@ -29,7 +30,7 @@ export const collectTsNodes = (root: ts.Node, sf: ts.SourceFile) =>
         O.fromNullable(sfNodesCache.get(sf)),
         O.getOrElse(() => computeAndCacheSfNodes(sf)),
       )
-    : walkTsNodes(root, sf);
+    : walkTsNodes(root);
 
 export const getTsNodeLocation = (node: ts.Node, sf: ts.SourceFile) => ({
   file: normalizeFilePath(sf.fileName),

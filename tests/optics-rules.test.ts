@@ -106,6 +106,7 @@ ruleTester.run(
       `const doublePrices = (items: ReadonlyArray<Item>) => pipe(items, RA.map((item) => ({ ...item, price: item.price * 2 })));`,
       `const extractNames = (order: Order) => ({ ...order, itemNames: pipe(order.items, RA.map((item) => item.name)) });`,
       `const replaceItems = (order: Order, next: ReadonlyArray<Item>) => ({ ...order, items: next });`,
+      `const filterAndUpdate = (order: Order) => ({ ...order, items: pipe(order.items, RA.filter(isActive), RA.map((item) => ({ ...item, seen: true }))) });`,
     ],
     invalid: [
       {
@@ -116,6 +117,17 @@ ruleTester.run(
               order.items,
               RA.map((item) => ({ ...item, price: item.price * 2 })),
             ),
+          });
+        `,
+        errors: [{ messageId: "preferTraversal" }],
+      },
+      {
+        code: `
+          const doubleOrderPrices = (order: Order) => ({
+            ...order,
+            items: flow(
+              RA.map((item: Item) => ({ ...item, price: item.price * 2 })),
+            )(order.items),
           });
         `,
         errors: [{ messageId: "preferTraversal" }],

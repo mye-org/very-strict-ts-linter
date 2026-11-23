@@ -64,6 +64,8 @@ ruleTester.run("no-null-undefined", noNullUndefined, {
 ruleTester.run("prefer-readonly-collections", preferReadonlyCollections, {
   valid: [
     `type Cards = ReadonlyArray<Card>;`,
+    `type ReadonlyCards = readonly Card[];`,
+    `type NonEmptyCards = readonly [Card, ...Card[]];`,
     `type Index = ReadonlyMap<CardId, Card>;`,
     `type Tags = ReadonlySet<Tag>;`,
   ],

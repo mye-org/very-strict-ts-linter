@@ -239,14 +239,23 @@ const resolveAggregateRoots = (
   config: RootResolutionConfig,
 ) => {
   const explicitSet = getExplicitRootSet(graph.candidates, config);
+  const ownedByExplicit = getOwnedByExplicitSet(graph.candidates, explicitSet);
   return new Set([
     ...explicitSet,
     ...pipe(
       graph.repos,
       RA.flatMap((r) => r.entityTypes),
-      RA.filter((name) => !getOwnedByExplicitSet(graph.candidates, explicitSet).has(name) && !name.endsWith("Id")),
+      RA.filter((name) => !ownedByExplicit.has(name) && !name.endsWith("Id")),
     ),
   ]);
+};
+
+const indexCandidates = (candidates: ReadonlyArray<AggregateCandidate>) => {
+  const map: Record<string, AggregateCandidate> = {};
+  for (const c of candidates) {
+    map[c.name] = c;
+  }
+  return map as Readonly<Record<string, AggregateCandidate>>;
 };
 
 const buildGraphSummary = (
@@ -260,10 +269,7 @@ const buildGraphSummary = (
     repos: graph.repos,
     isChildEntity: (name: string) =>
       pipe(O.fromNullable(childOwnership[name]), O.filter((parents) => parents.length > 0)),
-    candidateMap: pipe(
-      graph.candidates,
-      RA.reduce({}, (acc: Readonly<Record<string, AggregateCandidate>>, c) => ({ ...acc, [c.name]: c })),
-    ),
+    candidateMap: indexCandidates(graph.candidates),
   };
 };
 

@@ -43,6 +43,7 @@ const isMatchingNestedSpreadProp = (
 ) =>
   prop.type === AST_NODE_TYPES.Property &&
   prop.value.type === AST_NODE_TYPES.ObjectExpression &&
+  prop.value.properties.length >= 2 &&
   pipe(
     O.Do,
     O.apS("key", getStaticPropertyKey(prop)),
@@ -113,11 +114,11 @@ export const preferLensOverNestedSpread = createRule<Options, MessageIds>({
     type: "suggestion",
     docs: {
       description:
-        "Prefer `monocle-ts` `Lens` composition (`Lens.fromPath` / `L.modify`) over nested immutable object spreads.",
+        "Prefer `monocle-ts` `Lens` composition (`flow(L.id<S>(), L.prop(...), L.modify(...))`) over nested immutable object spreads.",
     },
     messages: {
       preferLens:
-        "Nested immutable object spread of depth {{depth}} (min {{minDepth}}). Use a `monocle-ts` `Lens` (e.g. `Lens.fromPath` + `modify`) to update nested fields declaratively.",
+        "Nested immutable object spread of depth {{depth}} (min {{minDepth}}). Use a `monocle-ts` `Lens` (`flow(L.id<S>(), L.prop(...), L.modify(...))`) to update nested fields declaratively.",
     },
     schema: [
       {

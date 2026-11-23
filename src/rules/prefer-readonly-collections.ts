@@ -28,6 +28,14 @@ const reportTypeReference = (
   );
 };
 
+const isReadonlyArrayType = (node: TSESTree.TSArrayType) =>
+  (node.parent.type === AST_NODE_TYPES.TSTypeOperator &&
+    node.parent.operator === "readonly") ||
+  (node.parent.type === AST_NODE_TYPES.TSRestType &&
+    node.parent.parent.type === AST_NODE_TYPES.TSTupleType &&
+    node.parent.parent.parent.type === AST_NODE_TYPES.TSTypeOperator &&
+    node.parent.parent.parent.operator === "readonly");
+
 export const preferReadonlyCollections = createRule<[], MessageIds>({
   name: "prefer-readonly-collections",
   meta: {
@@ -49,7 +57,9 @@ export const preferReadonlyCollections = createRule<[], MessageIds>({
   },
   create: (context) => ({
     TSArrayType: (node) => {
-      context.report({ node, messageId: "preferReadonlyArray" });
+      if (!isReadonlyArrayType(node)) {
+        context.report({ node, messageId: "preferReadonlyArray" });
+      }
     },
     TSTypeReference: (node) => {
       reportTypeReference(node, (n, messageId) => {

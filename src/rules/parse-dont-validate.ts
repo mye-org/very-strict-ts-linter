@@ -11,8 +11,9 @@ import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
 import {
-  getEnclosingEsTreeFunction,
+  hasMatchingEnclosingFunctionName,
   isInsideUnsafeOrMustFunction,
+  isOptionTsType,
   isTsParameterSymbol,
   isUnsafeOrMustName,
 } from "../utils/type-helpers.js";
@@ -54,8 +55,7 @@ const isPrimitiveParam = (
 
 const isBooleanVoidOrOption = (ret: ts.Type) =>
   Boolean(ret.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral | ts.TypeFlags.Void | ts.TypeFlags.Undefined)) ||
-  ret.aliasSymbol?.name === "Option" ||
-  ret.getSymbol()?.name === "Option";
+  isOptionTsType(ret);
 
 const isInvalidValidateReturn = (
   node: FunctionNode,
@@ -92,10 +92,9 @@ const isValidateWithoutParse = (
 
 const isShotgunEligibleContext = (node: TSESTree.Node) =>
   !isInsideUnsafeOrMustFunction(node) &&
-  !pipe(
-    getEnclosingEsTreeFunction(node),
-    O.flatMap(getFunctionName),
-    O.exists((name) => isUnsafeOrMustName(name) || EXEMPT_DOMAIN_FN_RE.test(name)),
+  !hasMatchingEnclosingFunctionName(
+    node,
+    (name) => isUnsafeOrMustName(name) || EXEMPT_DOMAIN_FN_RE.test(name),
   );
 
 const isRawPrimitiveParamId = (

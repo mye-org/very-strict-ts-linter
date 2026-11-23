@@ -139,6 +139,7 @@ const makeRepoNodeChecker =
   (node: TSESTree.Node, name: O.Option<string>) => {
     pipe(
       name,
+      O.filter(hasRepoSuffix),
       O.map((n) => {
         checkRepoDeclaration(
           node,

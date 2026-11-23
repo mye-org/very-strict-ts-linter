@@ -13,12 +13,14 @@ type StepPair = Readonly<{
 }>;
 
 const COLLECTION_NAMESPACES = new Set(["RA", "A", "RNEA", "RR", "R"]);
-const SEQUENCE_ARRAY_NAMESPACES = new Set(["O", "E", "TE", "T", "IO", "IOE"]);
+const SEQUENCE_ARRAY_NAMESPACES = new Set(["O", "E", "TE", "T", "IO", "IOE", "RTE", "RE", "RT", "R"]);
 const SEQUENCE_ARRAY_METHODS = new Set(["sequenceArray", "sequenceSeqArray"]);
 const MONAD_EMPTY_ARRAY_CONSTRUCTORS = new Set(["some", "right", "of"]);
 
 const getMemberExprInfo = (m: TSESTree.MemberExpression) =>
-  m.object.type === AST_NODE_TYPES.Identifier && m.property.type === AST_NODE_TYPES.Identifier
+  !m.computed &&
+  m.object.type === AST_NODE_TYPES.Identifier &&
+  m.property.type === AST_NODE_TYPES.Identifier
     ? O.some({ namespace: m.object.name, method: m.property.name })
     : O.none;
 
@@ -71,7 +73,7 @@ const findMapThenSequenceTargets = (steps: ReadonlyArray<TSESTree.CallExpression
 
 const isEmptyArrayExpr = (arg: TSESTree.CallExpressionArgument) =>
   (arg.type === AST_NODE_TYPES.ArrayExpression && arg.elements.length === 0) ||
-  (arg.type === AST_NODE_TYPES.TSAsExpression &&
+  ((arg.type === AST_NODE_TYPES.TSAsExpression || arg.type === AST_NODE_TYPES.TSSatisfiesExpression) &&
     arg.expression.type === AST_NODE_TYPES.ArrayExpression &&
     arg.expression.elements.length === 0);
 
@@ -156,9 +158,9 @@ export const preferTraverseOverMapSequence = createRule<[], MessageIds>({
     },
     messages: {
       mapThenSequence:
-        "Avoid `map(...)` followed by `sequence`. Use `traverseArray` / `traverse` to perform the effectful traversal in a single pass.",
+        "Avoid `map(...)` followed by `sequence`. Use `traverseArray` / `traverseSeqArray` / `traverse` to perform the effectful traversal in a single pass.",
       manualMonadicReduce:
-        "Avoid manually reducing into a monadic array seed. Use `traverseArray` / `traverse` (Traversable) instead.",
+        "Avoid manually reducing into a monadic array seed. Use `traverseArray` / `traverseSeqArray` / `traverse` (Traversable) instead.",
     },
     schema: [],
     defaultOptions: [],

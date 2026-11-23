@@ -5,38 +5,55 @@ import { flow, pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 
+const UNSAFE_SUFFIX_RE = /[a-z0-9]Unsafe$/;
+const MUST_PREFIX_RE = /^must[A-Z]/;
+
 export const isUnsafeOrMustName = (name: string) =>
-  name.endsWith("Unsafe") || name.startsWith("must");
+  UNSAFE_SUFFIX_RE.test(name) || MUST_PREFIX_RE.test(name);
 
 const getNamedParentKey = (gp: TSESTree.Node) =>
   match(gp)
     .with({ type: AST_NODE_TYPES.VariableDeclarator, id: { type: AST_NODE_TYPES.Identifier } }, (d) => O.some(d.id.name))
     .with({ type: AST_NODE_TYPES.Property, key: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.key.name))
     .with({ type: AST_NODE_TYPES.MethodDefinition, key: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.key.name))
+    .with({ type: AST_NODE_TYPES.PropertyDefinition, key: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.key.name))
+    .with(P._, () => O.none)
+    .exhaustive();
+
+export const getDirectFunctionName = (node: TSESTree.Node) =>
+  match(node)
+    .with({ type: AST_NODE_TYPES.FunctionDeclaration }, (fn) => (fn.id ? O.some(fn.id.name) : O.none))
+    .with({ type: AST_NODE_TYPES.FunctionExpression }, (fn) =>
+      fn.id ? O.some(fn.id.name) : getNamedParentKey(fn.parent),
+    )
+    .with({ type: AST_NODE_TYPES.ArrowFunctionExpression }, (fn) => getNamedParentKey(fn.parent))
+    .with({ type: AST_NODE_TYPES.MethodDefinition }, (m) =>
+      m.key.type === AST_NODE_TYPES.Identifier ? O.some(m.key.name) : O.none,
+    )
     .with(P._, () => O.none)
     .exhaustive();
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
-const matchEnclosingFunctionParent = (parent: TSESTree.Node): O.Option<string> =>
-  match(parent)
-    .with({ type: AST_NODE_TYPES.FunctionDeclaration }, (fn) => (fn.id ? O.some(fn.id.name) : O.none))
-    .with({ type: AST_NODE_TYPES.FunctionExpression }, (fn) => getNamedParentKey(fn.parent))
-    .with({ type: AST_NODE_TYPES.ArrowFunctionExpression }, (fn) => getNamedParentKey(fn.parent))
-    .with({ type: AST_NODE_TYPES.MethodDefinition }, (m) => (m.key.type === AST_NODE_TYPES.Identifier ? O.some(m.key.name) : O.none))
-    .with(P._, () => getEnclosingFunctionName(parent))
-    .exhaustive();
-
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive callback
-const getEnclosingFunctionName = (node: TSESTree.Node): O.Option<string> =>
-  pipe(O.fromNullable(node.parent), O.flatMap(matchEnclosingFunctionParent));
+export const hasMatchingEnclosingFunctionName = (
+  node: TSESTree.Node,
+  predicate: (name: string) => boolean,
+): boolean =>
+  pipe(
+    O.fromNullable(node.parent),
+    O.exists(
+      (parent) =>
+        pipe(getDirectFunctionName(parent), O.exists(predicate)) ||
+        hasMatchingEnclosingFunctionName(parent, predicate),
+    ),
+  );
 
 export const isInsideUnsafeOrMustFunction = (node: TSESTree.Node) =>
-  pipe(getEnclosingFunctionName(node), O.exists(isUnsafeOrMustName));
+  hasMatchingEnclosingFunctionName(node, isUnsafeOrMustName);
 
 const isNewtypeReference = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.TSTypeReference &&
-  node.typeName.type === AST_NODE_TYPES.Identifier &&
-  node.typeName.name === "Newtype";
+  ((node.typeName.type === AST_NODE_TYPES.Identifier && node.typeName.name === "Newtype") ||
+    (node.typeName.type === AST_NODE_TYPES.TSQualifiedName && node.typeName.right.name === "Newtype"));
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
 const hasNewtypeAncestor = (node: TSESTree.Node): boolean =>
@@ -84,15 +101,31 @@ const isBooleanOrLiteralOrEnum = (type: ts.Type) =>
         ts.TypeFlags.NumberLiteral),
   );
 
+const isFiniteDiscriminantTypeNode = (typeNode: ts.TypeNode) =>
+  ts.isLiteralTypeNode(typeNode) ||
+  ts.isTypeReferenceNode(typeNode) ||
+  (ts.isUnionTypeNode(typeNode) &&
+    pipe(typeNode.types, RA.every((m) => ts.isLiteralTypeNode(m) || ts.isTypeReferenceNode(m))));
+
+const hasFiniteDiscriminantDecl = (prop: ts.Symbol) => {
+  const decl = prop.valueDeclaration ?? prop.declarations?.[0];
+  if (!decl) return true;
+  if (ts.isPropertySignature(decl) || ts.isPropertyDeclaration(decl)) {
+    return decl.type !== undefined && isFiniteDiscriminantTypeNode(decl.type);
+  }
+  return true;
+};
+
 const isDiscriminatedObject = (type: ts.Type) =>
   pipe(
     type.getProperties(),
     RA.some(
       (prop) =>
-        prop.name === "kind" ||
-        prop.name === "type" ||
-        prop.name === "_tag" ||
-        prop.name === "tag",
+        (prop.name === "kind" ||
+          prop.name === "type" ||
+          prop.name === "_tag" ||
+          prop.name === "tag") &&
+        hasFiniteDiscriminantDecl(prop),
     ),
   );
 
@@ -102,21 +135,40 @@ export const isFiniteExhaustiveCandidate = (type: ts.Type) =>
     pipe(
       type.types,
       RA.every(
-        flow(
-          (member) =>
-            isBooleanOrLiteralOrEnum(member) || isDiscriminatedObject(member),
+        (member) => isBooleanOrLiteralOrEnum(member) || isDiscriminatedObject(member),
+      ),
+    ));
+
+export const isFiniteUnionOrEnumKey = (type: ts.Type) =>
+  Boolean(type.flags & (ts.TypeFlags.Enum | ts.TypeFlags.EnumLiteral)) ||
+  (type.isUnion() &&
+    type.types.length >= 2 &&
+    pipe(
+      type.types,
+      RA.every((member) =>
+        Boolean(
+          member.flags &
+            (ts.TypeFlags.StringLiteral |
+              ts.TypeFlags.NumberLiteral |
+              ts.TypeFlags.EnumLiteral),
         ),
       ),
     ));
 
 const BRAND_PROP_RE = /^(__?brand|URI|_URI|_A)$/;
 
-export const isBrandedOrNewtypeTsType = (type: ts.Type) =>
-  type.isIntersection() &&
-  pipe(
-    type.getProperties(),
-    RA.some((prop) => BRAND_PROP_RE.test(prop.name)),
+export const isBrandedOrNewtypeTsType = (type: ts.Type) => {
+  const props = type.getProperties();
+  if (type.isIntersection()) {
+    return pipe(props, RA.some((prop) => BRAND_PROP_RE.test(prop.name)));
+  }
+  const hasUri = pipe(props, RA.some((prop) => prop.name === "_URI"));
+  const hasA = pipe(props, RA.some((prop) => prop.name === "_A"));
+  return (
+    (hasUri && hasA) ||
+    pipe(props, RA.some((prop) => prop.name === "__brand" || prop.name === "_brand"))
   );
+};
 
 export const getBarePrimitiveKind = (type: ts.Type) =>
   match({
@@ -160,18 +212,33 @@ export const isNullableOrOptionTypeNode = (typeNode: TSESTree.TypeNode): boolean
     .with(P._, () => false)
     .exhaustive();
 
-const isOptionTaggedMember = (t: ts.Type) =>
-  pipe(
-    O.fromNullable(t.getProperty("_tag")),
-    O.exists((prop) => prop.valueDeclaration !== undefined),
-  );
+const getOptionMemberTag = (t: ts.Type) => {
+  const symName = t.getSymbol()?.name;
+  if (symName === "None" || symName === "Some") return O.some(symName);
+  const decl = t.getProperty("_tag")?.valueDeclaration;
+  if (
+    decl &&
+    ts.isPropertySignature(decl) &&
+    decl.type &&
+    ts.isLiteralTypeNode(decl.type) &&
+    ts.isStringLiteral(decl.type.literal) &&
+    (decl.type.literal.text === "None" || decl.type.literal.text === "Some")
+  ) {
+    return O.some(decl.type.literal.text);
+  }
+  return O.none;
+};
 
-export const isOptionTsType = (type: ts.Type) =>
-  type.aliasSymbol?.name === "Option" ||
-  type.getSymbol()?.name === "Option" ||
-  (type.isUnion() &&
-    type.types.length === 2 &&
-    pipe(type.types, RA.every(isOptionTaggedMember)));
+export const isOptionTsType = (type: ts.Type) => {
+  if (type.aliasSymbol?.name === "Option" || type.getSymbol()?.name === "Option") {
+    return true;
+  }
+  if (!type.isUnion() || type.types.length !== 2) {
+    return false;
+  }
+  const tags = pipe(type.types, RA.filterMap(getOptionMemberTag));
+  return tags.length === 2 && new Set(tags).size === 2;
+};
 
 export const isNullableOrOptionTsType = (type: ts.Type) =>
   isOptionTsType(type) ||

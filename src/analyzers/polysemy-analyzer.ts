@@ -230,10 +230,11 @@ const collectProgramData = (program: ts.Program) => {
 const getProgramData = (program: ts.Program) =>
   memoizeByProgram(program, polysemyCache, collectProgramData);
 
-const computeJaccard = (a: ReadonlyArray<string>, b: ReadonlyArray<string>, unionSize: number) =>
-  unionSize === 0
-    ? 1
-    : pipe(a, RA.filter((x) => new Set(b).has(x))).length / unionSize;
+const computeJaccard = (a: ReadonlyArray<string>, b: ReadonlyArray<string>, unionSize: number) => {
+  if (unionSize === 0) return 1;
+  const setB = new Set(b);
+  return pipe(a, RA.filter((x) => setB.has(x))).length / unionSize;
+};
 
 const jaccardSimilarity = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
   computeJaccard(a, b, new Set([...a, ...b]).size);
@@ -299,16 +300,16 @@ const toPolysemyFinding = (
             : O.none,
       );
 
-const indexPolysemyFindings = (findings: ReadonlyArray<PolysemyFinding>) => ({
-  findings,
-  byLocation: pipe(
+const indexPolysemyFindings = (findings: ReadonlyArray<PolysemyFinding>) => {
+  const byLocation: Record<string, PolysemyFinding> = {};
+  for (const f of findings) {
+    byLocation[makeLocationKey(f.location)] = f;
+  }
+  return {
     findings,
-    RA.reduce({}, (acc: Readonly<Record<string, PolysemyFinding>>, f) => ({
-      ...acc,
-      [makeLocationKey(f.location)]: f,
-    })),
-  ),
-});
+    byLocation: byLocation as Readonly<Record<string, PolysemyFinding>>,
+  };
+};
 
 type PolysemyIndex = Readonly<{
   readonly findings: ReadonlyArray<PolysemyFinding>;

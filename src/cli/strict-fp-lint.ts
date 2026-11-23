@@ -42,8 +42,8 @@ export type PhasedLintResult = {
 
 const tierLabels: Record<LintTier, string> = {
   0: `Tier 0 (${tier0TypeChecker.name} — ${tier0TypeChecker.command})`,
-  1: "Tier 1 (Architecture & DDD)",
-  2: "Tier 2 (Type Safety & Correctness)",
+  1: "Tier 1 (Type Safety & Correctness)",
+  2: "Tier 2 (Architecture & DDD)",
   3: "Tier 3 (FP & Style)",
 };
 
@@ -54,7 +54,7 @@ export const classifyRuleTier = (ruleId: string): PluginRuleTier => {
       ? ruleTiers[shortName as PluginRuleName]
       : 3;
   }
-  return 2;
+  return 1;
 };
 
 export const classifyMessageTier = (

@@ -7,11 +7,18 @@ import { createRule } from "../utils/create-rule.js";
 type MessageIds = "useLibPath" | "useNamespaceImport";
 
 const FUNCTION_MODULE_RE = /^fp-ts\/(lib\/)?function(\.js)?$/;
-const FP_TS_TOP_LEVEL_MODULE_RE = /^fp-ts\/([A-Z][A-Za-z0-9]*)$/;
+const FP_TS_TOP_LEVEL_MODULE_RE = /^fp-ts\/([A-Z][A-Za-z0-9]*(?:\.js)?)$/;
 
 const hasOnlyNamespaceSpecifier = (node: TSESTree.ImportDeclaration) =>
   node.specifiers.length === 1 &&
   node.specifiers[0]?.type === AST_NODE_TYPES.ImportNamespaceSpecifier;
+
+const hasOnlyTypeSpecifiers = (node: TSESTree.ImportDeclaration) =>
+  node.specifiers.length > 0 &&
+  node.specifiers.every(
+    (spec) =>
+      spec.type === AST_NODE_TYPES.ImportSpecifier && spec.importKind === "type",
+  );
 
 const checkTopLevelPath = (
   node: TSESTree.ImportDeclaration,
@@ -33,11 +40,15 @@ const checkNamespaceImport = (
   match({
     isFunctionModule: FUNCTION_MODULE_RE.test(source),
     importKind: node.importKind,
+    isInlineTypeOnly: hasOnlyTypeSpecifiers(node),
     hasNamespace: hasOnlyNamespaceSpecifier(node),
   })
-    .with({ isFunctionModule: false, importKind: "value", hasNamespace: false }, () => {
-      report({ node, messageId: "useNamespaceImport", data: { source } });
-    })
+    .with(
+      { isFunctionModule: false, importKind: "value", isInlineTypeOnly: false, hasNamespace: false },
+      () => {
+        report({ node, messageId: "useNamespaceImport", data: { source } });
+      },
+    )
     .otherwise(() => {});
 };
 

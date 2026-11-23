@@ -210,14 +210,13 @@ const collectFileAdts = (sf: ts.SourceFile, checker: ts.TypeChecker) =>
     RA.filterMap((n) => extractRecursiveAdt(n, sf, checker)),
   );
 
-const indexAdts = (list: ReadonlyArray<RecursiveAdt>) =>
-  pipe(
-    list,
-    RA.reduce<RecursiveAdt, Readonly<Record<string, RecursiveAdt>>>({}, (acc, adt) => ({
-      ...acc,
-      [adt.name]: adt,
-    })),
-  );
+const indexAdts = (list: ReadonlyArray<RecursiveAdt>) => {
+  const map: Record<string, RecursiveAdt> = {};
+  for (const adt of list) {
+    map[adt.name] = adt;
+  }
+  return map as Readonly<Record<string, RecursiveAdt>>;
+};
 
 const collectAllAdts = (sourceFiles: ReadonlyArray<ts.SourceFile>, checker: ts.TypeChecker) =>
   pipe(sourceFiles, RA.flatMap((sf) => collectFileAdts(sf, checker)), indexAdts);
@@ -232,38 +231,28 @@ const collectProgramAdtWalkData = (program: ts.Program) => {
   };
 };
 
-const addWalkersToIndex = (
-  acc: Readonly<Record<string, ReadonlyArray<CatamorphismFinding>>>,
-  finding: CatamorphismFinding,
-) =>
-  pipe(
-    finding.walkers,
-    RA.reduce(acc, (inner, w) => {
+const indexFindingsByLocation = (candidates: ReadonlyArray<CatamorphismFinding>) => {
+  const map: Record<string, Array<CatamorphismFinding>> = {};
+  for (const finding of candidates) {
+    for (const w of finding.walkers) {
       const key = makeLocationKey(w.location);
-      return { ...inner, [key]: [...(inner[key] ?? []), finding] };
-    }),
-  );
+      const list = map[key] ?? [];
+      list.push(finding);
+      map[key] = list;
+    }
+  }
+  return map as Readonly<Record<string, ReadonlyArray<CatamorphismFinding>>>;
+};
 
-const indexFindingsByLocation = (candidates: ReadonlyArray<CatamorphismFinding>) =>
-  pipe(
-    candidates,
-    RA.reduce<CatamorphismFinding, Readonly<Record<string, ReadonlyArray<CatamorphismFinding>>>>(
-      {},
-      addWalkersToIndex,
-    ),
-  );
-
-const groupWalkersByAdt = (walkers: ReadonlyArray<WalkerMatch>) =>
-  pipe(
-    walkers,
-    RA.reduce<WalkerMatch, Readonly<Record<string, ReadonlyArray<RecursiveWalker>>>>(
-      {},
-      (acc, w) => ({
-        ...acc,
-        [w.adtName]: [...(acc[w.adtName] ?? []), { functionName: w.functionName, location: w.location }],
-      }),
-    ),
-  );
+const groupWalkersByAdt = (walkers: ReadonlyArray<WalkerMatch>) => {
+  const map: Record<string, Array<RecursiveWalker>> = {};
+  for (const w of walkers) {
+    const list = map[w.adtName] ?? [];
+    list.push({ functionName: w.functionName, location: w.location });
+    map[w.adtName] = list;
+  }
+  return map as Readonly<Record<string, ReadonlyArray<RecursiveWalker>>>;
+};
 
 const buildCatamorphismFinding = (
   adtName: string,

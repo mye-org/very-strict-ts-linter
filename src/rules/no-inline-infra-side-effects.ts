@@ -31,7 +31,6 @@ const DEFAULT_INFRA_TARGETS = [
   "kafka",
   "sns",
   "pubsub",
-  "eventBus",
   "slack",
   "axios",
   "fetch",
@@ -60,6 +59,7 @@ const collectNodesInFunction = (
 const isDomainMutationCall = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.CallExpression &&
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
+  !node.callee.computed &&
   node.callee.property.type === AST_NODE_TYPES.Identifier &&
   (STATE_MUTATION_METHODS.has(node.callee.property.name) || isSetterMethodName(node.callee.property.name));
 
@@ -81,6 +81,7 @@ const getCallTargetName = (expr: TSESTree.Expression): O.Option<string> =>
     .with(
       {
         type: AST_NODE_TYPES.MemberExpression,
+        computed: false,
         object: { type: AST_NODE_TYPES.ThisExpression },
         property: { type: AST_NODE_TYPES.Identifier },
       },

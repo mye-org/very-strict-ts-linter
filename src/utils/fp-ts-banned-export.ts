@@ -157,7 +157,7 @@ const isTypeQueryParent = (node: TSESTree.Node) =>
 
 const isDeclOrMemberKeyIdent = (node: TSESTree.Identifier, parent: TSESTree.Node) =>
   (parent.type === AST_NODE_TYPES.MemberExpression && !parent.computed && parent.property === node) ||
-  (parent.type === AST_NODE_TYPES.Property && parent.key === node && !parent.shorthand) ||
+  (parent.type === AST_NODE_TYPES.Property && parent.key === node) ||
   (parent.type === AST_NODE_TYPES.VariableDeclarator && parent.id === node) ||
   ((parent.type === AST_NODE_TYPES.FunctionDeclaration || parent.type === AST_NODE_TYPES.FunctionExpression) &&
     parent.id === node);

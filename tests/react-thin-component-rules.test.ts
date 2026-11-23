@@ -79,6 +79,27 @@ jsxRuleTester.run("thin-react-component", thinReactComponent, {
       `,
     },
     {
+      filename: "src/useCart.tsx",
+      code: `
+        import { useState } from "react";
+        export const useCart = () => {
+          const [count, setCount] = useState(0);
+          return { count, setCount };
+        };
+      `,
+    },
+    {
+      filename: "src/StatusBanner.tsx",
+      code: `
+        import { match } from "ts-pattern";
+        export const StatusBanner = (props: Props) =>
+          match(props.status)
+            .with("loading", () => <Spinner />)
+            .with("ready", () => <Text>Ready</Text>)
+            .exhaustive();
+      `,
+    },
+    {
       filename: "src/logic.ts",
       code: `export const helper = (xs: ReadonlyArray<number>) => xs.filter((x) => x > 0);`,
     },

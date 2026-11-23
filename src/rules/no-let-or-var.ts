@@ -8,6 +8,9 @@ const checkVariableDeclaration = (
   node: TSESTree.VariableDeclaration,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
+  if (node.declare) {
+    return;
+  }
   match(node.kind)
     .with("const", "using", "await using", () => {})
     .with("let", "var", (kind) => {
@@ -26,7 +29,7 @@ export const noLetOrVar = createRule<[], MessageIds>({
     },
     messages: {
       noLetOrVar:
-        "Avoid `{{kind}}` bindings. Use `const` and `pipe` expressions instead.",
+        "Avoid `{{kind}}` bindings. Use `const` and `flow(...)` expressions instead.",
       noMutation:
         "Avoid mutable assignments or `++`/`--` updates. Return new immutable values instead.",
     },

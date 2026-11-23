@@ -6,7 +6,7 @@ import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
 import {
-  isEsTreeAnonymousFunctionNode,
+  getDirectFunctionName,
   isEsTreeFunctionNode,
   isInsideUnsafeOrMustFunction,
   isUnsafeOrMustName,
@@ -24,18 +24,9 @@ const PROMISE_STATIC_METHODS = new Set([
   "any",
 ]);
 
-const isExemptNamedArrowOrFn = (node: TSESTree.Node) =>
-  isEsTreeAnonymousFunctionNode(node) &&
-  node.parent.type === AST_NODE_TYPES.VariableDeclarator &&
-  node.parent.id.type === AST_NODE_TYPES.Identifier &&
-  isUnsafeOrMustName(node.parent.id.name);
-
 const isExemptFunction = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
-  (node.type === AST_NODE_TYPES.FunctionDeclaration &&
-    Boolean(node.id) &&
-    isUnsafeOrMustName(node.id?.name ?? "")) ||
-  isExemptNamedArrowOrFn(node);
+  pipe(getDirectFunctionName(node), O.exists(isUnsafeOrMustName));
 
 const isAsyncFunctionNode = (node: TSESTree.Node) =>
   isEsTreeFunctionNode(node) && node.async;
@@ -91,7 +82,14 @@ const checkCallExpression = (
 ) => {
   match({ callee: node.callee, insideUnsafe: isInsideUnsafeOrMustFunction(node) })
     .with(
-      { insideUnsafe: false, callee: { type: AST_NODE_TYPES.MemberExpression, property: { type: AST_NODE_TYPES.Identifier } } },
+      {
+        insideUnsafe: false,
+        callee: {
+          type: AST_NODE_TYPES.MemberExpression,
+          computed: false,
+          property: { type: AST_NODE_TYPES.Identifier },
+        },
+      },
       ({ callee }) => { reportPromiseMemberCall(node, callee, services, report); },
     )
     .otherwise(() => {});
@@ -127,6 +125,7 @@ export const preferMonadicErrorHandling = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
+    const services = ESLintUtils.getParserServices(context);
     const checkAsync = (node: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression) => {
       reportWhen(node, (n) => n.async && !isExemptFunction(n), (n) => { context.report({ node: n, messageId: "noAsyncAwait" }); });
     };
@@ -137,7 +136,7 @@ export const preferMonadicErrorHandling = createRule<[], MessageIds>({
       ArrowFunctionExpression: checkAsync,
       AwaitExpression: (node) => { reportWhen(node, (n) => !isInsideAsyncFunction(n) && !isInsideUnsafeOrMustFunction(n), (n) => { context.report({ node: n, messageId: "noAsyncAwait" }); }); },
       NewExpression: (node) => { reportWhen(node, isRawNewPromise, (n) => { context.report({ node: n, messageId: "noRawPromise" }); }); },
-      CallExpression: (node) => { checkCallExpression(node, ESLintUtils.getParserServices(context), (n, id) => { context.report({ node: n, messageId: id }); }); },
+      CallExpression: (node) => { checkCallExpression(node, services, (n, id) => { context.report({ node: n, messageId: id }); }); },
     };
   },
 });

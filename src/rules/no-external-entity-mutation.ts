@@ -4,6 +4,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as R from "fp-ts/lib/Record.js";
 import { flow, pipe } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
+import type * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
 import { normalizeFilePath } from "../utils/program-cache.js";
 import {
@@ -35,15 +36,31 @@ const getRootTarget = (node: TSESTree.Expression): O.Option<TSESTree.Identifier>
     .with(P._, () => O.none as O.Option<TSESTree.Identifier>)
     .exhaustive();
 
-const isDefinedInSameFile = (
+const isExternalProjectFile = (declFile: string, currentFile: string) => {
+  const norm = normalizeFilePath(declFile);
+  return (
+    norm !== normalizeFilePath(currentFile) &&
+    !norm.includes("/node_modules/") &&
+    !norm.endsWith(".d.ts")
+  );
+};
+
+const isExternalProjectTsType = (type: ts.Type, currentFile: string): boolean =>
+  pipe(
+    getTsTypeDeclarationFile(type),
+    O.exists((declFile) => isExternalProjectFile(declFile, currentFile)),
+  ) ||
+  (type.isIntersection() &&
+    pipe(type.types, RA.some((member) => isExternalProjectTsType(member, currentFile))));
+
+const isExternalProjectEntityType = (
   target: TSESTree.Expression,
   currentFile: string,
   services: ParserServicesWithTypeInformation,
 ) =>
-  pipe(
+  isExternalProjectTsType(
     services.program.getTypeChecker().getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(target)),
-    getTsTypeDeclarationFile,
-    O.exists((declFile) => normalizeFilePath(declFile) === normalizeFilePath(currentFile)),
+    currentFile,
   );
 
 const extractMemberUpdate = (node: TSESTree.Node) =>
@@ -95,7 +112,7 @@ const reportTargetMutations = (
 ) => {
   pipe(
     O.fromNullable(items[0]),
-    O.filter((first) => items.length >= minMutations && !isDefinedInSameFile(first.targetNode, currentFile, services)),
+    O.filter((first) => items.length >= minMutations && isExternalProjectEntityType(first.targetNode, currentFile, services)),
     O.map((first) => {
       report({ node: first.member, messageId: "externalMutation", data: { target: targetName, count: String(items.length) } });
     }),
@@ -133,10 +150,11 @@ const isExternalSetterMember = (
   currentFile: string,
   services: ParserServicesWithTypeInformation,
 ) =>
+  !member.computed &&
   member.property.type === AST_NODE_TYPES.Identifier &&
   member.object.type !== AST_NODE_TYPES.ThisExpression &&
   isSetterMethodName(member.property.name) &&
-  !isDefinedInSameFile(member.object, currentFile, services);
+  isExternalProjectEntityType(member.object, currentFile, services);
 
 const checkSetterCall = (
   node: TSESTree.CallExpression,

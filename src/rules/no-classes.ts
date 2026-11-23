@@ -20,6 +20,9 @@ export const noClasses = createRule<[], MessageIds>({
   },
   create: (context) => {
     const reportClass = (node: TSESTree.ClassDeclaration | TSESTree.ClassExpression) => {
+      if (node.type === "ClassDeclaration" && node.declare) {
+        return;
+      }
       context.report({ node, messageId: "noClass" });
     };
     return {

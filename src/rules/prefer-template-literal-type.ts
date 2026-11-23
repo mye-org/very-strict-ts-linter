@@ -12,6 +12,7 @@ import * as ts from "typescript";
 import { createRule } from "../utils/create-rule.js";
 import {
   getEnclosingEsTreeFunction,
+  hasMatchingEnclosingFunctionName,
   isInsideUnsafeOrMustFunction,
   isTsParameterSymbol,
   isUnsafeOrMustName,
@@ -73,35 +74,19 @@ const isCartesianStringUnion = (node: TSESTree.TSUnionType) =>
       hasAnyDelimiterCartesian(values),
   );
 
-const getFunctionName = (fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression) =>
-  match(fn)
-    .with({ type: AST_NODE_TYPES.FunctionDeclaration }, (f) => O.fromNullable(f.id?.name))
-    .with({ parent: { type: AST_NODE_TYPES.VariableDeclarator, id: { type: AST_NODE_TYPES.Identifier } } }, (f) =>
-      O.some(f.parent.id.name),
-    )
-    .with(P._, () => O.none)
-    .exhaustive();
-
 const isCollectionCallbackFn = (fn: TSESTree.Node) =>
   fn.parent?.type === AST_NODE_TYPES.CallExpression &&
   fn.parent.callee.type === AST_NODE_TYPES.MemberExpression &&
   fn.parent.callee.property.type === AST_NODE_TYPES.Identifier &&
   COLLECTION_CALLBACK_METHODS.has(fn.parent.callee.property.name);
 
-const isExemptNamedFn = (
-  fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression,
-) =>
-  pipe(
-    getFunctionName(fn),
-    O.exists((name) => isUnsafeOrMustName(name) || EXEMPT_FN_PREFIX_RE.test(name)),
-  );
-
 const isExemptEnclosingFunction = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
-  pipe(
-    getEnclosingEsTreeFunction(node),
-    O.exists((fn) => isCollectionCallbackFn(fn) || isExemptNamedFn(fn)),
-  );
+  hasMatchingEnclosingFunctionName(
+    node,
+    (name) => isUnsafeOrMustName(name) || EXEMPT_FN_PREFIX_RE.test(name),
+  ) ||
+  pipe(getEnclosingEsTreeFunction(node), O.exists(isCollectionCallbackFn));
 
 const isStringTypedParamTsNode = (
   tsNode: ts.Node,
@@ -189,10 +174,11 @@ export const preferTemplateLiteralType = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
+    const services = ESLintUtils.getParserServices(context);
     const rep = (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => { context.report(d); };
     return {
       TSUnionType: (node) => { reportOpt(node, isCartesianStringUnion(node) ? O.some("preferTemplateLiteralUnion") : O.none, rep); },
-      CallExpression: (node) => { reportOpt(node, isTemplateGuardCall(node, ESLintUtils.getParserServices(context)) ? O.some("preferTemplateLiteralGuard") : O.none, rep); },
+      CallExpression: (node) => { reportOpt(node, isTemplateGuardCall(node, services) ? O.some("preferTemplateLiteralGuard") : O.none, rep); },
     };
   },
 });

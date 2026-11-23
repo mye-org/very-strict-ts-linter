@@ -215,36 +215,30 @@ const expandBoundedSubsets = (
 const getBagSubsets = (bag: FieldBag, minSize: number, maxSize: number) =>
   expandBoundedSubsets(bag.fields.slice(0, 12), bag.location, { minSize, maxSize });
 
-const appendLocationToMap = (
-  acc: Readonly<Record<string, ReadonlyArray<TsLocation>>>,
-  entry: Readonly<Record<"key", string> & { readonly location: TsLocation }>,
-) => ({
-  ...acc,
-  [entry.key]: [...(acc[entry.key] ?? []), entry.location],
-});
+const groupSubsetsByKey = (
+  entries: ReadonlyArray<Readonly<Record<"key", string> & { readonly location: TsLocation }>>,
+) => {
+  const map: Record<string, Array<TsLocation>> = {};
+  for (const entry of entries) {
+    const list = map[entry.key] ?? [];
+    list.push(entry.location);
+    map[entry.key] = list;
+  }
+  return map as Readonly<Record<string, ReadonlyArray<TsLocation>>>;
+};
 
-const hasLocationKey = (acc: ReadonlyArray<TsLocation>, loc: TsLocation) =>
-  pipe(acc, RA.some((existing) => makeLocationKey(existing) === makeLocationKey(loc)));
-
-const uniqueLocations = (locs: ReadonlyArray<TsLocation>) =>
-  pipe(
-    locs,
-    RA.reduce([] as ReadonlyArray<TsLocation>, (acc, loc) =>
-      hasLocationKey(acc, loc) ? acc : [...acc, loc],
-    ),
-  );
-
-const addFindingToLocationMap = (
-  acc: Readonly<Record<string, ReadonlyArray<ClumpFinding>>>,
-  finding: ClumpFinding,
-) =>
-  pipe(
-    finding.locations,
-    RA.reduce(acc, (innerAcc, loc) => {
-      const locKey = makeLocationKey(loc);
-      return { ...innerAcc, [locKey]: [...(innerAcc[locKey] ?? []), finding] };
-    }),
-  );
+const uniqueLocations = (locs: ReadonlyArray<TsLocation>) => {
+  const seen = new Set<string>();
+  const unique: Array<TsLocation> = [];
+  for (const loc of locs) {
+    const key = makeLocationKey(loc);
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(loc);
+    }
+  }
+  return unique as ReadonlyArray<TsLocation>;
+};
 
 const hasAllFields = (candidateFields: ReadonlyArray<string>, otherFields: ReadonlyArray<string>) =>
   pipe(candidateFields, RA.every((f) => otherFields.includes(f)));
@@ -279,14 +273,16 @@ const toClumpFinding = (
     : O.none;
 };
 
-const collectRawFindings = (program: ts.Program, minSize: number, minOccurrences: number) =>
-  pipe(
+const collectRawFindings = (program: ts.Program, minSize: number, minOccurrences: number) => {
+  const maxSize = Math.max(3, minSize);
+  return pipe(
     getProgramFieldBags(program),
-    RA.flatMap((bag) => getBagSubsets(bag, minSize, 3)),
-    RA.reduce({}, appendLocationToMap),
+    RA.flatMap((bag) => getBagSubsets(bag, minSize, maxSize)),
+    groupSubsetsByKey,
     R.toEntries,
     RA.filterMap((entry) => toClumpFinding(entry, minOccurrences)),
   );
+};
 
 const filterSubsumed = (rawFindings: ReadonlyArray<ClumpFinding>) =>
   pipe(
@@ -296,8 +292,18 @@ const filterSubsumed = (rawFindings: ReadonlyArray<ClumpFinding>) =>
 
 const clumpIndexCache = new WeakMap<ts.Program, Readonly<Record<string, ClumpIndex>>>();
 
-const indexFindingsByLocation = (findings: ReadonlyArray<ClumpFinding>) =>
-  pipe(findings, RA.reduce({}, addFindingToLocationMap));
+const indexFindingsByLocation = (findings: ReadonlyArray<ClumpFinding>) => {
+  const map: Record<string, Array<ClumpFinding>> = {};
+  for (const finding of findings) {
+    for (const loc of finding.locations) {
+      const locKey = makeLocationKey(loc);
+      const list = map[locKey] ?? [];
+      list.push(finding);
+      map[locKey] = list;
+    }
+  }
+  return map as Readonly<Record<string, ReadonlyArray<ClumpFinding>>>;
+};
 
 export const analyzeDataClumps = (
   program: ts.Program,
