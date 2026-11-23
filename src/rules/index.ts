@@ -3,6 +3,7 @@ import { domainLayerPurity } from "./domain-layer-purity.js";
 import { fpTsImportConvention } from "./fp-ts-import-convention.js";
 import { functionalCoreBoundary } from "./functional-core-boundary.js";
 import { maxFunctionLines } from "./max-function-lines.js";
+import { maxFunctionParams } from "./max-function-params.js";
 import { moduleCohesion } from "./module-cohesion.js";
 import { noAnyOrUnknown } from "./no-any-or-unknown.js";
 import { noAsyncAwait } from "./no-async-await.js";
@@ -78,6 +79,7 @@ export const rules = {
   "fp-ts-import-convention": fpTsImportConvention,
   "functional-core-boundary": functionalCoreBoundary,
   "max-function-lines": maxFunctionLines,
+  "max-function-params": maxFunctionParams,
   "module-cohesion": moduleCohesion,
   "no-any-or-unknown": noAnyOrUnknown,
   "no-async-await": noAsyncAwait,

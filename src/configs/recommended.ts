@@ -45,6 +45,7 @@ export const ruleTiers = {
   "common-reuse-cohesion": 2,
   "domain-layer-purity": 2,
   "functional-core-boundary": 2,
+  "max-function-params": 2,
   "module-cohesion": 2,
   "no-cross-aggregate-reference": 2,
   "no-domain-raw-primitives": 2,
@@ -229,17 +230,26 @@ const buildTier2WithOverrides = (options: StrictFpConfigOptions) =>
     ...buildTestScopeOptions(options),
   }) satisfies TSESLint.FlatConfig.Rules;
 
-export const buildTieredRules = (maxTier: LintTier, maxLines = 15, options: StrictFpConfigOptions = {}) =>
+export const buildTieredRules = (maxTier: LintTier, options: StrictFpConfigOptions = {}) =>
   ({
     ...(maxTier >= 1 ? tier1Rules : {}),
     ...(maxTier >= 2 ? buildTier2WithOverrides(options) : {}),
     ...(maxTier >= 3
-      ? { ...tier3Rules, "strict-fp/max-function-lines": ["error", { maxLines }] as TSESLint.FlatConfig.RuleEntry }
+      ? {
+          ...tier3Rules,
+          "strict-fp/max-function-lines": [
+            "error",
+            { maxLines: options.maxFunctionLines ?? 15 },
+          ] as TSESLint.FlatConfig.RuleEntry,
+        }
       : {}),
   }) satisfies TSESLint.FlatConfig.Rules;
 
 export const strictFpRules = (maxLines = 15, options: StrictFpConfigOptions = {}) =>
-  buildTieredRules(options.maxTier ?? 3, maxLines, options);
+  buildTieredRules(options.maxTier ?? 3, {
+    ...options,
+    maxFunctionLines: options.maxFunctionLines ?? maxLines,
+  });
 
 const boundaryOverrideRules = {
   "strict-fp/functional-core-boundary": "off",
@@ -250,6 +260,7 @@ const boundaryOverrideRules = {
   "strict-fp/no-classes": "off",
   "strict-fp/no-nested-ternary": "off",
   "strict-fp/max-function-lines": "off",
+  "strict-fp/max-function-params": "off",
   "strict-fp/no-unnecessary-local-const": "off",
   "strict-fp/prefer-applicative-over-independent-bind": "off",
   "strict-fp/prefer-expressive-ts-pattern": "off",
@@ -298,6 +309,7 @@ const testOverrideRules = {
   "strict-fp/module-cohesion": "off",
   "strict-fp/no-single-caller-export": "off",
   "strict-fp/max-function-lines": "off",
+  "strict-fp/max-function-params": "off",
   "strict-fp/no-any-or-unknown": "off",
   "strict-fp/no-classes": "off",
   "strict-fp/no-if-else-or-switch": "off",
@@ -423,15 +435,13 @@ const formatTierName = (maxTier: LintTier) => `strict-fp/tier-${String(maxTier)}
 
 const buildTierRuleBlock = (
   plugin: TSESLint.FlatConfig.Plugin,
-  maxTier: LintTier,
-  targetFiles: ReadonlyArray<string>,
   options: StrictFpConfigOptions,
 ) => ({
-  name: formatTierName(maxTier),
-  files: [...targetFiles],
+  name: formatTierName(options.maxTier ?? 3),
+  files: [...resolveFiles(options)],
   ignores: [...defaultStrictFpIgnores],
   plugins: { "strict-fp": plugin },
-  rules: buildTieredRules(maxTier, options.maxFunctionLines ?? 15, options),
+  rules: buildTieredRules(options.maxTier ?? 3, options),
 });
 
 export type StrictReactConfigOptions = Partial<
@@ -488,10 +498,9 @@ export const buildTieredConfig = (
   options: StrictFpConfigOptions = {},
 ) => {
   const maxTier = options.maxTier ?? 3;
-  const targetFiles = resolveFiles(options);
   return [
-    ...(maxTier >= 1 ? scopeTypeCheckedConfigs(targetFiles) : []),
-    buildTierRuleBlock(plugin, maxTier, targetFiles, options),
+    ...(maxTier >= 1 ? scopeTypeCheckedConfigs(resolveFiles(options)) : []),
+    buildTierRuleBlock(plugin, options),
     ...(maxTier >= 2 ? [buildReactTsxBlock(plugin, {})] : []),
     ...buildBoundaryConfig(O.fromNullable(options.boundaryFiles)),
     ...buildTestConfig(O.fromNullable(options.testFiles)),
