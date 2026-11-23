@@ -78,6 +78,7 @@ export const ruleTiers = {
   "no-async-await": 3,
   "no-classes": 3,
   "no-fp-ts-chain": 3,
+  "no-fp-ts-hkt": 3,
   "no-fp-ts-pipe": 3,
   "no-if-else-or-switch": 3,
   "no-imperative-loops": 3,

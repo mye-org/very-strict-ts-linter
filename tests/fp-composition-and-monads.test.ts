@@ -1,4 +1,5 @@
 import { noFpTsChain } from "../src/rules/no-fp-ts-chain.js";
+import { noFpTsHkt } from "../src/rules/no-fp-ts-hkt.js";
 import { noFpTsPipe } from "../src/rules/no-fp-ts-pipe.js";
 import { noNestedPipe } from "../src/rules/no-nested-pipe.js";
 import { preferFunctionComposition } from "../src/rules/prefer-function-composition.js";
@@ -672,4 +673,197 @@ ruleTester.run("no-fp-ts-pipe (ast fallback)", noFpTsPipe, {
     },
   ],
 });
+
+typeAwareRuleTester.run("no-fp-ts-hkt", noFpTsHkt, {
+  valid: [
+    // Concrete fp-ts data types and combinators (including Applicative/traverse/sequenceS)
+    `
+      import * as Ap from "fp-ts/lib/Apply.js";
+      import * as O from "fp-ts/lib/Option.js";
+      import * as RA from "fp-ts/lib/ReadonlyArray.js";
+      import { flow } from "fp-ts/lib/function.js";
+      const mapAndTraverse = flow(RA.traverse(O.Applicative)((x: number) => O.some(x + 1)));
+      const combined = Ap.sequenceS(O.Applicative)({ a: O.some(1), b: O.some("ok") });
+    `,
+    // Ordinary generics and local types with similar names
+    `
+      type Kind = "a" | "b";
+      type HKT<A> = { readonly tag: Kind; readonly payload: A };
+      const wrap = <A>(payload: A): HKT<A> => ({ tag: "a", payload });
+    `,
+    // Non-hkt imports from fp-ts root barrel
+    `
+      import { option } from "fp-ts";
+      const res = option.some(1);
+    `,
+    // Non-HKT ambient module augmentation
+    `
+      declare module "custom-registry" {
+        interface Entries {
+          readonly count: number;
+        }
+      }
+    `,
+    // Non-HKT inline import type
+    `
+      type MaybeNum = import("fp-ts/lib/Option.js").Option<number>;
+    `,
+    // Non-fp-ts object with hkt property
+    `
+      const bag = { hkt: 42 };
+      const count = bag.hkt;
+    `,
+  ],
+  invalid: [
+    {
+      code: `
+        import type { Kind, URIS } from "fp-ts/lib/HKT.js";
+        type Box<F extends URIS, A> = Kind<F, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import { HKT, URItoKind } from "fp-ts/HKT";
+        type Box<F, A> = HKT<F, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import * as H from "fp-ts/lib/HKT.js";
+        type Box<F extends H.URIS2, E, A> = H.Kind2<F, E, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import type * as H from "fp-ts/es6/HKT";
+        type Box<F extends H.URIS3, R, E, A> = H.Kind3<F, R, E, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import { hkt } from "fp-ts";
+        type Box<F extends hkt.URIS, A> = hkt.Kind<F, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import type { hkt as H } from "fp-ts";
+        type Box<F extends H.URIS, A> = H.Kind<F, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import * as fpTs from "fp-ts";
+        type Box<F extends fpTs.hkt.URIS, A> = fpTs.hkt.Kind<F, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }, { messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import * as fpTs from "fp-ts";
+        const hktModule = fpTs.hkt;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `export type { Kind, URIS } from "fp-ts/lib/HKT.js";`,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `export * from "fp-ts/lib/HKT.js";`,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `export { hkt } from "fp-ts";`,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        declare module "fp-ts/lib/HKT" {
+          interface URItoKind<A> {
+            readonly MyBox: { readonly item: A };
+          }
+        }
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        declare module "fp-ts/HKT" {
+          interface URItoKind2<E, A> {
+            readonly MyEither: E | A;
+          }
+        }
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        type Box<F extends import("fp-ts/lib/HKT").URIS, A> = import("fp-ts/lib/HKT").Kind<F, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }, { messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        type Box<F extends import("fp-ts").hkt.URIS, A> = import("fp-ts").hkt.Kind<F, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }, { messageId: "noFpTsHkt" }],
+    },
+  ],
+});
+
+ruleTester.run("no-fp-ts-hkt (ast fallback)", noFpTsHkt, {
+  valid: [
+    `
+      import * as O from "fp-ts/lib/Option.js";
+      import { flow } from "fp-ts/lib/function.js";
+      const fn = flow(O.some, O.map((x: number) => x + 1));
+    `,
+    `
+      type Kind = "ok" | "err";
+      const k: Kind = "ok";
+    `,
+    `
+      const bag = { hkt: 1 };
+      const x = bag.hkt;
+    `,
+  ],
+  invalid: [
+    {
+      code: `import type { Kind, URIS } from "fp-ts/lib/HKT.js";`,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import * as fpTs from "fp-ts";
+        type Box<F extends fpTs.hkt.URIS, A> = fpTs.hkt.Kind<F, A>;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }, { messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        import * as fpTs from "fp-ts";
+        const hktModule = fpTs.hkt;
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+    {
+      code: `
+        declare module "fp-ts/lib/HKT" {
+          interface URItoKind<A> {
+            readonly MyBox: { readonly item: A };
+          }
+        }
+      `,
+      errors: [{ messageId: "noFpTsHkt" }],
+    },
+  ],
+});
+
 

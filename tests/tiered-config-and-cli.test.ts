@@ -899,4 +899,90 @@ export default [
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("enforces strict-fp/no-fp-ts-hkt at Tier 3 without conflicting with any existing rules across Tiers 0..3", async () => {
+    expect(classifyRuleTier("strict-fp/no-fp-ts-hkt")).toBe(3);
+
+    const tmpDir = createTempProjectDir();
+    try {
+      const distEntry = path.resolve(import.meta.dirname, "../dist/index.js");
+      const repoNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+      fs.symlinkSync(repoNodeModules, path.join(tmpDir, "node_modules"), "dir");
+      fs.writeFileSync(
+        path.join(tmpDir, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022",
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            lib: ["ES2022"],
+            types: [],
+            strict: true,
+            skipLibCheck: true,
+          },
+          include: ["**/*.ts"],
+        }),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "eslint.config.mjs"),
+        `import strictFp from ${JSON.stringify(distEntry)};
+export default [
+  ...strictFp.createTieredConfig({ maxTier: 3, entryPoints: ["**/*.ts"] }),
+  { languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } } },
+];
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "idiomatic.ts"),
+        [
+          'import * as Ap from "fp-ts/lib/Apply.js";',
+          'import * as O from "fp-ts/lib/Option.js";',
+          'import * as RA from "fp-ts/lib/ReadonlyArray.js";',
+          'import { flow } from "fp-ts/lib/function.js";',
+          "",
+          "const wrapGeneric = <A>(payload: A) => ({ payload });",
+          "",
+          "const incrementAll = flow(",
+          "  RA.traverse(O.Applicative)((n: number) => O.some(n + 1)),",
+          "  O.map(wrapGeneric),",
+          ");",
+          "",
+          "export const combineScoredBatch = (values: ReadonlyArray<number>, label: O.Option<string>) =>",
+          "  Ap.sequenceS(O.Applicative)({ batch: incrementAll(values), label });",
+          "",
+        ].join("\n"),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "uses-hkt.ts"),
+        [
+          'import type { Kind, URIS } from "fp-ts/HKT";',
+          "export type Lifted<F extends URIS, A> = Kind<F, A>;",
+          "",
+        ].join("\n"),
+      );
+
+      const cleanRun = await runPhasedLint({
+        targets: ["idiomatic.ts"],
+        fix: false,
+        format: "json",
+        maxTier: 3,
+        cwd: tmpDir,
+      });
+      expect(cleanRun.passed, JSON.stringify(cleanRun.summaries)).toBe(true);
+      expect(extractSummaryTiers(cleanRun.summaries)).toEqual([0, 1, 2, 3]);
+
+      const hktRun = await runPhasedLint({
+        targets: ["uses-hkt.ts"],
+        fix: false,
+        format: "json",
+        maxTier: 3,
+        cwd: tmpDir,
+      });
+      expect(hktRun.passed).toBe(false);
+      expect(hktRun.failedTier).toBe(3);
+      expect(hktRun.summaries[3]?.output).toContain("strict-fp/no-fp-ts-hkt");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

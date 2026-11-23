@@ -13,6 +13,7 @@ import { noDomainRawPrimitives } from "./no-domain-raw-primitives.js";
 import { noExplicitReturnType } from "./no-explicit-return-type.js";
 import { noExternalEntityMutation } from "./no-external-entity-mutation.js";
 import { noFpTsChain } from "./no-fp-ts-chain.js";
+import { noFpTsHkt } from "./no-fp-ts-hkt.js";
 import { noFpTsPipe } from "./no-fp-ts-pipe.js";
 import { noGenericUtilityNames } from "./no-generic-utility-names.js";
 import { noIfElseOrSwitch } from "./no-if-else-or-switch.js";
@@ -84,6 +85,7 @@ export const rules = {
   "no-explicit-return-type": noExplicitReturnType,
   "no-external-entity-mutation": noExternalEntityMutation,
   "no-fp-ts-chain": noFpTsChain,
+  "no-fp-ts-hkt": noFpTsHkt,
   "no-fp-ts-pipe": noFpTsPipe,
   "no-generic-utility-names": noGenericUtilityNames,
   "no-if-else-or-switch": noIfElseOrSwitch,
