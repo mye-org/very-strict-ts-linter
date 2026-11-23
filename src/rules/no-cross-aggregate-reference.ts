@@ -3,7 +3,6 @@ import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
-import * as ts from "typescript";
 import { analyzeAggregateGraph } from "../analyzers/aggregate-graph-analyzer.js";
 import { createRule } from "../lib/rule-factory.js";
 import { unwrapContainerTsTypes } from "../lib/ts-container-types.js";
@@ -19,6 +18,8 @@ type MessageIds = "crossAggregateReference";
 
 type MemberNode = TSESTree.TSPropertySignature | TSESTree.PropertyDefinition;
 type ReportFn = (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+
+const EMPTY_PROP_SIGS: ReadonlyArray<TSESTree.TSPropertySignature> = [];
 
 const isPropSig = (m: TSESTree.TypeElement): m is TSESTree.TSPropertySignature =>
   m.type === AST_NODE_TYPES.TSPropertySignature;
@@ -37,11 +38,11 @@ const extractFirstTypeArg = flow(
 const extractLiteralPropSigs = (typeNode: TSESTree.TypeNode) =>
   typeNode.type === AST_NODE_TYPES.TSTypeLiteral
     ? filterPropSigs(typeNode.members)
-    : ([] as ReadonlyArray<TSESTree.TSPropertySignature>);
+    : EMPTY_PROP_SIGS;
 
 const extractReadonlyMembers = flow(
   extractFirstTypeArg,
-  O.match(() => [] as ReadonlyArray<TSESTree.TSPropertySignature>, extractLiteralPropSigs),
+  O.match(() => EMPTY_PROP_SIGS, extractLiteralPropSigs),
 );
 
 const extractTypeLiteralMembers = (typeNode: TSESTree.TypeNode) =>
@@ -54,7 +55,7 @@ const extractTypeLiteralMembers = (typeNode: TSESTree.TypeNode) =>
       },
       extractReadonlyMembers,
     )
-    .with(P._, () => [] as ReadonlyArray<TSESTree.TSPropertySignature>)
+    .with(P._, () => EMPTY_PROP_SIGS)
     .exhaustive();
 
 const formatAggregateRefPayload = (current: string, target: string) => ({
@@ -63,26 +64,34 @@ const formatAggregateRefPayload = (current: string, target: string) => ({
   idName: `${target}Id`,
 });
 
-const reportTargetIfCrossAggregate =
-  (
-    member: MemberNode,
-    currentAggregate: string,
-    aggregateRoots: ReadonlySet<string>,
-    report: ReportFn,
-  ) =>
-  (tsType: ts.Type) => {
-    flow(
-      resolveTsTypeName,
-      O.filter((target) => target !== currentAggregate && aggregateRoots.has(target)),
-      O.map((target) => {
-        report({
-          node: member,
-          messageId: "crossAggregateReference",
-          data: formatAggregateRefPayload(currentAggregate, target),
-        });
-      }),
-    )(tsType);
-  };
+const reportTargetIfCrossAggregate = (
+  member: MemberNode,
+  currentAggregate: string,
+  aggregateRoots: ReadonlySet<string>,
+  report: ReportFn,
+) =>
+  flow(
+    resolveTsTypeName,
+    O.filter((target) => target !== currentAggregate && aggregateRoots.has(target)),
+    O.map((target) => {
+      report({
+        node: member,
+        messageId: "crossAggregateReference",
+        data: formatAggregateRefPayload(currentAggregate, target),
+      });
+    }),
+  );
+
+const resolveMemberTsType = (
+  member: MemberNode,
+  services: ParserServicesWithTypeInformation,
+) =>
+  services.program.getTypeChecker().getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(member));
+
+const resolveMemberContainerTypes = (
+  member: MemberNode,
+  services: ParserServicesWithTypeInformation,
+) => unwrapContainerTsTypes(resolveMemberTsType(member, services), services.program.getTypeChecker());
 
 const checkPropertyMember = (
   member: MemberNode,
@@ -91,13 +100,9 @@ const checkPropertyMember = (
   services: ParserServicesWithTypeInformation,
   report: ReportFn,
 ) => {
-  const checker = services.program.getTypeChecker();
-  flow(
-    (m: MemberNode) => services.esTreeNodeToTSNodeMap.get(m),
-    (tsNode) => checker.getTypeAtLocation(tsNode),
-    (t) => unwrapContainerTsTypes(t, checker),
-    RA.map(reportTargetIfCrossAggregate(member, currentAggregate, aggregateRoots, report)),
-  )(member);
+  RA.map(reportTargetIfCrossAggregate(member, currentAggregate, aggregateRoots, report))(
+    resolveMemberContainerTypes(member, services),
+  );
 };
 
 const checkAllPropertyMembers = (
@@ -119,12 +124,9 @@ const checkAggregateMembers = (
   services: ParserServicesWithTypeInformation,
   report: ReportFn,
 ) => {
-  flow(
-    O.filter((aggName: string) => aggregateRoots.has(aggName)),
-    O.map((aggName) => {
-      checkAllPropertyMembers(members, aggName, aggregateRoots, services, report);
-    }),
-  )(name);
+  O.map((aggName: string) => {
+    checkAllPropertyMembers(members, aggName, aggregateRoots, services, report);
+  })(O.filter((aggName: string) => aggregateRoots.has(aggName))(name));
 };
 
 const buildAggregateRefListeners = (

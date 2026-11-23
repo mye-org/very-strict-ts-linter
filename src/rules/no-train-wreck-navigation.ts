@@ -23,16 +23,26 @@ const isOutermostPropertyChain = (node: TSESTree.MemberExpression) =>
 const isNamespaceDecl = (d: ts.Declaration) =>
   ts.isNamespaceImport(d) || ts.isModuleDeclaration(d) || ts.isEnumDeclaration(d);
 
-const isNamespaceSymbol = (
+const resolveExprTsSymbol = (
   expr: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
 ) =>
-  flow(
-    (tsNode: ts.Node) => services.program.getTypeChecker().getSymbolAtLocation(tsNode),
-    O.fromNullable,
-    O.flatMap((sym) => O.fromNullable(sym.declarations)),
-    O.exists(RA.some(isNamespaceDecl)),
-  )(services.esTreeNodeToTSNodeMap.get(expr));
+  services.program.getTypeChecker().getSymbolAtLocation(services.esTreeNodeToTSNodeMap.get(expr));
+
+const lookupSymbolAtExpr = (
+  expr: TSESTree.Expression,
+  services: ParserServicesWithTypeInformation,
+) => O.fromNullable(resolveExprTsSymbol(expr, services));
+
+const hasNamespaceDeclaration = flow(
+  O.flatMap((sym: ts.Symbol) => O.fromNullable(sym.declarations)),
+  O.exists(RA.some(isNamespaceDecl)),
+);
+
+const isNamespaceSymbol = (
+  expr: TSESTree.Expression,
+  services: ParserServicesWithTypeInformation,
+) => hasNamespaceDeclaration(lookupSymbolAtExpr(expr, services));
 
 const isHopRoot = (
   expr: TSESTree.MemberExpression,

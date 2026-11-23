@@ -1,9 +1,7 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
-import * as ts from "typescript";
 import { isInsideNewtypeDefinition } from "../lib/newtype-scope.js";
 import { createRule } from "../lib/rule-factory.js";
 import { hasStrictSuffix } from "../lib/string-suffix.js";
@@ -11,6 +9,8 @@ import { resolveBarePrimitiveOrLiteralKind } from "../lib/ts-primitive-types.js"
 
 type Options = [Readonly<{ readonly suffixes: ReadonlyArray<string> }>];
 type MessageIds = "unitSuffixedPrimitive";
+
+const NONE_IDENTIFIER: O.Option<TSESTree.Identifier> = O.none;
 
 const DEFAULT_SUFFIX_SUGGESTIONS = [
   ["InCents", "Money"],
@@ -39,26 +39,30 @@ const DEFAULT_SUFFIX_SUGGESTIONS = [
 const hasUnitSuffix = hasStrictSuffix;
 
 const matchCustomSuffix = (name: string, customSuffixes: ReadonlyArray<string>) =>
-  flow(
-    RA.findFirst((suffix: string) => hasUnitSuffix(name, suffix)),
-    O.map((suffix) => ({ suffix, vo: "ValueObject" })),
-  )(customSuffixes);
+  O.map((suffix: string) => ({ suffix, vo: "ValueObject" }))(
+    RA.findFirst((suffix: string) => hasUnitSuffix(name, suffix))(customSuffixes),
+  );
+
+const matchDefaultSuffix = (name: string) =>
+  RA.findFirstMap(([suffix, vo]: readonly [string, string]) =>
+    hasUnitSuffix(name, suffix) ? O.some({ suffix, vo }) : O.none,
+  )(DEFAULT_SUFFIX_SUGGESTIONS);
 
 const matchSuffixSuggestion = (name: string, customSuffixes: ReadonlyArray<string>) =>
-  flow(
-    RA.findFirst(([suffix]: readonly [string, string]) => hasUnitSuffix(name, suffix)),
-    O.map(([suffix, vo]) => ({ suffix, vo })),
-    O.altW(() => matchCustomSuffix(name, customSuffixes)),
-  )(DEFAULT_SUFFIX_SUGGESTIONS);
+  O.altW(() => matchCustomSuffix(name, customSuffixes))(matchDefaultSuffix(name));
+
+const resolveNodeTsType = (
+  reportNode: TSESTree.Node,
+  services: ParserServicesWithTypeInformation,
+) =>
+  services.program
+    .getTypeChecker()
+    .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(reportNode));
 
 const resolveNodePrimitiveKind = (
   reportNode: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) =>
-  flow(
-    (tsNode: ts.Node) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
-    resolveBarePrimitiveOrLiteralKind,
-  )(services.esTreeNodeToTSNodeMap.get(reportNode));
+) => resolveBarePrimitiveOrLiteralKind(resolveNodeTsType(reportNode, services));
 
 const reportIfBarePrimitive = (
   reportNode: TSESTree.Node,
@@ -112,7 +116,7 @@ const extractParamId = (param: TSESTree.Parameter) =>
     .with({ type: AST_NODE_TYPES.Identifier }, O.some)
     .with({ type: AST_NODE_TYPES.AssignmentPattern, left: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.left))
     .with({ type: AST_NODE_TYPES.TSParameterProperty, parameter: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.parameter))
-    .with(P._, () => O.none as O.Option<TSESTree.Identifier>)
+    .with(P._, () => NONE_IDENTIFIER)
     .exhaustive();
 
 const checkParam = (

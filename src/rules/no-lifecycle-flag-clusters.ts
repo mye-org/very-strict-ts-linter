@@ -59,27 +59,23 @@ const resolveMemberTsType = (
   member: PropertyMember,
   services: ParserServicesWithTypeInformation,
 ) =>
-  flow(
-    (m: PropertyMember) => services.esTreeNodeToTSNodeMap.get(m),
-    (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
-  )(member);
+  services.program.getTypeChecker().getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(member));
 
 const isBooleanProperty = (
   member: PropertyMember,
   services: ParserServicesWithTypeInformation,
 ) =>
-  flow(
-    resolveAnnotationTypeNode,
-    O.exists((t) => t.type === AST_NODE_TYPES.TSBooleanKeyword),
-  )(member) || isBooleanTsType(resolveMemberTsType(member, services));
+  O.exists((t: TSESTree.TypeNode) => t.type === AST_NODE_TYPES.TSBooleanKeyword)(
+    resolveAnnotationTypeNode(member),
+  ) || isBooleanTsType(resolveMemberTsType(member, services));
 
 const isNullableTimestampProperty = (
   member: PropertyMember,
   services: ParserServicesWithTypeInformation,
 ) =>
-  flow(extractMemberName, O.exists(hasTimestampSuffix))(member) &&
+  O.exists(hasTimestampSuffix)(extractMemberName(member)) &&
   (member.optional ||
-    flow(resolveAnnotationTypeNode, O.exists(isNullableOrOptionTypeNode))(member) ||
+    O.exists(isNullableOrOptionTypeNode)(resolveAnnotationTypeNode(member)) ||
     isNullableOrOptionTsType(resolveMemberTsType(member, services)));
 
 const isPropertyMember = (

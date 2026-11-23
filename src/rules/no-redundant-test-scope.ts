@@ -6,7 +6,6 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { DEFAULT_TEST_PATTERNS } from "../analyzers/module-symbol-graph.js";
 import {
@@ -105,6 +104,15 @@ const resolveProgramFileName = (
   services: ParserServicesWithTypeInformation,
 ) => normalizeFilePath(services.esTreeNodeToTSNodeMap.get(programNode).fileName);
 
+const resolveMatchingTestFile = (
+  programNode: TSESTree.Program,
+  testPatterns: ReadonlyArray<string>,
+  services: ParserServicesWithTypeInformation,
+) =>
+  O.fromPredicate((name: string) => isMatchingAnyPattern(name, testPatterns))(
+    resolveProgramFileName(programNode, services),
+  );
+
 const checkProgram = (
   programNode: TSESTree.Program,
   options: Options[0],
@@ -112,12 +120,9 @@ const checkProgram = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    O.fromPredicate((fileName: string) => isMatchingAnyPattern(fileName, testPatterns)),
-    O.map((fileName) => {
-      reportRedundantFindings(fileName, options, testPatterns, services, report);
-    }),
-  )(resolveProgramFileName(programNode, services));
+  O.map((fileName: string) => {
+    reportRedundantFindings(fileName, options, testPatterns, services, report);
+  })(resolveMatchingTestFile(programNode, testPatterns, services));
 };
 
 const buildTestScopeListeners = (

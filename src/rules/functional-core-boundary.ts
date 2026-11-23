@@ -129,16 +129,16 @@ const reportFunctionViolation = (
   })(violation);
 };
 
+const lookupReportNode = (
+  fn: FunctionPurityInfo,
+  services: ParserServicesWithTypeInformation,
+) => O.fromNullable(services.tsNodeToESTreeNodeMap.get(fn.reportNode));
+
 const resolveReportNode = (
   fn: FunctionPurityInfo,
   programNode: TSESTree.Program,
   services: ParserServicesWithTypeInformation,
-) =>
-  flow(
-    (f: FunctionPurityInfo) => services.tsNodeToESTreeNodeMap.get(f.reportNode),
-    O.fromNullable,
-    O.getOrElse(() => programNode as TSESTree.Node),
-  )(fn);
+) => O.getOrElse<TSESTree.Node>(() => programNode)(lookupReportNode(fn, services));
 
 const inspectFileFunctions = (
   ctx: ProgramPurityContext,

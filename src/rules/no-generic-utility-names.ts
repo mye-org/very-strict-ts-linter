@@ -60,15 +60,20 @@ const stripFileExtensions = (fileName: string) =>
 const matchBannedToken = (token: O.Option<string>, bannedSet: ReadonlySet<string>) =>
   O.filter((t: string) => bannedSet.has(t))(token);
 
+const findLastWordToken = flow(splitWordTokens, RA.last);
+
 const findSuffixBannedTerm = (raw: string, bannedSet: ReadonlySet<string>) =>
-  flow(splitWordTokens, RA.last, (token) => matchBannedToken(token, bannedSet))(raw);
+  matchBannedToken(findLastWordToken(raw), bannedSet);
+
+const matchLastToken = (tokens: ReadonlyArray<string>, bannedSet: ReadonlySet<string>) =>
+  matchBannedToken(RA.last(tokens), bannedSet);
+
+const matchHeadToken = (tokens: ReadonlyArray<string>, bannedSet: ReadonlySet<string>) =>
+  matchBannedToken(RA.head(tokens), bannedSet);
 
 const findEdgeBannedTerm = (raw: string, bannedSet: ReadonlySet<string>) => {
   const tokens = splitWordTokens(raw);
-  return flow(
-    (t: O.Option<string>) => matchBannedToken(t, bannedSet),
-    O.alt(() => matchBannedToken(RA.head(tokens), bannedSet)),
-  )(RA.last(tokens));
+  return O.alt(() => matchHeadToken(tokens, bannedSet))(matchLastToken(tokens, bannedSet));
 };
 
 const isWithinWorkingTree = (rel: string) => rel !== ".." && !rel.startsWith("../");
@@ -90,27 +95,25 @@ const splitPathSegments = (normalizedPath: string) => normalizedPath.split("/");
 const isInspectableSegmentList = (segments: ReadonlyArray<string>) =>
   segments.length > 0 && !segments.includes("node_modules");
 
+const filterInspectableSegments = flow(
+  resolveInspectablePath,
+  splitPathSegments,
+  RA.filter((segment) => !IGNORED_PATH_SEGMENTS.has(segment)),
+  O.fromPredicate(isInspectableSegmentList),
+);
+
 const splitInspectableSegments = (location: FileLocation) =>
-  VIRTUAL_FILENAMES.has(location.filename)
-    ? O.none
-    : flow(
-        resolveInspectablePath,
-        splitPathSegments,
-        RA.filter((segment) => !IGNORED_PATH_SEGMENTS.has(segment)),
-        O.fromPredicate(isInspectableSegmentList),
-      )(location);
+  VIRTUAL_FILENAMES.has(location.filename) ? O.none : filterInspectableSegments(location);
 
 const matchBannedDirectory = (directory: string, cfg: RuleCheckConfig) =>
-  flow(
-    (dir: string) => findEdgeBannedTerm(dir, cfg.bannedSet),
-    O.map((term) => ({ directory, term })),
-  )(directory);
+  O.map((term: string) => ({ directory, term }))(findEdgeBannedTerm(directory, cfg.bannedSet));
 
 const findBannedDirectory = (directories: ReadonlyArray<string>, cfg: RuleCheckConfig) =>
-  flow(
-    RA.filterMap((dir: string) => (cfg.allowedSet.has(dir) ? O.none : matchBannedDirectory(dir, cfg))),
-    RA.head,
-  )(directories);
+  RA.head(
+    RA.filterMap((dir: string) => (cfg.allowedSet.has(dir) ? O.none : matchBannedDirectory(dir, cfg)))(
+      directories,
+    ),
+  );
 
 const isAllowedFile = (fileName: string, stem: string, allowedSet: ReadonlySet<string>) =>
   allowedSet.has(fileName) || allowedSet.has(stem);
@@ -119,45 +122,44 @@ const findBannedFileName = (fileName: string, cfg: RuleCheckConfig) => {
   const stem = stripFileExtensions(fileName);
   return isAllowedFile(fileName, stem, cfg.allowedSet)
     ? O.none
-    : flow(
-        (s: string) => findEdgeBannedTerm(s, cfg.bannedSet),
-        O.map((term) => ({ fileName, term })),
-      )(stem);
+    : O.map((term: string) => ({ fileName, term }))(findEdgeBannedTerm(stem, cfg.bannedSet));
 };
+
+const findBannedDirectoryInInit = (
+  dirsOpt: O.Option<ReadonlyArray<string>>,
+  cfg: RuleCheckConfig,
+) => O.flatMap((dirs: ReadonlyArray<string>) => findBannedDirectory(dirs, cfg))(dirsOpt);
 
 const checkDirectoryNames = (
   program: TSESTree.Program,
-  segments: ReadonlyArray<string>,
+  dirsOpt: O.Option<ReadonlyArray<string>>,
   cfg: RuleCheckConfig,
 ) => {
   match(cfg.directoryNames)
     .with("check", () => {
-      flow(
-        RA.init<string>,
-        O.flatMap((dirs) => findBannedDirectory(dirs, cfg)),
-        O.map(({ directory, term }) => {
-          cfg.report({ node: program, messageId: "genericDirectoryName", data: { directory, term } });
-        }),
-      )(segments);
+      O.map((data: ReturnType<typeof findBannedDirectory> extends O.Option<infer T> ? T : never) => {
+        cfg.report({ node: program, messageId: "genericDirectoryName", data });
+      })(findBannedDirectoryInInit(dirsOpt, cfg));
     })
     .with("skip", () => {})
     .exhaustive();
 };
 
+const findBannedFileNameInLast = (
+  fileNameOpt: O.Option<string>,
+  cfg: RuleCheckConfig,
+) => O.flatMap((fileName: string) => findBannedFileName(fileName, cfg))(fileNameOpt);
+
 const checkFileName = (
   program: TSESTree.Program,
-  segments: ReadonlyArray<string>,
+  fileNameOpt: O.Option<string>,
   cfg: RuleCheckConfig,
 ) => {
   match(cfg.fileNames)
     .with("check", () => {
-      flow(
-        RA.last<string>,
-        O.flatMap((fileName) => findBannedFileName(fileName, cfg)),
-        O.map(({ fileName, term }) => {
-          cfg.report({ node: program, messageId: "genericFileName", data: { fileName, term } });
-        }),
-      )(segments);
+      O.map((data: ReturnType<typeof findBannedFileName> extends O.Option<infer T> ? T : never) => {
+        cfg.report({ node: program, messageId: "genericFileName", data });
+      })(findBannedFileNameInLast(fileNameOpt, cfg));
     })
     .with("skip", () => {})
     .exhaustive();
@@ -168,22 +170,16 @@ const checkProgramPath = (
   location: FileLocation,
   cfg: RuleCheckConfig,
 ) => {
-  flow(
-    splitInspectableSegments,
-    O.map((segments) => {
-      checkDirectoryNames(program, segments, cfg);
-      checkFileName(program, segments, cfg);
-    }),
-  )(location);
+  O.map((segments: ReadonlyArray<string>) => {
+    checkDirectoryNames(program, RA.init<string>(segments), cfg);
+    checkFileName(program, RA.last<string>(segments), cfg);
+  })(splitInspectableSegments(location));
 };
 
 const reportIfBannedIdentifier = (id: TSESTree.Identifier, cfg: RuleCheckConfig) => {
-  flow(
-    (name: string) => findSuffixBannedTerm(name, cfg.bannedSet),
-    O.map((term) => {
-      cfg.report({ node: id, messageId: "genericIdentifierName", data: { name: id.name, term } });
-    }),
-  )(id.name);
+  O.map((term: string) => {
+    cfg.report({ node: id, messageId: "genericIdentifierName", data: { name: id.name, term } });
+  })(findSuffixBannedTerm(id.name, cfg.bannedSet));
 };
 
 const checkIdentifierNode = (id: TSESTree.Identifier, cfg: RuleCheckConfig) => {

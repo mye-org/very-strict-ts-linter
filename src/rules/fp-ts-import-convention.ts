@@ -21,9 +21,11 @@ const isFunctionModulePath = (source: string) => FUNCTION_MODULE_RE.test(source)
 const extractTopLevelModule = (source: string) =>
   FP_TS_TOP_LEVEL_MODULE_RE.exec(source)?.[1];
 
+const resolveTopLevelModule = flow(extractTopLevelModule, O.fromNullable);
+
 const hasOnlyNamespaceSpecifier = (node: TSESTree.ImportDeclaration) =>
   node.specifiers.length === 1 &&
-  flow(RA.head<TSESTree.ImportClause>, O.exists(isNamespaceSpecifier))(node.specifiers);
+  O.exists(isNamespaceSpecifier)(RA.head<TSESTree.ImportClause>(node.specifiers));
 
 const hasOnlyTypeSpecifiers = (node: TSESTree.ImportDeclaration) =>
   node.specifiers.length > 0 && RA.every(isTypeImportSpecifier)(node.specifiers);
@@ -32,13 +34,9 @@ const checkTopLevelPath = (
   node: TSESTree.ImportDeclaration,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
-  flow(
-    extractTopLevelModule,
-    O.fromNullable,
-    O.map((module) => {
-      report({ node: node.source, messageId: "useLibPath", data: { module } });
-    }),
-  )(node.source.value);
+  O.map((module: string) => {
+    report({ node: node.source, messageId: "useLibPath", data: { module } });
+  })(resolveTopLevelModule(node.source.value));
 };
 
 const checkNamespaceImport = (

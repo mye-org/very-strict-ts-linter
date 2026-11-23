@@ -1,7 +1,6 @@
 import { TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as Pred from "fp-ts/lib/Predicate.js";
-import { flow } from "fp-ts/lib/function.js";
 import { createRule } from "../lib/rule-factory.js";
 import { isInsideUnsafeOrMustFunction, isUnsafeOrMustName, resolveDirectFunctionName } from "../lib/unsafe-function-scope.js";
 
@@ -15,14 +14,14 @@ type AnyFunctionNode =
 
 const isExemptAsyncFn = (node: AnyFunctionNode) =>
   isInsideUnsafeOrMustFunction(node) ||
-  flow(resolveDirectFunctionName, O.exists(isUnsafeOrMustName))(node);
+  O.exists(isUnsafeOrMustName)(resolveDirectFunctionName(node));
 
 const reportWhen = <N extends TSESTree.Node>(
   node: N,
   predicate: Pred.Predicate<N>,
   onMatch: (n: N) => void,
 ) => {
-  flow(O.fromPredicate(predicate), O.map(onMatch))(node);
+  O.map(onMatch)(O.fromPredicate(predicate)(node));
 };
 
 const makeAsyncFnChecker =

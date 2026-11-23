@@ -37,9 +37,15 @@ describe("discovery-radar analyzer & report", () => {
     expect(md).toContain("# FP Abstraction Discovery Radar");
     expect(md).toContain("Customer");
     expect(md).toContain("Money");
-    expect(
-      (JSON.parse(formatDiscoveryReport(report, "json")) as typeof report).polysemyModels.length,
-    ).toBeGreaterThanOrEqual(1);
+    const parsed: unknown = JSON.parse(formatDiscoveryReport(report, "json"));
+    const polysemyModels =
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "polysemyModels" in parsed &&
+      Array.isArray(parsed.polysemyModels)
+        ? parsed.polysemyModels
+        : [];
+    expect(polysemyModels.length).toBeGreaterThanOrEqual(1);
   });
 
   it("detects cross-file context drilling, skeleton duplication, and recursive ADT walkers", () => {

@@ -18,7 +18,7 @@ const hasNewtypeMarkerProps = (props: ReadonlyArray<ts.Symbol>) =>
 const hasDirectBrandProp = (props: ReadonlyArray<ts.Symbol>) =>
   hasPropMatching(props, (n) => EXPLICIT_BRAND_PROPS.has(n));
 
-export const isBrandedOrNewtypeTsType = (type: ts.Type) => {
+export const isBrandedOrNewtypeTsType = (type: ts.Type): boolean => {
   const props = type.getProperties();
   return type.isIntersection()
     ? hasPropMatching(props, (n) => BRAND_PROP_RE.test(n))
@@ -27,7 +27,9 @@ export const isBrandedOrNewtypeTsType = (type: ts.Type) => {
 
 const hasTypeFlag = (type: ts.Type, flag: ts.TypeFlags) => (type.flags & flag) !== 0;
 
-export const resolveBarePrimitiveOrLiteralKind = (type: ts.Type) =>
+export const resolveBarePrimitiveOrLiteralKind = (
+  type: ts.Type,
+): O.Option<"string" | "number"> =>
   match({
     branded: isBrandedOrNewtypeTsType(type),
     isString: hasTypeFlag(type, ts.TypeFlags.String | ts.TypeFlags.StringLiteral),
@@ -35,7 +37,7 @@ export const resolveBarePrimitiveOrLiteralKind = (type: ts.Type) =>
   })
     .with({ branded: false, isString: true }, () => O.some("string" as const))
     .with({ branded: false, isNumber: true }, () => O.some("number" as const))
-    .otherwise(() => O.none as O.Option<"string" | "number">);
+    .otherwise(() => O.none satisfies O.Option<"string" | "number">);
 
 const PRIMITIVE_TYPE_FLAGS =
   ts.TypeFlags.StringLike |
@@ -47,7 +49,6 @@ const PRIMITIVE_TYPE_FLAGS =
   ts.TypeFlags.Null |
   ts.TypeFlags.Never;
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive type predicate
 export const isPrimitiveTsType = (type: ts.Type): boolean =>
   (type.flags & PRIMITIVE_TYPE_FLAGS) !== 0 ||
   (type.isUnion() && type.types.length > 0 && RA.every(isPrimitiveTsType)(type.types)) ||

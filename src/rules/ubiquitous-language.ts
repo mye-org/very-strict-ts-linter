@@ -68,8 +68,14 @@ const extractDeclaredTsName = (node: ts.Node) =>
 
 const resolveContextDir = flow(path.dirname, normalizeFilePath);
 
-const extractSfTokens = (sf: ts.SourceFile) =>
-  flow(collectTsNodes, RA.filterMap(extractDeclaredTsName), RA.flatMap(extractPascalTokens))(sf, sf);
+const extractSfTokens = (sf: ts.SourceFile) => {
+  const extract = flow(
+    (file: ts.SourceFile) => collectTsNodes(file, file),
+    RA.filterMap(extractDeclaredTsName),
+    RA.flatMap(extractPascalTokens),
+  );
+  return extract(sf);
+};
 
 const mergeSourceFileTerms = (acc: ContextTermsByDir, sf: ts.SourceFile) => {
   const dir = resolveContextDir(sf.fileName);
@@ -113,8 +119,8 @@ const findGroupConflict = (
   ownTokens: ReadonlySet<string>,
   group: ReadonlyArray<string>,
   ctx: SynonymContext,
-) =>
-  flow(
+) => {
+  const find = flow(
     RA.filter(
       (term: string) =>
         term !== token &&
@@ -124,28 +130,34 @@ const findGroupConflict = (
     ),
     RA.uniq(S.Eq),
     formatConflictingTerms(token),
-  )(group);
+  );
+  return find(group);
+};
 
 const matchTokenGroupConflict = (
   token: string,
   ownTokens: ReadonlySet<string>,
   ctx: SynonymContext,
-) =>
-  flow(
+) => {
+  const matchGroup = flow(
     RA.findFirst((group: ReadonlyArray<string>) => group.includes(token)),
     O.flatMap((group) => findGroupConflict(token, ownTokens, group, ctx)),
-  )(ctx.synonymGroups);
+  );
+  return matchGroup(ctx.synonymGroups);
+};
 
 const findCollisionForTokens = (
   tokens: ReadonlyArray<string>,
   ownTokens: ReadonlySet<string>,
   ctx: SynonymContext,
-) =>
-  flow(
+) => {
+  const find = flow(
     RA.filter((token: string) => !ctx.allowed.has(token)),
     RA.filterMap((token) => matchTokenGroupConflict(token, ownTokens, ctx)),
     RA.head,
-  )(tokens);
+  );
+  return find(tokens);
+};
 
 const findSynonymCollision = (name: string, ctx: SynonymContext) => {
   const tokens = extractPascalTokens(name);

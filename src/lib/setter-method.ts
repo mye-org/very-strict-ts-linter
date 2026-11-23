@@ -1,2 +1,2 @@
-export const isSetterMethodName = (name: string) =>
+export const isSetterMethodName = (name: string): boolean =>
   name.startsWith("set") && name.length > 3 && name.charAt(3) >= "A" && name.charAt(3) <= "Z";

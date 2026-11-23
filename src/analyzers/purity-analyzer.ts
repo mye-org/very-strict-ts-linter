@@ -348,11 +348,11 @@ type PropagationState = Readonly<
   }
 >;
 
-const EMPTY_STRINGS = [] as ReadonlyArray<string>;
-const EMPTY_FUNCTIONS = [] as ReadonlyArray<CollectedFunction>;
+const EMPTY_STRINGS: ReadonlyArray<string> = [];
+const EMPTY_FUNCTIONS: ReadonlyArray<CollectedFunction> = [];
 
 const fromStringEntries = <V>(entries: ReadonlyArray<readonly [string, V]>) =>
-  Object.fromEntries(entries) as Readonly<Record<string, V>>;
+  Object.fromEntries(entries) satisfies Readonly<Record<string, V>>;
 
 const hasNodeModulesSegment = (filePath: string) => filePath.includes("/node_modules/");
 const hasTrailingSlash = (pattern: string) => pattern.endsWith("/");
@@ -502,18 +502,23 @@ const isNonConstProjectVarDecl = (decl: ts.Node): decl is ts.VariableDeclaration
   !decl.getSourceFile().isDeclarationFile &&
   isMutableVarDeclList(decl.parent);
 
-const isMutableModuleLevelBinding = (
-  ident: ts.Identifier,
+const isMutableBindingOutsideFn = (
   fnNode: ts.FunctionLikeDeclaration,
   checker: ts.TypeChecker,
 ) =>
   flow(
     lookupNodeSymbol(checker),
-    O.map((sym) => resolveCanonicalSymbol(sym, checker)),
-    O.flatMap((canonical) => O.fromNullable(canonical.valueDeclaration)),
+    O.map((sym: ts.Symbol) => resolveCanonicalSymbol(sym, checker)),
+    O.flatMap((canonical: ts.Symbol) => O.fromNullable(canonical.valueDeclaration)),
     O.filter(isNonConstProjectVarDecl),
-    O.exists((decl) => isOutsideFunctionScope(decl.parent, fnNode)),
-  )(ident);
+    O.exists((decl: ts.VariableDeclaration) => isOutsideFunctionScope(decl.parent, fnNode)),
+  );
+
+const isMutableModuleLevelBinding = (
+  ident: ts.Identifier,
+  fnNode: ts.FunctionLikeDeclaration,
+  checker: ts.TypeChecker,
+) => isMutableBindingOutsideFn(fnNode, checker)(ident);
 
 const isMutableCollectionType = (objType: ts.Type, checker: ts.TypeChecker) =>
   checker.isArrayType(objType) ||
@@ -560,11 +565,14 @@ const matchCalleeMutableMethod = (call: ts.CallExpression, checker: ts.TypeCheck
     ? inspectPropertyCallMutation(call.expression, checker)
     : O.none;
 
-const matchImpureModuleImport = (sym: O.Option<ts.Symbol>) => (options: PurityOptions) =>
+const filterImpureModuleSpec = (options: PurityOptions) =>
   flow(
     O.flatMap(resolveImportedModuleSpecifier),
-    O.filter((spec) => isImpureModuleSpecifier(spec, options)),
-  )(sym);
+    O.filter((spec: string) => isImpureModuleSpecifier(spec, options)),
+  );
+
+const matchImpureModuleImport = (sym: O.Option<ts.Symbol>) => (options: PurityOptions) =>
+  filterImpureModuleSpec(options)(sym);
 
 const matchImpureDirectCallReason = (calleeText: string, sym: O.Option<ts.Symbol>) =>
   flow(
@@ -582,14 +590,15 @@ const inspectIdentifierRuntimeCall =
     )(matchImpureDirectCallReason(callee.text, sym)(options));
   };
 
-const lookupImpureMemberSet = (objText: string) =>
-  O.fromNullable((IMPURE_MEMBER_CALLS as Readonly<Record<string, ReadonlySet<string>>>)[objText]);
+const lookupImpureMemberSet = (objText: string) => RR.lookup(objText, IMPURE_MEMBER_CALLS);
 
-const isImpureMemberMethod = (target: MemberCallTarget) =>
-  flow(
-    (t: MemberCallTarget) => lookupImpureMemberSet(t.objText),
-    O.exists((set) => set.has(target.propName)),
-  )(target);
+const isImpureMemberMethod = flow(
+  (target: MemberCallTarget) => ({
+    propName: target.propName,
+    setOpt: lookupImpureMemberSet(target.objText),
+  }),
+  ({ propName, setOpt }) => O.exists((set: ReadonlySet<string>) => set.has(propName))(setOpt),
+);
 
 const matchImpureBuiltinMemberCall = (target: MemberCallTarget, objSym: O.Option<ts.Symbol>) =>
   isExternalSymbolOpt(objSym)
@@ -636,23 +645,33 @@ const resolveFunctionCalleeName = (callee: ts.Expression) =>
 const lookupResolvedSignature = (checker: ts.TypeChecker) =>
   flow((call: ts.CallExpression) => checker.getResolvedSignature(call), O.fromNullable);
 
-const isVoidSignatureCall = (call: ts.CallExpression, checker: ts.TypeChecker) =>
+const isVoidReturnSignature = (checker: ts.TypeChecker) =>
   flow(
     lookupResolvedSignature(checker),
-    O.map((sig) => checker.getReturnTypeOfSignature(sig)),
-    O.exists((retType) => (retType.flags & ts.TypeFlags.Void) !== 0),
-  )(call);
+    O.map((sig: ts.Signature) => checker.getReturnTypeOfSignature(sig)),
+    O.exists((retType: ts.Type) => (retType.flags & ts.TypeFlags.Void) !== 0),
+  );
 
-const matchExternalVoidCall = (
+const isVoidSignatureCall = (call: ts.CallExpression, checker: ts.TypeChecker) =>
+  isVoidReturnSignature(checker)(call);
+
+const matchVoidCallName = (
   call: ts.CallExpression,
   callType: ts.Type,
   checker: ts.TypeChecker,
 ) =>
   flow(
+    resolveFunctionCalleeName,
     O.filter((name: string) => !POLYMORPHIC_HOF_NAMES.has(name)),
     O.filter(() => isVoidOrUndefinedOnly(callType) && isVoidSignatureCall(call, checker)),
     O.map(formatVoidExternalReason),
-  )(resolveFunctionCalleeName(call.expression));
+  );
+
+const matchExternalVoidCall = (
+  call: ts.CallExpression,
+  callType: ts.Type,
+  checker: ts.TypeChecker,
+) => matchVoidCallName(call, callType, checker)(call.expression);
 
 const matchExternalEffectReason = (callType: ts.Type, effectSet: ReadonlySet<string>) =>
   O.map(formatExternalEffectReason)(matchEffectType(callType, effectSet));
@@ -712,18 +731,24 @@ const extractInlineHofArg = (arg: ts.Expression, hofName: string) => {
     : O.none;
 };
 
-const resolveProjectCallbackRef = (
-  unwrapped: ts.Expression,
+const resolveCallbackSymRef = (
   callbackName: string,
   hofName: string,
   checker: ts.TypeChecker,
 ) =>
   flow(
     lookupNodeSymbol(checker),
-    O.map((sym) => resolveCanonicalSymbol(sym, checker)),
+    O.map((sym: ts.Symbol) => resolveCanonicalSymbol(sym, checker)),
     O.filter(isDeclaredInProjectSource),
-    O.map((targetSym) => ({ targetSym, callbackName, hofName })),
-  )(unwrapped);
+    O.map((targetSym: ts.Symbol) => ({ targetSym, callbackName, hofName })),
+  );
+
+const resolveProjectCallbackRef = (
+  unwrapped: ts.Expression,
+  callbackName: string,
+  hofName: string,
+  checker: ts.TypeChecker,
+) => resolveCallbackSymRef(callbackName, hofName, checker)(unwrapped);
 
 const extractRefHofArg = (arg: ts.Expression, hofName: string, checker: ts.TypeChecker) => {
   const unwrapped = unwrapExpression(arg);
@@ -732,12 +757,17 @@ const extractRefHofArg = (arg: ts.Expression, hofName: string, checker: ts.TypeC
   )(resolveFunctionCalleeName(unwrapped));
 };
 
-const extractCallDeps = (canonicalCallee: O.Option<ts.Symbol>, label: string) =>
+const extractProjectCallDeps = (label: string) =>
   flow(
     O.filter(isDeclaredInProjectSource),
-    O.map((targetSym) => [{ targetSym, calleeText: label }] as ReadonlyArray<SymbolCallRef>),
-    O.getOrElse(() => [] as ReadonlyArray<SymbolCallRef>),
-  )(canonicalCallee);
+    O.map(
+      (targetSym: ts.Symbol) => [{ targetSym, calleeText: label }] satisfies ReadonlyArray<SymbolCallRef>,
+    ),
+    O.getOrElseW(() => []),
+  );
+
+const extractCallDeps = (canonicalCallee: O.Option<ts.Symbol>, label: string) =>
+  extractProjectCallDeps(label)(canonicalCallee);
 
 const collectCallHofArgs = (
   call: ts.CallExpression,
@@ -755,15 +785,12 @@ const collectCallHofArgs = (
         )(call.arguments),
       }
     : {
-        hofInlineCallbacks: [] as ReadonlyArray<HofInlineCallback>,
-        hofRefCallbacks: [] as ReadonlyArray<HofRefCallback>,
+        hofInlineCallbacks: [] satisfies ReadonlyArray<HofInlineCallback>,
+        hofRefCallbacks: [] satisfies ReadonlyArray<HofRefCallback>,
       };
 
 const resolveCanonicalCallee = (expr: ts.Expression, checker: ts.TypeChecker) =>
-  flow(
-    lookupNodeSymbol(checker),
-    O.map((sym) => resolveCanonicalSymbol(sym, checker)),
-  )(expr);
+  O.map((sym: ts.Symbol) => resolveCanonicalSymbol(sym, checker))(lookupNodeSymbol(checker)(expr));
 
 const inspectCallDirectReasons =
   (
@@ -793,7 +820,7 @@ const inspectCallExpressionNode =
         checker,
         isProjectOrPolyHofCall(calleeName, canonicalCallee) ? "track" : "skip",
       ),
-    } as CallInspectionResult;
+    } satisfies CallInspectionResult;
   };
 
 const isIncrementUnaryExpr = (node: ts.Node) =>
@@ -806,7 +833,7 @@ const isZeroArgNewDate = (node: ts.NewExpression) =>
   (node.arguments?.length ?? 0) === 0;
 
 const isExternalNodeSymbol = (node: ts.Node, checker: ts.TypeChecker) =>
-  flow(lookupNodeSymbol(checker), isExternalSymbolOpt)(node);
+  isExternalSymbolOpt(lookupNodeSymbol(checker)(node));
 
 const inspectProcessPropAccess = (
   node: ts.PropertyAccessExpression,
@@ -830,23 +857,13 @@ const matchDomGlobalReason = (node: ts.Identifier, checker: ts.TypeChecker) =>
     ? O.some(formatDomGlobalReason(node.text))
     : O.none;
 
-const matchMutableBindingReason = (
-  node: ts.Identifier,
-  fn: ts.FunctionLikeDeclaration,
-  checker: ts.TypeChecker,
-) =>
-  isMutableModuleLevelBinding(node, fn, checker)
-    ? O.some(formatMutableBindingReason(node.text))
-    : O.none;
-
-const fallbackOptionWith = (primary: O.Option<string>) => (secondary: O.Option<string>) =>
-  O.alt(() => secondary)(primary);
-
-const inspectValueIdentifierReason = (node: ts.Identifier, checker: ts.TypeChecker) =>
-  flow(
-    (fn: ts.FunctionLikeDeclaration) => matchMutableBindingReason(node, fn, checker),
-    fallbackOptionWith(matchDomGlobalReason(node, checker)),
-  );
+const inspectValueIdentifierReason =
+  (node: ts.Identifier, checker: ts.TypeChecker) => (fn: ts.FunctionLikeDeclaration) =>
+    O.alt(() => matchDomGlobalReason(node, checker))(
+      isMutableModuleLevelBinding(node, fn, checker)
+        ? O.some(formatMutableBindingReason(node.text))
+        : O.none,
+    );
 
 const inspectIdentifierNode =
   (node: ts.Identifier, checker: ts.TypeChecker) => (fn: ts.FunctionLikeDeclaration) =>
@@ -882,16 +899,18 @@ const inspectReturnTypeReason = (retType: ts.Type, effectSet: ReadonlySet<string
 const lookupFnSignature = (checker: ts.TypeChecker) =>
   flow((fn: ts.FunctionLikeDeclaration) => checker.getSignatureFromDeclaration(fn), O.fromNullable);
 
+const inspectFnReturnType = (checker: ts.TypeChecker, effectSet: ReadonlySet<string>) =>
+  flow(
+    lookupFnSignature(checker),
+    O.map((sig: ts.Signature) => checker.getReturnTypeOfSignature(sig)),
+    O.flatMap((retType: ts.Type) => inspectReturnTypeReason(retType, effectSet)),
+  );
+
 const inspectSignatureReturnReason = (
   fn: ts.FunctionLikeDeclaration,
   checker: ts.TypeChecker,
   effectSet: ReadonlySet<string>,
-) =>
-  flow(
-    lookupFnSignature(checker),
-    O.map((sig) => checker.getReturnTypeOfSignature(sig)),
-    O.flatMap((retType) => inspectReturnTypeReason(retType, effectSet)),
-  )(fn);
+) => inspectFnReturnType(checker, effectSet)(fn);
 
 const inspectSignatureReasons = (
   fn: ts.FunctionLikeDeclaration,
@@ -917,10 +936,9 @@ const collectDirectReasons = (
 
 const inspectFunctionBody = (fn: ts.FunctionLikeDeclaration, ctx: InspectionContext) => {
   const bodyNodes = fn.body ? collectOwnBodyNodes(fn.body, ctx.sf) : [];
-  const callResults = flow(
-    RA.filter(ts.isCallExpression),
-    RA.map((call) => inspectCallExpressionNode(call, ctx.checker, ctx.effectSet)(ctx.options)),
-  )(bodyNodes);
+  const callResults = RA.map((call: ts.CallExpression) =>
+    inspectCallExpressionNode(call, ctx.checker, ctx.effectSet)(ctx.options),
+  )(RA.filter(ts.isCallExpression)(bodyNodes));
   return {
     directReasons: collectDirectReasons(fn, bodyNodes, callResults, ctx),
     callDeps: RA.flatMap((r: CallInspectionResult) => r.callDeps)(callResults),
@@ -956,7 +974,7 @@ const buildCollectedFunction = (reg: FunctionRegistration, ctx: InspectionContex
     placement: reg.placement,
     symbol: reg.symbol,
     ...inspectFunctionBody(reg.fn, ctx),
-  }) as CollectedFunction;
+  }) satisfies CollectedFunction;
 
 const toInspectionContext = (fileCtx: FileCollectionContext) =>
   ({
@@ -964,7 +982,7 @@ const toInspectionContext = (fileCtx: FileCollectionContext) =>
     checker: fileCtx.checker,
     options: fileCtx.options,
     effectSet: fileCtx.effectSet,
-  }) as InspectionContext;
+  }) satisfies InspectionContext;
 
 const registerWithChildren =
   (reg: FunctionRegistration, body: ts.Node) => (fileCtx: FileCollectionContext) => [
@@ -977,10 +995,9 @@ const isSymbolExported = (
   exportedSyms: ReadonlySet<ts.Symbol>,
   checker: ts.TypeChecker,
 ) =>
-  flow(
-    O.map((s: ts.Symbol) => resolveCanonicalSymbol(s, checker)),
-    O.exists((canonical) => exportedSyms.has(canonical)),
-  )(sym);
+  O.exists((canonical: ts.Symbol) => exportedSyms.has(canonical))(
+    O.map((s: ts.Symbol) => resolveCanonicalSymbol(s, checker))(sym),
+  );
 
 const resolveTopLevelVisibility =
   (node: ts.Node, sym: O.Option<ts.Symbol>, nesting: ScopeLevel) =>
@@ -1019,7 +1036,7 @@ const buildDeclPlacement = (
     reportNode,
     exportStatus: resolveTopLevelVisibility(reportNode, sym, nesting)(fileCtx),
     nesting,
-  }) as FunctionPlacement;
+  }) satisfies FunctionPlacement;
 
 const collectFunctionDeclWithBody =
   (node: ts.FunctionDeclaration, body: ts.Block, nesting: ScopeLevel) =>
@@ -1063,14 +1080,18 @@ const collectVariableFnDecl =
 
 const extractInitializerFnExpr = flow(O.map(unwrapExpression), O.filter(isFunctionExprNode));
 
-const dispatchIdentVariableDecl = (target: IdentDeclTarget, fileCtx: FileCollectionContext) =>
+const dispatchIdentVarInitializer = (target: IdentDeclTarget, fileCtx: FileCollectionContext) =>
   flow(
     extractInitializerFnExpr,
     O.match(
       () => collectChildrenAtScope(target.node, target.nesting)(fileCtx),
-      (fnExpr) => collectVariableFnDecl(target, fnExpr)(fileCtx),
+      (fnExpr: ts.ArrowFunction | ts.FunctionExpression) =>
+        collectVariableFnDecl(target, fnExpr)(fileCtx),
     ),
-  )(O.fromNullable(target.node.initializer));
+  );
+
+const dispatchIdentVariableDecl = (target: IdentDeclTarget, fileCtx: FileCollectionContext) =>
+  dispatchIdentVarInitializer(target, fileCtx)(O.fromNullable(target.node.initializer));
 
 const collectIdentVariableDecl = (target: IdentDeclTarget) => (fileCtx: FileCollectionContext) =>
   dispatchIdentVariableDecl(target, fileCtx);
@@ -1135,15 +1156,22 @@ const dispatchNamedBagFnProp = (
     extractPropertyNameText(prop.name),
   );
 
-const dispatchDefaultBagPropertyAssignment = (
+const dispatchBagPropInitializer = (
   prop: ts.PropertyAssignment,
   fileCtx: FileCollectionContext,
 ) =>
   flow(
     extractInitializerFnExpr,
-    O.flatMap((propInit) => dispatchNamedBagFnProp(prop, propInit, fileCtx)),
+    O.flatMap((propInit: ts.ArrowFunction | ts.FunctionExpression) =>
+      dispatchNamedBagFnProp(prop, propInit, fileCtx),
+    ),
     O.getOrElse(() => EMPTY_FUNCTIONS),
-  )(O.some(prop.initializer));
+  );
+
+const dispatchDefaultBagPropertyAssignment = (
+  prop: ts.PropertyAssignment,
+  fileCtx: FileCollectionContext,
+) => dispatchBagPropInitializer(prop, fileCtx)(O.some(prop.initializer));
 
 const collectDefaultBagPropertyAssignment =
   (prop: ts.PropertyAssignment) => (fileCtx: FileCollectionContext) =>
@@ -1290,11 +1318,13 @@ const mergeRecordReasons = (rec: CollectedFunction) => (env: PropagationEnv) =>
     ...collectPropagatedRefHofReasons(rec)(env),
   ]);
 
+const countReasonList = flow(
+  O.map((rs: ReadonlyArray<string>) => rs.length),
+  O.getOrElse(() => 0),
+);
+
 const countCurrentReasons = (reasonsById: ReasonsMap, id: string) =>
-  flow(
-    O.map((rs: ReadonlyArray<string>) => rs.length),
-    O.getOrElse(() => 0),
-  )(RR.lookup(id, reasonsById));
+  countReasonList(RR.lookup(id, reasonsById));
 
 const evaluateRecordPropagation = (rec: CollectedFunction) => (env: PropagationEnv) => {
   const next = mergeRecordReasons(rec)(env);
@@ -1341,15 +1371,15 @@ const buildProgramFunctionIndex = (
   checker: ts.TypeChecker,
 ) =>
   ({
-    recordByNode: new Map(
-      RA.map((rec: CollectedFunction) => [rec.node as ts.Node, rec] as const)(allRecords),
+    recordByNode: new Map<ts.Node, CollectedFunction>(
+      RA.map((rec: CollectedFunction) => [rec.node, rec] as const)(allRecords),
     ),
     recordBySym: new Map(
       RA.filterMap((rec: CollectedFunction) =>
         O.map((sym: ts.Symbol) => [resolveCanonicalSymbol(sym, checker), rec] as const)(rec.symbol),
       )(allRecords),
     ),
-  }) as ProgramFunctionIndex;
+  }) satisfies ProgramFunctionIndex;
 
 const buildPurityRecordIdentity = (rec: CollectedFunction) => ({
   id: rec.id,
@@ -1370,7 +1400,7 @@ const toFunctionPurityRecord = (reasonsById: ReasonsMap) => (rec: CollectedFunct
     ...buildPurityRecordIdentity(rec),
     purity: reasons.length > 0 ? ("impure" as const) : ("pure" as const),
     reasons,
-  } as FunctionPurityRecord;
+  } satisfies FunctionPurityRecord;
 };
 
 const classifyModulePurity = (
@@ -1426,7 +1456,7 @@ const assembleFilePuritySummary = (
     ),
     functions,
     ...partitioned,
-  } as FilePuritySummary;
+  } satisfies FilePuritySummary;
 };
 
 const buildFilePuritySummary = (
@@ -1476,7 +1506,7 @@ const assembleProgramPurity = (
       RA.map((summary: FilePuritySummary) => [summary.fileName, summary] as const)(summaries),
     ),
     functionsByLocation: indexTopLevelFunctionsByLocation(summaries),
-  } as ProgramPurityAnalysis;
+  } satisfies ProgramPurityAnalysis;
 };
 
 const resolveProgramFinalReasons = (
@@ -1515,7 +1545,7 @@ const purityCache = new WeakMap<ts.Program, Readonly<Record<string, ProgramPurit
 export const analyzeProgramPurity = (
   program: ts.Program,
   options: PurityOptions = DEFAULT_PURITY_OPTIONS,
-) =>
+): ProgramPurityAnalysis =>
   memoizeByProgramAndKey(program, formatPurityCacheKey(options), purityCache, (p) =>
     computeProgramPurity(p, options),
   );

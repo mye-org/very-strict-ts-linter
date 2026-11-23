@@ -1,7 +1,6 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../lib/rule-factory.js";
 
@@ -23,12 +22,9 @@ const reportTypeReference = (
   node: TSESTree.TSTypeReference,
   report: (n: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  flow(
-    lookupCollectionMessage,
-    O.map((messageId) => {
-      report(node, messageId);
-    }),
-  )(node.typeName);
+  O.map((messageId: MessageIds) => {
+    report(node, messageId);
+  })(lookupCollectionMessage(node.typeName));
 };
 
 const isReadonlyOperatorNode = (node: TSESTree.Node) =>

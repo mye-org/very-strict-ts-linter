@@ -75,12 +75,14 @@ const hasCallableSignature = (t: ts.Type) =>
 const isCallableSymbol = (checker: ts.TypeChecker) =>
   flow((sym: ts.Symbol) => checker.getTypeOfSymbol(sym), hasCallableSignature);
 
-const hasCallableThenProperty = (t: ts.Type, checker: ts.TypeChecker) =>
-  flow(
+const hasCallableThenProperty = (t: ts.Type, checker: ts.TypeChecker) => {
+  const check = flow(
     (type: ts.Type) => checker.getPropertyOfType(type, "then"),
     O.fromNullable,
     O.exists(isCallableSymbol(checker)),
-  )(t);
+  );
+  return check(t);
+};
 
 const hasPromiseSymbolName = flow(
   (t: ts.Type) => t.getSymbol(),
@@ -156,7 +158,7 @@ const classifyBodyType = (bodyType: ts.Type, checker: ts.TypeChecker) =>
     isAllowed: isAllowedEffectReturnType(bodyType, checker),
   })
     .with({ isThenable: true }, () => O.some<MessageIds>("expressionEffectReturnsPromise"))
-    .with({ isAllowed: true }, () => O.none as O.Option<MessageIds>)
+    .with({ isAllowed: true }, () => O.none satisfies O.Option<MessageIds>)
     .with(P._, () => O.some<MessageIds>("expressionEffectUnsafeReturn"))
     .exhaustive();
 
@@ -173,7 +175,7 @@ const classifyEffectReturn = (
   O.match(
     () =>
       isSyntaxAllowedEffectBody(body)
-        ? (O.none as O.Option<MessageIds>)
+        ? (O.none satisfies O.Option<MessageIds>)
         : O.some<MessageIds>("expressionEffectUnsafeReturn"),
     classifyBodyWithChecker(body),
   )(checkerCtx);
@@ -182,15 +184,15 @@ const checkExpressionArrowEffect = (
   cb: TSESTree.ArrowFunctionExpression,
   { hook, env }: HookCheckTarget,
 ) => {
-  match(cb.body.type === AST_NODE_TYPES.BlockStatement)
-    .with(true, () => {})
-    .with(false, () => {
+  match(cb.body)
+    .with({ type: AST_NODE_TYPES.BlockStatement }, () => {})
+    .with(P._, (body) => {
       O.map((messageId: MessageIds) => {
         env.report({ node: cb, messageId, data: { hook } });
       })(
         cb.async
           ? O.some<MessageIds>("expressionEffectReturnsPromise")
-          : classifyEffectReturn(cb.body as TSESTree.Expression, env.checkerCtx),
+          : classifyEffectReturn(body, env.checkerCtx),
       );
     })
     .exhaustive();
@@ -199,15 +201,18 @@ const checkExpressionArrowEffect = (
 const extractArrowArg = (arg: TSESTree.CallExpressionArgument) =>
   arg.type === AST_NODE_TYPES.ArrowFunctionExpression ? O.some(arg) : O.none;
 
+const extractFirstArrowArg = flow(
+  RA.head<TSESTree.CallExpressionArgument>,
+  O.flatMap(extractArrowArg),
+);
+
 const checkExpressionEffectCallback = (
   node: TSESTree.CallExpression,
   target: HookCheckTarget,
 ) => {
-  flow(
-    RA.head<TSESTree.CallExpressionArgument>,
-    O.flatMap(extractArrowArg),
-    O.map((cb) => { checkExpressionArrowEffect(cb, target); }),
-  )(node.arguments);
+  O.map((cb: TSESTree.ArrowFunctionExpression) => { checkExpressionArrowEffect(cb, target); })(
+    extractFirstArrowArg(node.arguments),
+  );
 };
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST unwrap
@@ -251,19 +256,16 @@ const isUnstableRenderValue = (
 };
 
 const lookupUpperScope = (scope: TSESLint.Scope.Scope, name: string) =>
-  flow(
-    (s: TSESLint.Scope.Scope) => s.upper,
-    O.fromNullable,
-    O.flatMap((upper) => findVariableInScope(upper, name)),
-  )(scope);
+  O.flatMap((upper: TSESLint.Scope.Scope) => findVariableInScope(upper, name))(
+    O.fromNullable(scope.upper),
+  );
+
+const lookupScopeSymbol = (scope: TSESLint.Scope.Scope, name: string) =>
+  O.fromNullable(scope.set.get(name));
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive scope lookup
 const findVariableInScope = (scope: TSESLint.Scope.Scope, name: string): O.Option<TSESLint.Scope.Variable> =>
-  flow(
-    (s: TSESLint.Scope.Scope) => s.set.get(name),
-    O.fromNullable,
-    O.alt(() => lookupUpperScope(scope, name)),
-  )(scope);
+  O.alt(() => lookupUpperScope(scope, name))(lookupScopeSymbol(scope, name));
 
 const extractVarScope = (variable: TSESLint.Scope.Variable) => variable.scope.variableScope;
 const isFunctionScopeType = (scope: TSESLint.Scope.Scope) =>
@@ -281,9 +283,7 @@ const extractDirectDeclaratorInit = (def: TSESLint.Scope.Definition) =>
 
 const extractRenderTimeVarInit = (variable: TSESLint.Scope.Variable) =>
   isFunctionScopedVariable(variable)
-    ? flow(RA.head<TSESLint.Scope.Definition>, O.flatMap(extractDirectDeclaratorInit))(
-        variable.defs,
-      )
+    ? O.flatMap(extractDirectDeclaratorInit)(RA.head<TSESLint.Scope.Definition>(variable.defs))
     : O.none;
 
 const extractUnstableVarInit = (id: TSESTree.Identifier, ctx: DepCheckContext) =>
@@ -293,8 +293,7 @@ const extractUnstableVarInit = (id: TSESTree.Identifier, ctx: DepCheckContext) =
   );
 
 const checkIdentifierDependency = (id: TSESTree.Identifier, ctx: DepCheckContext) => {
-  flow(
-    (name: string) => findVariableInScope(ctx.scope, name),
+  const reportIfUnstable = flow(
     O.flatMap(extractUnstableVarInit(id, ctx)),
     O.map(() => {
       ctx.env.report({
@@ -303,7 +302,8 @@ const checkIdentifierDependency = (id: TSESTree.Identifier, ctx: DepCheckContext
         data: { name: id.name, hook: ctx.hook },
       });
     }),
-  )(id.name);
+  );
+  reportIfUnstable(findVariableInScope(ctx.scope, id.name));
 };
 
 const checkInlineDependency = (
@@ -320,13 +320,12 @@ const checkInlineDependency = (
 };
 
 const checkDependencyExpr = (expr: TSESTree.Expression, ctx: DepCheckContext) => {
-  const unwrapped = unwrapTsExpression(expr);
-  match(unwrapped.type === AST_NODE_TYPES.Identifier)
-    .with(true, () => {
-      checkIdentifierDependency(unwrapped as TSESTree.Identifier, ctx);
+  match(unwrapTsExpression(expr))
+    .with({ type: AST_NODE_TYPES.Identifier }, (id) => {
+      checkIdentifierDependency(id, ctx);
     })
-    .with(false, () => {
-      checkInlineDependency(unwrapped, expr, ctx);
+    .with(P._, (other) => {
+      checkInlineDependency(other, expr, ctx);
     })
     .exhaustive();
 };
@@ -340,10 +339,9 @@ const checkDependencyElements = (
   elements: ReadonlyArray<DepArrayElement>,
   depCtx: DepCheckContext,
 ) => {
-  flow(
-    RA.filterMap(extractDepExpr),
-    RA.map((expr) => { checkDependencyExpr(expr, depCtx); }),
-  )(elements);
+  RA.map((expr: TSESTree.Expression) => { checkDependencyExpr(expr, depCtx); })(
+    RA.filterMap(extractDepExpr)(elements),
+  );
 };
 
 const extractArrayArg = (arg: TSESTree.CallExpressionArgument) =>
@@ -352,17 +350,15 @@ const extractArrayArg = (arg: TSESTree.CallExpressionArgument) =>
 const lookupSecondArg = (args: ReadonlyArray<TSESTree.CallExpressionArgument>) =>
   RA.lookup(1)(args);
 
+const extractSecondArrayArg = flow(lookupSecondArg, O.flatMap(extractArrayArg));
+
 const checkHookDependencyArray = (
   node: TSESTree.CallExpression,
   { hook, env }: HookCheckTarget,
 ) => {
-  flow(
-    lookupSecondArg,
-    O.flatMap(extractArrayArg),
-    O.map((deps) => {
-      checkDependencyElements(deps.elements, { hook, env, scope: env.sourceCode.getScope(node) });
-    }),
-  )(node.arguments);
+  O.map((deps: TSESTree.ArrayExpression) => {
+    checkDependencyElements(deps.elements, { hook, env, scope: env.sourceCode.getScope(node) });
+  })(extractSecondArrayArg(node.arguments));
 };
 
 const lookupEffectHook = flow((name: string) => EFFECT_HOOK_MAP.get(name), O.fromNullable);

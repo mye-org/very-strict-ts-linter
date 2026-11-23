@@ -18,10 +18,12 @@ import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-locati
 type Options = [Readonly<Record<"minDepth", number>>];
 type MessageIds = "contextDrilling";
 
+const resolveTsLocationKey = flow(resolveTsNodeOwnLocation, makeLocationKey);
+
 const resolveNodeLocationKey = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
+) => resolveTsLocationKey(services.esTreeNodeToTSNodeMap.get(node));
 
 const toDrillingDescriptor = (node: TSESTree.Node, finding: ContextDrillingFinding) => ({
   node,
@@ -40,15 +42,11 @@ const reportDrillingFindings = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    (n: TSESTree.Node) => locationIndex[resolveNodeLocationKey(n, services)],
-    O.fromNullable,
-    O.map(
-      RA.map((finding) => {
-        report(toDrillingDescriptor(node, finding));
-      }),
-    ),
-  )(node);
+  O.map(
+    RA.map((finding: ContextDrillingFinding) => {
+      report(toDrillingDescriptor(node, finding));
+    }),
+  )(O.fromNullable(locationIndex[resolveNodeLocationKey(node, services)]));
 };
 
 const checkNamedFnNode = (
@@ -74,10 +72,9 @@ const buildDrillingListeners = (
     checkNamedFnNode(node, minDepth, services, report);
   },
   VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
-    flow(
-      O.fromPredicate(hasFunctionInit),
-      O.map((n) => { checkNamedFnNode(n, minDepth, services, report); }),
-    )(node);
+    O.map((n: TSESTree.VariableDeclarator) => { checkNamedFnNode(n, minDepth, services, report); })(
+      O.fromPredicate(hasFunctionInit)(node),
+    );
   },
 });
 

@@ -1,5 +1,6 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
@@ -16,15 +17,13 @@ type Reporter = (d: TSESLint.ReportDescriptor<MessageIds>) => void;
 
 const isTsxFilename = (filename: string) => filename.endsWith(".tsx");
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
-const isInsideWorklet = (node: TSESTree.Node): boolean =>
-  flow(
-    (n: TSESTree.Node) => n.parent,
-    O.fromNullable,
-    O.exists((parent) =>
-      (isEsTreeFunctionNode(parent) && isWorkletFunction(parent)) || isInsideWorklet(parent),
-    ),
-  )(node);
+const isInsideWorklet: Pred.Predicate<TSESTree.Node> = flow(
+  (n: TSESTree.Node) => n.parent,
+  O.fromNullable,
+  O.exists((parent) =>
+    (isEsTreeFunctionNode(parent) && isWorkletFunction(parent)) || isInsideWorklet(parent),
+  ),
+);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive scope lookup
 const resolveLexicalVariable = (scope: TSESLint.Scope.Scope, name: string): O.Option<TSESLint.Scope.Variable> =>
@@ -41,37 +40,36 @@ const isUiRuntimeDefinition = (def: TSESLint.Scope.Definition) =>
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
 const extractRootIdentifier = (expr: TSESTree.Expression): O.Option<TSESTree.Identifier> =>
-  match(expr.type)
-    .with(AST_NODE_TYPES.Identifier, () => O.some(expr as TSESTree.Identifier))
-    .with(AST_NODE_TYPES.MemberExpression, () =>
-      extractRootIdentifier((expr as TSESTree.MemberExpression).object),
-    )
-    .with(AST_NODE_TYPES.ChainExpression, () =>
-      extractRootIdentifier((expr as TSESTree.ChainExpression).expression),
-    )
+  match(expr)
+    .with({ type: AST_NODE_TYPES.Identifier }, O.some)
+    .with({ type: AST_NODE_TYPES.MemberExpression }, (m) => extractRootIdentifier(m.object))
+    .with({ type: AST_NODE_TYPES.ChainExpression }, (c) => extractRootIdentifier(c.expression))
     .with(P._, () => O.none)
     .exhaustive();
 
 const resolveIdVariable =
-  (scope: TSESLint.Scope.Scope) => (id: TSESTree.Identifier) =>
-    flow(
+  (scope: TSESLint.Scope.Scope) => (id: TSESTree.Identifier) => {
+    const resolve = flow(
       (name: string) => resolveLexicalVariable(scope, name),
       O.map((variable) => ({ name: id.name, variable })),
-    )(id.name);
+    );
+    return resolve(id.name);
+  };
 
 const checkIdentifierOrMemberArg = (
   arg: TSESTree.Expression,
   scope: TSESLint.Scope.Scope,
   report: Reporter,
 ) => {
-  flow(
+  const check = flow(
     extractRootIdentifier,
     O.flatMap(resolveIdVariable(scope)),
     O.filter(({ variable }) => RA.some(isUiRuntimeDefinition)(variable.defs)),
     O.map(({ name }) => {
       report({ node: arg, messageId: "uiRuntimeDefinedCallback", data: { name } });
     }),
-  )(arg);
+  );
+  check(arg);
 };
 
 const reportTargetByKind = (
@@ -80,16 +78,25 @@ const reportTargetByKind = (
   sourceCode: TSESLint.SourceCode,
   report: Reporter,
 ) => {
-  match(arg.type)
-    .with(AST_NODE_TYPES.ArrowFunctionExpression, AST_NODE_TYPES.FunctionExpression, () => {
-      report({ node: arg, messageId: "inlineWorkletCallback" });
-    })
-    .with(AST_NODE_TYPES.CallExpression, () => {
+  match(arg)
+    .with(
+      { type: AST_NODE_TYPES.ArrowFunctionExpression },
+      { type: AST_NODE_TYPES.FunctionExpression },
+      () => {
+        report({ node: arg, messageId: "inlineWorkletCallback" });
+      },
+    )
+    .with({ type: AST_NODE_TYPES.CallExpression }, () => {
       report({ node: arg, messageId: "uiRuntimeCreatedCallback" });
     })
-    .with(AST_NODE_TYPES.Identifier, AST_NODE_TYPES.MemberExpression, AST_NODE_TYPES.ChainExpression, () => {
-      checkIdentifierOrMemberArg(arg as TSESTree.Expression, sourceCode.getScope(node), report);
-    })
+    .with(
+      { type: AST_NODE_TYPES.Identifier },
+      { type: AST_NODE_TYPES.MemberExpression },
+      { type: AST_NODE_TYPES.ChainExpression },
+      (expr) => {
+        checkIdentifierOrMemberArg(expr, sourceCode.getScope(node), report);
+      },
+    )
     .with(P._, () => {})
     .exhaustive();
 };
@@ -99,13 +106,14 @@ const checkScheduleOnRnCall = (
   sourceCode: TSESLint.SourceCode,
   report: Reporter,
 ) => {
-  flow(
+  const check = flow(
     O.fromPredicate((c: TSESTree.CallExpression) => isScheduleOnRnCall(c) && isInsideWorklet(c)),
     O.flatMap((c) => O.fromNullable(c.arguments[0])),
     O.map((arg) => {
       reportTargetByKind(arg, node, sourceCode, report);
     }),
-  )(node);
+  );
+  check(node);
 };
 
 export const requireJsThreadScheduleOnRn = createRule<[], MessageIds>({

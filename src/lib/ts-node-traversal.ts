@@ -10,14 +10,17 @@ const collectExpandedChildNodes = (node: ts.Node, sf: ts.SourceFile): ReadonlyAr
     ? collectChildDescendants(node, sf)
     : [node, ...collectChildDescendants(node, sf)];
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for mutually recursive AST walk
-const collectChildDescendants = (node: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> =>
+const filterAndExpandChildren = (sf: ts.SourceFile) =>
   flow(
     RA.filter(isVisitableChild),
     RA.flatMap((child: ts.Node) => collectExpandedChildNodes(child, sf)),
-  )(node.getChildren(sf));
+  );
 
-export const collectTsNodes = (root: ts.Node, sf: ts.SourceFile) => [
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for mutually recursive AST walk
+const collectChildDescendants = (node: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> =>
+  filterAndExpandChildren(sf)(node.getChildren(sf));
+
+export const collectTsNodes = (root: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> => [
   root,
   ...collectChildDescendants(root, sf),
 ];

@@ -41,7 +41,7 @@ const resolvePatternTargetNode = (pattern: TSESTree.ArrayPattern) =>
   match(pattern.parent)
     .with({ type: AST_NODE_TYPES.VariableDeclarator }, (d) => O.fromNullable(d.init))
     .with({ type: AST_NODE_TYPES.AssignmentPattern }, (a) => O.some(a.left))
-    .with(P._, () => O.some(pattern as TSESTree.Node))
+    .with(P._, () => O.some<TSESTree.Node>(pattern))
     .exhaustive();
 
 const resolveTargetType = (
@@ -146,6 +146,15 @@ const isInFailureTernaryGuard = (node: TSESTree.BinaryExpression) =>
   node.parent.test === node &&
   (isFailureReturnExpr(node.parent.consequent) || isFailureReturnExpr(node.parent.alternate));
 
+const isTsParamNode = (tsNode: ts.Node, checker: ts.TypeChecker) => {
+  const check = flow(
+    (n: ts.Node) => checker.getSymbolAtLocation(n),
+    O.fromNullable,
+    O.exists(isTsParameterSymbol),
+  );
+  return check(tsNode);
+};
+
 const isParamArrayIdentifier = (
   id: TSESTree.Identifier,
   services: ParserServicesWithTypeInformation,
@@ -153,11 +162,8 @@ const isParamArrayIdentifier = (
   const checker = services.program.getTypeChecker();
   const tsNode = services.esTreeNodeToTSNodeMap.get(id);
   return (
-    flow(
-      (n: ts.Node) => checker.getSymbolAtLocation(n),
-      O.fromNullable,
-      O.exists(isTsParameterSymbol),
-    )(tsNode) && isNonTupleArrayType(checker.getTypeAtLocation(tsNode), checker)
+    isTsParamNode(tsNode, checker) &&
+    isNonTupleArrayType(checker.getTypeAtLocation(tsNode), checker)
   );
 };
 

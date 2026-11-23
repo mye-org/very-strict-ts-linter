@@ -90,12 +90,15 @@ const resolveUnwrappedAtDecl = (sym: ts.Symbol, checker: ts.TypeChecker) =>
     (t) => unwrapContainerTsTypes(t, checker),
   );
 
-const resolveSymbolUnwrappedTypes = (sym: ts.Symbol, checker: ts.TypeChecker) =>
+const resolveSymbolUnwrappedTypesFor = (sym: ts.Symbol, checker: ts.TypeChecker) =>
   flow(
     resolveSymbolDecl,
     O.map(resolveUnwrappedAtDecl(sym, checker)),
-    O.getOrElse(() => [] as ReadonlyArray<ts.Type>),
-  )(sym);
+    O.getOrElseW(() => []),
+  );
+
+const resolveSymbolUnwrappedTypes = (sym: ts.Symbol, checker: ts.TypeChecker) =>
+  resolveSymbolUnwrappedTypesFor(sym, checker)(sym);
 
 const collectPropUnwrappedNames = (prop: ts.Symbol, checker: ts.TypeChecker) =>
   extractComplexEntityNames(resolveSymbolUnwrappedTypes(prop, checker));
@@ -111,14 +114,18 @@ const classifyCandidateOrigin = (
     ? ("explicit" as const)
     : ("inferred" as const);
 
+const extractPropNamesForNode = (checker: ts.TypeChecker) =>
+  flow(
+    (node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration) =>
+      checker.getTypeAtLocation(node).getProperties(),
+    RA.flatMap((prop: ts.Symbol) => collectPropUnwrappedNames(prop, checker)),
+    RA.uniq(S.Eq),
+  );
+
 const collectReferencedTypes = (
   node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration,
   checker: ts.TypeChecker,
-) =>
-  flow(
-    RA.flatMap((prop: ts.Symbol) => collectPropUnwrappedNames(prop, checker)),
-    RA.uniq(S.Eq),
-  )(checker.getTypeAtLocation(node).getProperties());
+) => extractPropNamesForNode(checker)(node);
 
 const buildAggregateCandidate = (
   name: string,
@@ -137,12 +144,17 @@ const extractCandidate = (node: ts.Node, sf: ts.SourceFile, checker: ts.TypeChec
     ? O.some<AggregateCandidate>(buildAggregateCandidate(node.name.text, node, sf, checker))
     : O.none;
 
-const collectSymbolCallSignatures = (prop: ts.Symbol, checker: ts.TypeChecker) =>
+const extractCallSignaturesForProp = (prop: ts.Symbol, checker: ts.TypeChecker) =>
   flow(
     resolveSymbolDecl,
-    O.map((decl) => checker.getTypeOfSymbolAtLocation(prop, decl).getCallSignatures()),
-    O.getOrElse(() => [] as ReadonlyArray<ts.Signature>),
-  )(prop);
+    O.map((decl: ts.Declaration) =>
+      checker.getTypeOfSymbolAtLocation(prop, decl).getCallSignatures(),
+    ),
+    O.getOrElseW(() => []),
+  );
+
+const collectSymbolCallSignatures = (prop: ts.Symbol, checker: ts.TypeChecker) =>
+  extractCallSignaturesForProp(prop, checker)(prop);
 
 const collectSigParamUnwrappedTypes = (sig: ts.Signature, checker: ts.TypeChecker) =>
   RA.flatMap((p: ts.Symbol) => resolveSymbolUnwrappedTypes(p, checker))(sig.getParameters());
@@ -152,14 +164,17 @@ const collectSignatureDomainTypes = (sig: ts.Signature, checker: ts.TypeChecker)
   ...collectSigParamUnwrappedTypes(sig, checker),
 ];
 
-const extractRepoSignatureEntities = (type: ts.Type, checker: ts.TypeChecker) =>
+const filterRepoEntities = (checker: ts.TypeChecker) =>
   flow(
     RA.flatMap((prop: ts.Symbol) => collectSymbolCallSignatures(prop, checker)),
-    RA.flatMap((sig) => collectSignatureDomainTypes(sig, checker)),
+    RA.flatMap((sig: ts.Signature) => collectSignatureDomainTypes(sig, checker)),
     extractComplexEntityNames,
     RA.filter((name) => !hasRepoSuffix(name)),
     RA.uniq(S.Eq),
-  )(type.getProperties());
+  );
+
+const extractRepoSignatureEntities = (type: ts.Type, checker: ts.TypeChecker) =>
+  filterRepoEntities(checker)(type.getProperties());
 
 const extractRepoCandidate = (node: ts.Node, sf: ts.SourceFile, checker: ts.TypeChecker) =>
   isEntityDecl(node) && node.name && hasRepoSuffix(node.name.text)
@@ -172,11 +187,10 @@ const extractRepoCandidate = (node: ts.Node, sf: ts.SourceFile, checker: ts.Type
 
 const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
 
-const pairFileNodes = (sf: ts.SourceFile) =>
-  flow(
-    collectFileNodes,
-    RA.map((node) => ({ node, sf })),
-  )(sf);
+const pairFileNodes = flow(
+  (sf: ts.SourceFile) => ({ sf, nodes: collectFileNodes(sf) }),
+  ({ sf, nodes }) => RA.map((node: ts.Node) => ({ node, sf }))(nodes),
+);
 
 const collectNodesAndFiles = flow(collectProjectSourceFiles, RA.flatMap(pairFileNodes));
 
@@ -210,16 +224,18 @@ const extractUniqueParents = flow(
   RA.uniq(S.Eq),
 );
 
+const groupChildParents = (aggregateRoots: ReadonlySet<string>) =>
+  flow(
+    RA.filter((c: AggregateCandidate) => aggregateRoots.has(c.name)),
+    RA.flatMap((agg: AggregateCandidate) => extractAggregateChildPairs(agg, aggregateRoots)),
+    RNEA.groupBy(([child]) => child),
+    RR.map(extractUniqueParents),
+  );
+
 const computeChildOwnership = (
   candidates: ReadonlyArray<AggregateCandidate>,
   aggregateRoots: ReadonlySet<string>,
-) =>
-  flow(
-    RA.filter((c: AggregateCandidate) => aggregateRoots.has(c.name)),
-    RA.flatMap((agg) => extractAggregateChildPairs(agg, aggregateRoots)),
-    RNEA.groupBy(([child]) => child),
-    RR.map(extractUniqueParents),
-  )(candidates);
+) => groupChildParents(aggregateRoots)(candidates);
 
 type RootResolutionConfig = Readonly<{
   readonly explicitOptionRoots: ReadonlyArray<string>;
@@ -251,10 +267,9 @@ const collectOwnedByExplicitSet = (
   explicitSet: ReadonlySet<string>,
 ) =>
   new Set(
-    flow(
-      RA.filter((c: AggregateCandidate) => explicitSet.has(c.name)),
-      RA.flatMap((c) => c.referencedTypes),
-    )(candidates),
+    RA.flatMap((c: AggregateCandidate) => c.referencedTypes)(
+      RA.filter((c: AggregateCandidate) => explicitSet.has(c.name))(candidates),
+    ),
   );
 
 const isInferredRepoRoot = (name: string, ownedByExplicit: ReadonlySet<string>) =>
@@ -264,10 +279,9 @@ const collectInferredRepoRoots = (
   repos: ReadonlyArray<RepoCandidate>,
   ownedByExplicit: ReadonlySet<string>,
 ) =>
-  flow(
-    RA.flatMap((r: RepoCandidate) => r.entityTypes),
-    RA.filter((name) => isInferredRepoRoot(name, ownedByExplicit)),
-  )(repos);
+  RA.filter((name: string) => isInferredRepoRoot(name, ownedByExplicit))(
+    RA.flatMap((r: RepoCandidate) => r.entityTypes)(repos),
+  );
 
 const resolveAggregateRoots = (
   graph: ProgramAggregateGraph,
@@ -309,11 +323,11 @@ const aggregateSummaryCache = new WeakMap<
   Readonly<Record<string, AggregateGraphSummary>>
 >();
 
-const summarizeWithConfig = (config: RootResolutionConfig) => (graph: ProgramAggregateGraph) =>
+const summarizeWithConfig = (config: RootResolutionConfig) =>
   flow(
-    (g: ProgramAggregateGraph) => resolveAggregateRoots(g, config),
-    (roots) => buildGraphSummary(graph, roots),
-  )(graph);
+    (graph: ProgramAggregateGraph) => ({ graph, roots: resolveAggregateRoots(graph, config) }),
+    ({ graph, roots }) => buildGraphSummary(graph, roots),
+  );
 
 const makeAggregateCacheKey = (config: RootResolutionConfig) =>
   `${config.explicitOptionRoots.join(",")}|${config.aggregatePathPatterns.join(",")}`;
@@ -322,7 +336,7 @@ export const analyzeAggregateGraph = (
   program: ts.Program,
   explicitOptionRoots: ReadonlyArray<string> = [],
   aggregatePathPatterns: ReadonlyArray<string> = DEFAULT_AGGREGATE_PATHS,
-) => {
+): AggregateGraphSummary => {
   const config = { explicitOptionRoots, aggregatePathPatterns };
   return memoizeByProgramAndKey(
     program,

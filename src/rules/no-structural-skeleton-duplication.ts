@@ -20,10 +20,12 @@ type Options = [
 ];
 type MessageIds = "structuralSkeletonDuplication";
 
+const resolveTsLocationKey = flow(resolveTsNodeOwnLocation, makeLocationKey);
+
 const resolveCallLocationKey = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
-) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
+) => resolveTsLocationKey(services.esTreeNodeToTSNodeMap.get(node));
 
 const formatClusterFields = (cluster: SkeletonCluster) => ({
   count: String(cluster.sites.length),
@@ -62,12 +64,9 @@ const checkPipelineCall = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    O.fromPredicate(isPipeOrFlowNode),
-    O.map((n) => {
-      reportCluster(n, resolveSkeletonIndex(options, services), services, report);
-    }),
-  )(node);
+  O.map((n: TSESTree.CallExpression) => {
+    reportCluster(n, resolveSkeletonIndex(options, services), services, report);
+  })(O.fromPredicate(isPipeOrFlowNode)(node));
 };
 
 const buildSkeletonListeners = (

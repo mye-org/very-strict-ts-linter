@@ -29,8 +29,7 @@ const pickGreater = (a: number, b: number) => Math.max(a, b);
 const accumulateArgDepth = (maxDepth: number, arg: TSESTree.CallExpression) =>
   pickGreater(maxDepth, computeMaxCallNestingDepth(arg));
 
-const computeMaxArgDepth = (args: ReadonlyArray<TSESTree.CallExpressionArgument>) =>
-  flow(RA.filter(isCallArg), RA.reduce(0, accumulateArgDepth))(args);
+const computeMaxArgDepth = flow(RA.filter(isCallArg), RA.reduce(0, accumulateArgDepth));
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
 const computeMaxCallNestingDepth = (node: TSESTree.CallExpression): number =>

@@ -20,21 +20,22 @@ const reportPrimitiveType = (
     .exhaustive();
 };
 
+const extractDomainTypeNode = flow(
+  O.map((ann: TSESTree.TSTypeAnnotation) => ann.typeAnnotation),
+  O.filter((typeNode) => !isInsideNewtypeDefinition(typeNode)),
+);
+
 const checkTypeNode = (
   typeAnnotation: O.Option<TSESTree.TSTypeAnnotation>,
   report: (node: TSESTree.Node, messageId: MessageIds, payload: O.Option<Readonly<Record<string, string>>>) => void,
 ) => {
-  flow(
-    O.map((ann: TSESTree.TSTypeAnnotation) => ann.typeAnnotation),
-    O.filter((typeNode) => !isInsideNewtypeDefinition(typeNode)),
-    O.map((typeNode) => {
-      reportPrimitiveType(
-        typeNode,
-        (n, kind) => { report(n, "rawStringOrNumber", O.some({ kind })); },
-        (n) => { report(n, "rawBoolean", O.none); },
-      );
-    }),
-  )(typeAnnotation);
+  O.map((typeNode: TSESTree.TypeNode) => {
+    reportPrimitiveType(
+      typeNode,
+      (n, kind) => { report(n, "rawStringOrNumber", O.some({ kind })); },
+      (n) => { report(n, "rawBoolean", O.none); },
+    );
+  })(extractDomainTypeNode(typeAnnotation));
 };
 
 const reportWithPayload = (

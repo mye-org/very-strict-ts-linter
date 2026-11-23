@@ -29,15 +29,12 @@ const formatClusters = flow(
   joinWithVs,
 );
 
+const resolveTsLocationKey = flow(resolveTsNodeOwnLocation, makeLocationKey);
+
 const resolveModelKey = (
   node: ModelDeclNode,
   services: ParserServicesWithTypeInformation,
-) =>
-  flow(
-    (n: ModelDeclNode) => services.esTreeNodeToTSNodeMap.get(n),
-    resolveTsNodeOwnLocation,
-    makeLocationKey,
-  )(node);
+) => resolveTsLocationKey(services.esTreeNodeToTSNodeMap.get(node));
 
 const checkModelNode = (
   node: ModelDeclNode,
@@ -45,17 +42,13 @@ const checkModelNode = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    (n: ModelDeclNode) => byLocation[resolveModelKey(n, services)],
-    O.fromNullable,
-    O.map((finding) => {
-      report({
-        node: node.id ?? node,
-        messageId: "modelPolysemy",
-        data: { model: finding.modelName, clusters: formatClusters(finding) },
-      });
-    }),
-  )(node);
+  O.map((finding: PolysemyFinding) => {
+    report({
+      node: node.id ?? node,
+      messageId: "modelPolysemy",
+      data: { model: finding.modelName, clusters: formatClusters(finding) },
+    });
+  })(O.fromNullable(byLocation[resolveModelKey(node, services)]));
 };
 
 const buildPolysemyListeners = (

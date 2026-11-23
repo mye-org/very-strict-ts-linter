@@ -8,7 +8,7 @@ import { ESLint } from "eslint";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { flow, pipe } from "fp-ts/lib/function.js";
+import { pipe } from "fp-ts/lib/function.js";
 import * as S from "fp-ts/lib/string.js";
 import { afterAll, describe, expect, it } from "vitest";
 import strictFp, {
@@ -44,10 +44,11 @@ const findTierBlock = (configList: ReadonlyArray<TSESLint.FlatConfig.Config>, na
 const tmpRoot = os.tmpdir();
 
 const createTempProjectDir = () =>
-  flow(
+  pipe(
+    "strict-fp-phased-",
     (prefix: string) => path.join(tmpRoot, prefix),
     (dirPath) => fs.mkdtempSync(dirPath),
-  )("strict-fp-phased-");
+  );
 
 const readProjectFile = (dir: string, name: string) =>
   fs.readFileSync(path.join(dir, name), "utf8");
@@ -118,15 +119,9 @@ describe("tiered configs and React/Expo exclusions", () => {
   });
 
   it("builds cumulative tier1, tier2, and tier3 presets with all plugin rules at error severity and no duplicate consistent-type-definitions", () => {
-    const t1Rules = findTierBlock(configs.tier1, "strict-fp/tier-1")?.rules as
-      | Record<string, TSESLint.FlatConfig.RuleEntry>
-      | undefined;
-    const t2Rules = findTierBlock(configs.tier2, "strict-fp/tier-2")?.rules as
-      | Record<string, TSESLint.FlatConfig.RuleEntry>
-      | undefined;
-    const t3Rules = findTierBlock(configs.tier3, "strict-fp/tier-3")?.rules as
-      | Record<string, TSESLint.FlatConfig.RuleEntry>
-      | undefined;
+    const t1Rules = findTierBlock(configs.tier1, "strict-fp/tier-1")?.rules;
+    const t2Rules = findTierBlock(configs.tier2, "strict-fp/tier-2")?.rules;
+    const t3Rules = findTierBlock(configs.tier3, "strict-fp/tier-3")?.rules;
 
     expect(t1Rules).toBeDefined();
     expect(t2Rules).toBeDefined();
@@ -192,7 +187,7 @@ describe("tiered configs and React/Expo exclusions", () => {
     const boundaryBlock = findTierBlock(tiered, "strict-fp/boundary-overrides");
     const testBlock = findTierBlock(tiered, "strict-fp/test-overrides");
 
-    const mainRules = mainBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    const mainRules = mainBlock?.rules;
     expect(mainRules?.["strict-fp/module-cohesion"]).toBe("error");
     expect(mainRules?.["strict-fp/functional-core-boundary"]).toBe("error");
     expect(mainRules?.["strict-fp/no-single-caller-export"]).toEqual([
@@ -204,10 +199,10 @@ describe("tiered configs and React/Expo exclusions", () => {
       { testPatterns: ["tests/**/*.ts"] },
     ]);
 
-    const boundaryRules = boundaryBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    const boundaryRules = boundaryBlock?.rules;
     expect(boundaryRules?.["strict-fp/functional-core-boundary"]).toBe("off");
 
-    const testRules = testBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    const testRules = testBlock?.rules;
     expect(testRules?.["strict-fp/module-cohesion"]).toBe("off");
     expect(testRules?.["strict-fp/functional-core-boundary"]).toBe("off");
     expect(testRules?.["strict-fp/no-single-caller-export"]).toBe("off");
@@ -223,7 +218,7 @@ describe("tiered configs and React/Expo exclusions", () => {
     const testBlock = findTierBlock(tiered, "strict-fp/test-overrides");
     const testScopeBlock = findTierBlock(configs.testScope, "strict-fp/test-scope");
 
-    const mainRules = mainBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    const mainRules = mainBlock?.rules;
     expect(mainRules?.["strict-fp/no-redundant-test-scope"]).toEqual([
       "error",
       { testPatterns: ["tests/**/*.ts"] },
@@ -237,7 +232,7 @@ describe("tiered configs and React/Expo exclusions", () => {
       { testPatterns: ["tests/**/*.ts"] },
     ]);
 
-    const testRules = testBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    const testRules = testBlock?.rules;
     expect(testRules?.["strict-fp/no-redundant-test-scope"]).toBeUndefined();
     expect(testRules?.["strict-fp/prefer-lowest-test-level"]).toBeUndefined();
     expect(testRules?.["strict-fp/single-test-responsibility"]).toBeUndefined();
@@ -406,7 +401,7 @@ export default [
       fs.writeFileSync(path.join(tmpDir, "App.tsx"), "export const App = () => <div />;\n");
       fs.writeFileSync(path.join(tmpDir, "BadApp.tsx"), "const helper = (n: number) => n + 1; export const BadApp = () => <div>{helper(1)}</div>;\n");
       fs.writeFileSync(path.join(tmpDir, "app.config.ts"), "let cfg: any = { name: 'app' }; export default cfg;\n");
-      fs.writeFileSync(path.join(tmpDir, "logic.ts"), "export type Retry = { readonly timeoutMs: number };\nexport const fn = () => { let count = 1; count += 1; return count; };\n");
+      fs.writeFileSync(path.join(tmpDir, "logic.ts"), "export type Retry = { readonly timeoutMs: number };\nexport const fn = (): number => { let count = 1; count += 1; return count; };\n");
 
       const result = await runPhasedLint({
         targets: ["."],
@@ -610,7 +605,7 @@ export default [
       );
       fs.writeFileSync(
         path.join(tmpDir, "tier2-and-3.ts"),
-        "export type Retry = { readonly timeoutMs: number };\nexport const compute = (input: Retry) => { let count = 1; count += 1; return input.timeoutMs + count; };\n",
+        "export type Retry = { readonly timeoutMs: number };\nexport const compute = (input: Retry): number => { let count = 1; count += 1; return input.timeoutMs + count; };\n",
       );
 
       // 1. Clean run (maxTier: 3) invokes ESLint & lintFiles exactly once while reporting Tiers 0..3
@@ -953,7 +948,7 @@ export default [
           "  O.map(wrapGeneric),",
           ");",
           "",
-          "export const combineScoredBatch = (values: ReadonlyArray<number>, label: O.Option<string>) =>",
+          "export const combineScoredBatch = <L>(values: ReadonlyArray<number>, label: O.Option<L>): O.Option<{ readonly batch: { readonly payload: ReadonlyArray<number> }; readonly label: L }> =>",
           "  Ap.sequenceS(O.Applicative)({ batch: incrementAll(values), label });",
           "",
         ].join("\n"),

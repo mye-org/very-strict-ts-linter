@@ -71,11 +71,7 @@ const formatCallArgList = (
   args: ReadonlyArray<ts.Expression>,
   roots: ReadonlyArray<string>,
   sf: ts.SourceFile,
-) =>
-  flow(
-    RA.map((a: ts.Expression) => normalizeExpr(a, roots, sf)),
-    joinComma,
-  )(args);
+) => joinComma(RA.map((a: ts.Expression) => normalizeExpr(a, roots, sf))(args));
 
 const wrapBinaryText = (lhs: string, op: string, rhs: string) => `(${lhs} ${op} ${rhs})`;
 
@@ -153,12 +149,12 @@ const toGuardOccurrence = (node: ts.BinaryExpression, sf: ts.SourceFile) => {
 
 const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
 
-const extractFileGuards = (sf: ts.SourceFile) =>
-  flow(
-    collectFileNodes,
-    RA.filter(isTopLevelLogicalExpr),
-    RA.filterMap((node) => toGuardOccurrence(node, sf)),
-  )(sf);
+const collectTopLevelLogicalNodes = flow(collectFileNodes, RA.filter(isTopLevelLogicalExpr));
+
+const extractFileGuards = flow(
+  (sf: ts.SourceFile) => ({ sf, nodes: collectTopLevelLogicalNodes(sf) }),
+  ({ sf, nodes }) => RA.filterMap((node: ts.BinaryExpression) => toGuardOccurrence(node, sf))(nodes),
+);
 
 const collectAllProgramGuards = flow(collectProjectSourceFiles, RA.flatMap(extractFileGuards));
 
@@ -179,7 +175,7 @@ const toGuardCluster = (
         preview: first.preview,
         locations: extractGuardLocations(occs),
       }))(O.fromNullable(occs[0]))
-    : (O.none as O.Option<GuardCluster>);
+    : (O.none satisfies O.Option<GuardCluster>);
 
 type GuardIndex = Readonly<{
   readonly clusters: ReadonlyArray<GuardCluster>;
@@ -206,27 +202,14 @@ const buildGuardIndex = (clusters: ReadonlyArray<GuardCluster>) => ({
   byLocation: indexClustersByLocation(clusters),
 });
 
-const collectEligibleGuards = (program: ts.Program, minClauses: number) =>
+const computeGuardIndexForThresholds = (thresholds: GuardThresholds) =>
   flow(
     collectProgramGuards,
-    RA.filter((occ) => occ.clauseCount >= minClauses),
+    RA.filter((occ: GuardOccurrence) => occ.clauseCount >= thresholds.minClauses),
     groupAllBySignature,
-  )(program);
-
-const clusterGroupedGuards = (
-  grouped: Readonly<Record<string, ReadonlyArray<GuardOccurrence>>>,
-  minOccurrences: number,
-) =>
-  flow(
     (rec: Readonly<Record<string, ReadonlyArray<GuardOccurrence>>>) => RR.toEntries(rec),
-    RA.filterMap((entry) => toGuardCluster(entry, minOccurrences)),
+    RA.filterMap((entry) => toGuardCluster(entry, thresholds.minOccurrences)),
     buildGuardIndex,
-  )(grouped);
-
-const computeGuardIndex = (program: ts.Program, thresholds: GuardThresholds) =>
-  clusterGroupedGuards(
-    collectEligibleGuards(program, thresholds.minClauses),
-    thresholds.minOccurrences,
   );
 
 const makeGuardCacheKey = (thresholds: GuardThresholds) =>
@@ -236,12 +219,12 @@ export const analyzeGuardClauses = (
   program: ts.Program,
   minClauses = 2,
   minOccurrences = 2,
-) => {
+): GuardIndex => {
   const thresholds = { minClauses, minOccurrences };
   return memoizeByProgramAndKey(
     program,
     makeGuardCacheKey(thresholds),
     guardIndexCache,
-    (p) => computeGuardIndex(p, thresholds),
+    computeGuardIndexForThresholds(thresholds),
   );
 };

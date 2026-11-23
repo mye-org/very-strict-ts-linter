@@ -15,10 +15,12 @@ const isTopLevelLogical = (node: TSESTree.LogicalExpression) =>
     (node.parent.operator === "&&" || node.parent.operator === "||")
   );
 
+const resolveTsLocationKey = flow(resolveTsNodeOwnLocation, makeLocationKey);
+
 const resolveLogicalLocationKey = (
   node: TSESTree.LogicalExpression,
   services: ParserServicesWithTypeInformation,
-) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
+) => resolveTsLocationKey(services.esTreeNodeToTSNodeMap.get(node));
 
 const formatClusterFields = (cluster: GuardCluster) => ({
   count: String(cluster.locations.length),
@@ -46,17 +48,14 @@ const checkLogicalExpr = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    O.fromPredicate(isTopLevelLogical),
-    O.map((n) => {
-      reportRepeatedGuard(
-        n,
-        analyzeGuardClauses(services.program, options.minClauses, options.minOccurrences).byLocation,
-        services,
-        report,
-      );
-    }),
-  )(node);
+  O.map((n: TSESTree.LogicalExpression) => {
+    reportRepeatedGuard(
+      n,
+      analyzeGuardClauses(services.program, options.minClauses, options.minOccurrences).byLocation,
+      services,
+      report,
+    );
+  })(O.fromPredicate(isTopLevelLogical)(node));
 };
 
 const buildGuardListeners = (

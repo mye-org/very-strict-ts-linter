@@ -5,6 +5,7 @@ import {
   TSESTree,
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
@@ -51,17 +52,15 @@ const isFiniteNonBooleanKey = (type: ts.Type) =>
 
 const isOptionsOrConfigName = (name: string) => OPTIONS_OR_CONFIG_RE.test(name);
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive ancestor walk
-const isInsideOptionsTypeAlias = (node: TSESTree.Node): boolean =>
-  flow(
-    (n: TSESTree.Node) => O.fromNullable(n.parent),
-    O.exists(
-      (parent) =>
-        (parent.type === AST_NODE_TYPES.TSTypeAliasDeclaration &&
-          isOptionsOrConfigName(parent.id.name)) ||
-        isInsideOptionsTypeAlias(parent),
-    ),
-  )(node);
+const isInsideOptionsTypeAlias: Pred.Predicate<TSESTree.Node> = flow(
+  (n: TSESTree.Node) => O.fromNullable(n.parent),
+  O.exists(
+    (parent) =>
+      (parent.type === AST_NODE_TYPES.TSTypeAliasDeclaration &&
+        isOptionsOrConfigName(parent.id.name)) ||
+      isInsideOptionsTypeAlias(parent),
+  ),
+);
 
 const isTypeRefNamed = (
   node: TSESTree.TypeNode,
@@ -76,15 +75,14 @@ const resolveFirstTypeArg = flow(
   O.flatMap((ta) => O.fromNullable(ta.params[0])),
 );
 
-const resolvePartialRecordKeyType = (node: TSESTree.TSTypeReference) =>
-  flow(
-    O.fromPredicate((n: TSESTree.TSTypeReference) => isTypeRefNamed(n, PARTIAL_TYPE_NAMES)),
-    O.flatMap(resolveFirstTypeArg),
-    O.filter((inner): inner is TSESTree.TSTypeReference =>
-      isTypeRefNamed(inner, RECORD_TYPE_NAMES),
-    ),
-    O.flatMap(resolveFirstTypeArg),
-  )(node);
+const resolvePartialRecordKeyType = flow(
+  O.fromPredicate((n: TSESTree.TSTypeReference) => isTypeRefNamed(n, PARTIAL_TYPE_NAMES)),
+  O.flatMap(resolveFirstTypeArg),
+  O.filter((inner): inner is TSESTree.TSTypeReference =>
+    isTypeRefNamed(inner, RECORD_TYPE_NAMES),
+  ),
+  O.flatMap(resolveFirstTypeArg),
+);
 
 const resolveNodeTsType = (
   node: TSESTree.Node,
@@ -108,23 +106,39 @@ const isPartialFiniteRecordNode = (
     resolvePartialRecordKeyType(node),
   );
 
-const isStringIndexed = (type: ts.Type, checker: ts.TypeChecker) =>
-  flow(
+const isStringIndexed = (type: ts.Type, checker: ts.TypeChecker) => {
+  const check = flow(
     (t: ts.Type) => checker.getIndexInfoOfType(t, ts.IndexKind.String),
     O.fromNullable,
     O.isSome,
-  )(type);
+  );
+  return check(type);
+};
 
 const isWideStringIndexRecord = (type: ts.Type, checker: ts.TypeChecker) =>
   type.getProperties().length === 0 && isStringIndexed(type, checker);
+
+const isTsTypeReference = (type: ts.Type): type is ts.TypeReference =>
+  (type.flags & ts.TypeFlags.Object) !== 0 &&
+  "objectFlags" in type &&
+  typeof type.objectFlags === "number" &&
+  (type.objectFlags & ts.ObjectFlags.Reference) !== 0;
+
+const hasStringFirstTypeArg = (type: ts.TypeReference, checker: ts.TypeChecker) => {
+  const check = flow(
+    (t: ts.TypeReference) => checker.getTypeArguments(t),
+    RA.head<ts.Type>,
+    O.exists(isStringTypeFlag),
+  );
+  return check(type);
+};
 
 const isWideStringMap = (type: ts.Type, checker: ts.TypeChecker) => {
   const symName = type.getSymbol()?.name;
   return (
     (symName === "ReadonlyMap" || symName === "Map") &&
-    flow(RA.head<ts.Type>, O.exists(isStringTypeFlag))(
-      checker.getTypeArguments(type as ts.TypeReference),
-    )
+    isTsTypeReference(type) &&
+    hasStringFirstTypeArg(type, checker)
   );
 };
 
@@ -146,23 +160,28 @@ const resolveTypeDecl = flow(
   resolveSymbolFirstDecl,
 );
 
-const resolveNodeSymbolDecl = (tsNode: ts.Node, checker: ts.TypeChecker) =>
-  flow(
+const resolveNodeSymbolDecl = (tsNode: ts.Node, checker: ts.TypeChecker) => {
+  const resolve = flow(
     (n: ts.Node) => checker.getSymbolAtLocation(n),
     O.fromNullable,
     resolveSymbolFirstDecl,
-  )(tsNode);
+  );
+  return resolve(tsNode);
+};
 
 const resolveFirstDeclFile = (
   tsNode: ts.Node,
   type: ts.Type,
   checker: ts.TypeChecker,
-) =>
-  flow(
+) => {
+  const resolve = flow(
+    resolveAliasDecl,
     O.alt(() => resolveTypeDecl(type)),
     O.alt(() => resolveNodeSymbolDecl(tsNode, checker)),
     O.map((decl: ts.Declaration) => decl.getSourceFile().fileName),
-  )(resolveAliasDecl(type));
+  );
+  return resolve(type);
+};
 
 const isExternalLibraryType = (
   node: TSESTree.Node,

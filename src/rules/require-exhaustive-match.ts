@@ -32,19 +32,19 @@ const resolveParentMemberCall = (current: TSESTree.Node) =>
 
 const resolveTerminatorFromStep = (
   [member, parentCall]: readonly [TSESTree.MemberExpression, TSESTree.CallExpression],
-) =>
-  flow(
+) => {
+  const resolve = flow(
     extractTerminatorMethodName,
     O.map((methodName) => [parentCall, methodName] as const),
     O.alt(() => findMatchChainTerminator(parentCall)),
-  )(member);
+  );
+  return resolve(member);
+};
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
-const findMatchChainTerminator = (current: TSESTree.Node): O.Option<readonly [TSESTree.CallExpression, string]> =>
-  flow(
-    resolveParentMemberCall,
-    O.flatMap(resolveTerminatorFromStep),
-  )(current);
+const findMatchChainTerminator: (current: TSESTree.Node) => O.Option<readonly [TSESTree.CallExpression, string]> = flow(
+  resolveParentMemberCall,
+  O.flatMap(resolveTerminatorFromStep),
+);
 
 const isMatchCall = (node: TSESTree.CallExpression) =>
   node.callee.type === AST_NODE_TYPES.Identifier &&
@@ -54,21 +54,22 @@ const isMatchCall = (node: TSESTree.CallExpression) =>
 const isExhaustiveCandidateArg = (
   targetArg: TSESTree.CallExpressionArgument,
   services: ParserServicesWithTypeInformation,
-) =>
-  flow(
+) => {
+  const check = flow(
     (arg: TSESTree.CallExpressionArgument) => services.esTreeNodeToTSNodeMap.get(arg),
     (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
     isFiniteExhaustiveCandidate,
-  )(targetArg);
+  );
+  return check(targetArg);
+};
 
 const hasFiniteFirstArg = (
   args: ReadonlyArray<TSESTree.CallExpressionArgument>,
   services: ParserServicesWithTypeInformation,
 ) =>
-  flow(
-    RA.head<TSESTree.CallExpressionArgument>,
-    O.exists((arg) => isExhaustiveCandidateArg(arg, services)),
-  )(args);
+  O.exists((arg: TSESTree.CallExpressionArgument) => isExhaustiveCandidateArg(arg, services))(
+    RA.head<TSESTree.CallExpressionArgument>(args),
+  );
 
 const checkTerminator = (
   node: TSESTree.CallExpression,
@@ -94,13 +95,14 @@ const checkMatchCall = (
   match(isMatchCall(node))
     .with(false, () => {})
     .with(true, () => {
-      flow(
+      const check = flow(
         findMatchChainTerminator,
         O.match(
           () => { report(node, "unterminatedMatch"); },
           ([terminator, methodName]) => { checkTerminator(node, terminator, methodName, services, report); },
         ),
-      )(node);
+      );
+      check(node);
     })
     .exhaustive();
 };

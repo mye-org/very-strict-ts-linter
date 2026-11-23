@@ -202,7 +202,7 @@ const formatMarkdownReport = (report: DiscoveryRadarReport) =>
 export const formatDiscoveryReport = (
   report: DiscoveryRadarReport,
   format: "markdown" | "json",
-) =>
+): string =>
   match(format)
     .with("json", () => JSON.stringify(report, undefined, 2))
     .with("markdown", () => formatMarkdownReport(report))

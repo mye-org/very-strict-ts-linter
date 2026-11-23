@@ -19,13 +19,15 @@ const SPLIT_METHODS: ReadonlySet<string> = new Set(["split"]);
 const resolveParamSymbol = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) =>
-  flow(
+) => {
+  const resolve = flow(
     (n: TSESTree.Node) => services.esTreeNodeToTSNodeMap.get(n),
     (tsNode) => services.program.getTypeChecker().getSymbolAtLocation(tsNode),
     O.fromNullable,
     O.filter(isTsParameterSymbol),
-  )(node);
+  );
+  return resolve(node);
+};
 
 const isStringType = (type: ts.Type) => (type.flags & ts.TypeFlags.String) !== 0;
 
@@ -60,14 +62,16 @@ const isPairFromSameFn = (
   objNode: TSESTree.Identifier,
   keyNode: TSESTree.Identifier,
   services: ParserServicesWithTypeInformation,
-) =>
-  flow(
+) => {
+  const check = flow(
     O.apS("objSym", resolveParamSymbol(objNode, services)),
     O.apS("keySym", resolveParamSymbol(keyNode, services)),
     O.exists(({ objSym, keySym }) =>
       isMatchingParamPair(objSym, keySym, services.program.getTypeChecker()),
     ),
-  )(O.Do);
+  );
+  return check(O.Do);
+};
 
 const hasObjectLikeParam = (
   params: ReadonlyArray<ts.ParameterDeclaration>,
@@ -108,10 +112,9 @@ const isSplitCallOnParam = (
   callee.object.type === AST_NODE_TYPES.Identifier &&
   callee.property.type === AST_NODE_TYPES.Identifier &&
   SPLIT_METHODS.has(callee.property.name) &&
-  flow(
-    resolveParamSymbol,
-    O.exists((keySym) => isSplitKeyParam(keySym, services)),
-  )(callee.object, services);
+  O.exists((keySym: ts.Symbol) => isSplitKeyParam(keySym, services))(
+    resolveParamSymbol(callee.object, services),
+  );
 
 const isDotPathSplitOnParam = (
   call: TSESTree.CallExpression,

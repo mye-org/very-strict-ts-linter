@@ -75,10 +75,7 @@ const checkProgramCohesion = (
   options: Options[0],
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    (n: TSESTree.Program) => evaluateProgramCohesion(n, services, options),
-    (result) => { reportIfDisconnected(node, result, report); },
-  )(node);
+  reportIfDisconnected(node, evaluateProgramCohesion(node, services, options), report);
 };
 
 export const moduleCohesion = createRule<Options, MessageIds>({

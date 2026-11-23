@@ -122,6 +122,7 @@ ruleTester.run("no-any-or-unknown", noAnyOrUnknown, {
 ruleTester.run("no-explicit-return-type", noExplicitReturnType, {
   valid: [
     `const add = (a: number, b: number) => a + b;`,
+    `const add = ((a: number, b: number) => a + b) satisfies (a: number, b: number) => number;`,
     `function greet(name: string) { return \`Hello \${name}\` as const; }`,
     `const fn = function (x: number) { return x * 2; };`,
     `class Foo { bar(x: number) { return x; } }`,
@@ -133,6 +134,32 @@ ruleTester.run("no-explicit-return-type", noExplicitReturnType, {
       function id(x: string): string;
       function id(x: number): number;
       function id(x: string | number) { return x; }
+    `,
+    `export function greet(name: string): string { return name; }`,
+    `export default function greet(name: string): string { return name; }`,
+    `export default (a: number, b: number): number => a + b;`,
+    `export default function (x: number): number { return x * 2; }`,
+    `export const add = (a: number, b: number): number => a + b;`,
+    `export const fn = function (x: number): number { return x * 2; };`,
+    `
+      const add = (a: number, b: number): number => a + b;
+      export { add };
+    `,
+    `
+      const add = (a: number, b: number): number => a + b;
+      export { add as sum };
+    `,
+    `
+      const add = (a: number, b: number): number => a + b;
+      export default add;
+    `,
+    `
+      function greet(name: string): string { return name; }
+      export { greet };
+    `,
+    `
+      function greet(name: string): string { return name; }
+      export default greet;
     `,
   ],
   invalid: [
@@ -165,6 +192,24 @@ ruleTester.run("no-explicit-return-type", noExplicitReturnType, {
     },
     {
       code: `const fetchVal = async (): Promise<number> => 1;`,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `
+        export function outer(x: number): number {
+          const helper = (y: number): number => y + 1;
+          return helper(x);
+        }
+      `,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `
+        export const foo = (x: number): number => {
+          const foo = (y: number): number => y;
+          return foo(x);
+        };
+      `,
       errors: [{ messageId: "noExplicitReturnType" }],
     },
   ],

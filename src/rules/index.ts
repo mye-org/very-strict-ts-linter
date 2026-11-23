@@ -2,7 +2,6 @@ import { commonReuseCohesion } from "./reuse-cohesion.js";
 import { domainLayerPurity } from "./domain-layer-purity.js";
 import { fpTsImportConvention } from "./fp-ts-import-convention.js";
 import { functionalCoreBoundary } from "./functional-core-boundary.js";
-import { maxFunctionLines } from "./max-function-lines.js";
 import { moduleCohesion } from "./module-cohesion.js";
 import { noAnyOrUnknown } from "./no-any-or-unknown.js";
 import { noAsyncAwait } from "./no-async-await.js";
@@ -23,6 +22,7 @@ import { noLetOrVar } from "./no-let-or-var.js";
 import { noLifecycleFlagClusters } from "./no-lifecycle-flag-clusters.js";
 import { noModelPolysemy } from "./no-model-polysemy.js";
 import { noMultiRepoOrchestration } from "./no-multi-repo-orchestration.js";
+import { noMutation } from "./no-mutation.js";
 import { noNestedPipe } from "./no-nested-pipe.js";
 import { noNestedTernary } from "./no-nested-ternary.js";
 import { noNullUndefined } from "./no-null-undefined.js";
@@ -76,7 +76,6 @@ export const rules = {
   "domain-layer-purity": domainLayerPurity,
   "fp-ts-import-convention": fpTsImportConvention,
   "functional-core-boundary": functionalCoreBoundary,
-  "max-function-lines": maxFunctionLines,
   "module-cohesion": moduleCohesion,
   "no-any-or-unknown": noAnyOrUnknown,
   "no-async-await": noAsyncAwait,
@@ -97,6 +96,7 @@ export const rules = {
   "no-lifecycle-flag-clusters": noLifecycleFlagClusters,
   "no-model-polysemy": noModelPolysemy,
   "no-multi-repo-orchestration": noMultiRepoOrchestration,
+  "no-mutation": noMutation,
   "no-nested-pipe": noNestedPipe,
   "no-nested-ternary": noNestedTernary,
   "no-null-undefined": noNullUndefined,

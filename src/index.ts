@@ -78,22 +78,30 @@ export {
   type StrictReactConfigOptions,
 };
 
-export default {
+type StrictFpPlugin = Readonly<{
+  meta: typeof pluginMeta;
+  rules: typeof pluginRules;
+  configs: typeof configs;
+  createStrictFpConfig: (options?: StrictFpConfigOptions) => TSESLint.FlatConfig.ConfigArray;
+  createStrictReactConfig: (options?: StrictReactConfigOptions) => TSESLint.FlatConfig.ConfigArray;
+  createTieredConfig: (options?: StrictFpConfigOptions) => TSESLint.FlatConfig.ConfigArray;
+  createDddBoundaryConfig: (options?: StrictFpConfigOptions) => TSESLint.FlatConfig.ConfigArray;
+  createDddDiscoveryConfig: (options?: StrictFpConfigOptions) => TSESLint.FlatConfig.ConfigArray;
+  createFpDiscoveryConfig: (options?: StrictFpConfigOptions) => TSESLint.FlatConfig.ConfigArray;
+  createTestScopeConfig: (options?: StrictFpConfigOptions) => TSESLint.FlatConfig.ConfigArray;
+}>;
+
+const strictFpPlugin: StrictFpPlugin = {
   meta: pluginMeta,
   rules: pluginRules,
   configs,
-  createStrictFpConfig: (options?: StrictFpConfigOptions) =>
-    buildStrictFpConfig(plugin, options),
-  createStrictReactConfig: (options?: StrictReactConfigOptions) =>
-    buildStrictReactConfig(plugin, options),
-  createTieredConfig: (options?: StrictFpConfigOptions) =>
-    buildTieredConfig(plugin, options),
-  createDddBoundaryConfig: (options?: StrictFpConfigOptions) =>
-    buildDddBoundaryConfig(plugin, options),
-  createDddDiscoveryConfig: (options?: StrictFpConfigOptions) =>
-    buildDddDiscoveryConfig(plugin, options),
-  createFpDiscoveryConfig: (options?: StrictFpConfigOptions) =>
-    buildFpDiscoveryConfig(plugin, options),
-  createTestScopeConfig: (options?: StrictFpConfigOptions) =>
-    buildTestScopeConfig(plugin, options),
+  createStrictFpConfig: (options) => buildStrictFpConfig(plugin, options),
+  createStrictReactConfig: (options) => buildStrictReactConfig(plugin, options),
+  createTieredConfig: (options) => buildTieredConfig(plugin, options),
+  createDddBoundaryConfig: (options) => buildDddBoundaryConfig(plugin, options),
+  createDddDiscoveryConfig: (options) => buildDddDiscoveryConfig(plugin, options),
+  createFpDiscoveryConfig: (options) => buildFpDiscoveryConfig(plugin, options),
+  createTestScopeConfig: (options) => buildTestScopeConfig(plugin, options),
 };
+
+export default strictFpPlugin;

@@ -14,6 +14,7 @@ import {
   computeConfigFingerprint,
   computeProjectFingerprint,
   hashShort,
+  isRecord,
   loadParsedTsConfig,
   readCachedArtifact,
   resolveCacheDir,
@@ -24,6 +25,7 @@ import {
 import {
   createExactTierRuleFilter,
   createTierRuleFilter,
+  isPhasedLintResult,
   sliceLintResultsForTier,
   type PhasedLintOptions,
   type PhasedLintResult,
@@ -128,7 +130,9 @@ const safeRealpath = (targetPath: string) => {
   }
 };
 
-export const resolveDaemonEndpoints = (cwd: string) => {
+export const resolveDaemonEndpoints = (
+  cwd: string,
+): { readonly socketPath: string; readonly pidPath: string } => {
   const key = hashShort(safeRealpath(cwd));
   const baseDir = os.tmpdir();
   return {
@@ -431,6 +435,7 @@ const handleWarmLint = async (
       "lint",
       scopeKey,
       projectFingerprint,
+      isPhasedLintResult,
     );
     if (cached) {
       return { ...cached, cacheHit: true } satisfies PhasedLintResult;
@@ -539,6 +544,43 @@ const cleanupEndpoints = (socketPath: string, pidPath: string) => {
   }
 };
 
+const isPhasedLintOptions = (value: unknown): value is PhasedLintOptions =>
+  isRecord(value) &&
+  Array.isArray(value["targets"]) &&
+  typeof value["fix"] === "boolean" &&
+  typeof value["format"] === "string" &&
+  (value["maxTier"] === 0 || value["maxTier"] === 1 || value["maxTier"] === 2 || value["maxTier"] === 3);
+
+const isDaemonRequest = (value: unknown): value is DaemonRequest => {
+  if (!isRecord(value) || typeof value["type"] !== "string") {
+    return false;
+  }
+  if (value["type"] === "ping" || value["type"] === "stop") {
+    return true;
+  }
+  return value["type"] === "lint" && isPhasedLintOptions(value["options"]);
+};
+
+const isDaemonResponse = (value: unknown): value is DaemonResponse => {
+  if (!isRecord(value) || typeof value["ok"] !== "boolean") {
+    return false;
+  }
+  if (!value["ok"]) {
+    return typeof value["error"] === "string";
+  }
+  if (value["type"] === "stopped") {
+    return true;
+  }
+  if (value["type"] === "pong") {
+    return (
+      typeof value["pid"] === "number" &&
+      typeof value["uptimeMs"] === "number" &&
+      typeof value["requestsServed"] === "number"
+    );
+  }
+  return value["type"] === "lint" && isPhasedLintResult(value["result"]);
+};
+
 const startDaemonServer = (cwd: string) => {
   const { socketPath, pidPath } = resolveDaemonEndpoints(cwd);
   cleanupEndpoints(socketPath, pidPath);
@@ -605,7 +647,12 @@ const startDaemonServer = (cwd: string) => {
 
       let request: DaemonRequest;
       try {
-        request = JSON.parse(line) as DaemonRequest;
+        const parsed: unknown = JSON.parse(line);
+        if (!isDaemonRequest(parsed)) {
+          socket.end(`${JSON.stringify({ ok: false, error: "Invalid daemon request" })}\n`);
+          return;
+        }
+        request = parsed;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         socket.end(`${JSON.stringify({ ok: false, error: message })}\n`);
@@ -695,7 +742,12 @@ const sendDaemonRequest = (
         const line = buffer.slice(0, newlineIndex).trim();
         client.end();
         try {
-          resolve(JSON.parse(line) as DaemonResponse);
+          const parsed: unknown = JSON.parse(line);
+          if (!isDaemonResponse(parsed)) {
+            reject(new Error("Invalid daemon response"));
+            return;
+          }
+          resolve(parsed);
         } catch (err) {
           reject(err instanceof Error ? err : new Error(String(err)));
         }
@@ -765,7 +817,7 @@ const ensureDaemonRunning = async (cwd: string) => {
   throw new Error(`Failed to start strict-fp daemon for workspace ${cwd}`);
 };
 
-export const requestDaemonStatus = async (cwd: string) => {
+export const requestDaemonStatus = async (cwd: string): Promise<DaemonStatus> => {
   const { socketPath } = resolveDaemonEndpoints(cwd);
   try {
     const resp = await sendDaemonRequest(socketPath, { type: "ping" }, 1000);
@@ -786,7 +838,7 @@ export const requestDaemonStatus = async (cwd: string) => {
   return stoppedStatus;
 };
 
-export const stopWorkspaceDaemon = async (cwd: string) => {
+export const stopWorkspaceDaemon = async (cwd: string): Promise<boolean> => {
   const { socketPath, pidPath } = resolveDaemonEndpoints(cwd);
   try {
     const resp = await sendDaemonRequest(socketPath, { type: "stop" }, 2000);
@@ -816,7 +868,7 @@ export const stopWorkspaceDaemon = async (cwd: string) => {
 
 export const runLintViaDaemon = async (
   options: PhasedLintOptions,
-) => {
+): Promise<PhasedLintResult> => {
   const cwd = options.cwd ?? process.cwd();
   const socketPath = await ensureDaemonRunning(cwd);
   const resp = await sendDaemonRequest(

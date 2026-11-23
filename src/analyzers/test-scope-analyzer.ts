@@ -571,11 +571,11 @@ const dedupeSortedStrings = flow(RA.uniq(S.Eq), RA.sort(S.Ord));
 const sortStringSet = flow((items: ReadonlySet<string>) => [...items], RA.sort(S.Ord));
 const toReadonlySet = (items: ReadonlyArray<string>) => new Set<string>(items);
 const toLookupMap = <K, V>(entries: ReadonlyArray<readonly [K, V]>) =>
-  new Map(entries) as ReadonlyMap<K, V>;
+  new Map(entries) satisfies ReadonlyMap<K, V>;
 const extendLookupMap = <K, V>(
   base: ReadonlyMap<K, V>,
   extras: ReadonlyArray<readonly [K, V]>,
-) => new Map([...base.entries(), ...extras]) as ReadonlyMap<K, V>;
+) => new Map([...base.entries(), ...extras]) satisfies ReadonlyMap<K, V>;
 const toReadonlyRecord = RR.fromEntries;
 const hasStringMember = (items: ReadonlyArray<string>, target: string) =>
   RA.some((item: string) => item === target)(items);
@@ -587,19 +587,14 @@ const formatNodeStart = (node: ts.Node, sf: ts.SourceFile) => formatInt(node.get
 const lookupRecordList = <T>(
   key: string,
   rec: Readonly<Record<string, ReadonlyArray<T>>>,
-) =>
-  flow(
-    (table: Readonly<Record<string, ReadonlyArray<T>>>) => RR.lookup(key)(table),
-    O.getOrElse(() => [] as ReadonlyArray<T>),
-  )(rec);
+) => O.getOrElse(() => RA.zero<T>())(RR.lookup(key)(rec));
 
 const lookupMapOption = <K, V>(key: K, map: ReadonlyMap<K, V>) => O.fromNullable(map.get(key));
 
-const lookupMapList = <K, T>(key: K, map: ReadonlyMap<K, ReadonlyArray<T>>) =>
-  flow(
-    (table: ReadonlyMap<K, ReadonlyArray<T>>) => lookupMapOption(key, table),
-    O.getOrElse(() => [] as ReadonlyArray<T>),
-  )(map);
+const lookupMapList = <K, T>(
+  key: K,
+  map: ReadonlyMap<K, ReadonlyArray<T>>,
+) => O.getOrElse(() => RA.zero<T>())(lookupMapOption(key, map));
 
 const resolveNodeSymbol = (node: ts.Node, checker: ts.TypeChecker) =>
   O.fromNullable(checker.getSymbolAtLocation(node));
@@ -642,15 +637,18 @@ const groupItemsByKey = <T>(items: ReadonlyArray<T>, selectKey: (item: T) => str
     appendGroupedItem(acc, selectKey(item), item),
   )(items);
 
-const lookupComponent = (id: string, components: ComponentMap) => RR.lookup(id)(components);
+const lookupComponent = (id: string, components: ComponentMap) => RR.lookup(id, components);
 const hasComponent = (id: string, components: ComponentMap) => RR.has(id, components);
 
-const resolveComponentName = (id: string, components: ComponentMap) =>
+const lookupComponentName = (id: string) =>
   flow(
-    (cid: string) => lookupComponent(cid, components),
+    (components: ComponentMap) => lookupComponent(id, components),
     O.map((comp) => comp.name),
     O.getOrElse(() => id),
-  )(id);
+  );
+
+const resolveComponentName = (id: string, components: ComponentMap) =>
+  lookupComponentName(id)(components);
 
 const isSourceFileMatchingPatterns = (sf: ts.SourceFile, patterns: ReadonlyArray<string>) =>
   isMatchingAnyPattern(normalizeFilePath(sf.fileName), patterns);
@@ -707,24 +705,28 @@ const isOwnBodyNode = (node: ts.Node, boundary: ts.Node): boolean =>
   ts.isFunctionLike(node)
     ? false
     : node === boundary ||
-      flow(
-        resolveNodeParent,
-        O.exists((parent) => isOwnBodyNode(parent, boundary)),
-      )(node);
+      O.exists((parent: ts.Node) => isOwnBodyNode(parent, boundary))(resolveNodeParent(node));
 
 const collectOwnBodyNodes = (body: ts.Node, sf: ts.SourceFile) =>
   RA.filter((node: ts.Node) => isOwnBodyNode(node, body))(collectTsNodes(body, sf));
+
+const lookupCanonicalComponentId = (
+  checker: ts.TypeChecker,
+  idBySymbol: ReadonlyMap<ts.Symbol, string>,
+) =>
+  flow(
+    (sym: ts.Symbol) => resolveCanonicalSymbol(sym, checker),
+    (canonical) => lookupMapOption(canonical, idBySymbol),
+  );
 
 const lookupComponentIdBySymbol = (
   targetSym: ts.Symbol,
   checker: ts.TypeChecker,
   idBySymbol: ReadonlyMap<ts.Symbol, string>,
 ) =>
-  flow(
-    (s: ts.Symbol) => resolveCanonicalSymbol(s, checker),
-    (canonical) => lookupMapOption(canonical, idBySymbol),
-    O.alt(() => lookupMapOption(targetSym, idBySymbol)),
-  )(targetSym);
+  O.alt(() => lookupCanonicalComponentId(checker, idBySymbol)(targetSym))(
+    lookupMapOption(targetSym, idBySymbol),
+  );
 
 const resolveSymbolOptionToComponentId = (
   symOpt: O.Option<ts.Symbol>,
@@ -732,8 +734,7 @@ const resolveSymbolOptionToComponentId = (
   idBySymbol: ReadonlyMap<ts.Symbol, string>,
 ) => O.flatMap((s: ts.Symbol) => lookupComponentIdBySymbol(s, checker, idBySymbol))(symOpt);
 
-const resolveExpressionToComponentId = (
-  expr: ts.Expression,
+const resolveExprComponentId = (
   checker: ts.TypeChecker,
   idBySymbol: ReadonlyMap<ts.Symbol, string>,
 ) =>
@@ -742,28 +743,38 @@ const resolveExpressionToComponentId = (
     O.fromPredicate(isResolvableSymbolExpr),
     O.flatMap((node) => resolveNodeSymbol(node, checker)),
     O.flatMap((sym) => lookupComponentIdBySymbol(sym, checker, idBySymbol)),
-  )(expr);
+  );
+
+const resolveExpressionToComponentId = (
+  expr: ts.Expression,
+  checker: ts.TypeChecker,
+  idBySymbol: ReadonlyMap<ts.Symbol, string>,
+) => resolveExprComponentId(checker, idBySymbol)(expr);
 
 const hasRethrowInBlock = (block: ts.Block, sf: ts.SourceFile) =>
   RA.some(ts.isThrowStatement)(collectOwnBodyNodes(block, sf));
 
 const isSwallowingTryNode = (node: ts.Node, sf: ts.SourceFile) =>
   ts.isTryStatement(node) &&
-  flow(
-    (stmt: ts.TryStatement) => O.fromNullable(stmt.catchClause),
-    O.exists((clause) => !hasRethrowInBlock(clause.block, sf)),
-  )(node);
+  O.exists((clause: ts.CatchClause) => !hasRethrowInBlock(clause.block, sf))(
+    O.fromNullable(node.catchClause),
+  );
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive parent walk
-const isInsideSwallowingTryCatch = (node: ts.Node, boundary: ts.Node, sf: ts.SourceFile): boolean =>
+const findNonBoundaryParent = (boundary: ts.Node) =>
   flow(
     resolveNodeParent,
-    O.filter((parent) => parent !== boundary),
-    O.exists(
-      (parent) =>
-        isSwallowingTryNode(parent, sf) || isInsideSwallowingTryCatch(parent, boundary, sf),
-    ),
-  )(node);
+    O.filter((parent: ts.Node) => parent !== boundary),
+  );
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive parent walk
+const isInsideSwallowingTryCatch = (node: ts.Node, boundary: ts.Node, sf: ts.SourceFile): boolean => {
+  const parentOpt = findNonBoundaryParent(boundary)(node);
+  return (
+    O.isSome(parentOpt) &&
+    (isSwallowingTryNode(parentOpt.value, sf) ||
+      isInsideSwallowingTryCatch(parentOpt.value, boundary, sf))
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Stage 1A: Production Component Graph & Return/Error Provenance
@@ -841,13 +852,13 @@ const buildVarFnRecord = (
   );
 };
 
+const extractVarFnInit = flow(unwrapExpression, O.fromPredicate(isFunctionValueExpr));
+
 const extractVarDeclRecord = (node: ts.VariableDeclaration, ctx: FileExportScope) =>
   isInitializedIdentVar(node)
-    ? flow(
-        unwrapExpression,
-        O.fromPredicate(isFunctionValueExpr),
-        O.map((init) => buildVarFnRecord(node, node.name, init, ctx)),
-      )(node.initializer)
+    ? O.map((init: ts.ArrowFunction | ts.FunctionExpression) =>
+        buildVarFnRecord(node, node.name, init, ctx),
+      )(extractVarFnInit(node.initializer))
     : O.none;
 
 const buildMethodRecord = (
@@ -877,19 +888,15 @@ const filterClassMethodRecords = (
     isNamedMethodWithBody(member) ? O.some(registerMember(member)) : O.none,
   )(members);
 
-const extractClassDeclRecords = (node: ts.ClassDeclaration, ctx: FileExportScope) =>
-  node.name
-    ? flow(
-        (nameNode: ts.Identifier) => ({
-          className: nameNode.text,
-          visibility: resolveNodeVisibility(node, nameNode, ctx),
-        }),
-        ({ className, visibility }) =>
-          filterClassMethodRecords(node.members, (member) =>
-            buildMethodRecord(member, className, visibility, ctx),
-          ),
-      )(node.name)
-    : EMPTY_RAW_FNS;
+const extractNamedClassMethodRecords = (
+  node: ts.ClassDeclaration,
+  nameNode: ts.Identifier,
+  visibility: ExportVisibility,
+  ctx: FileExportScope,
+) =>
+  filterClassMethodRecords(node.members, (member) =>
+    buildMethodRecord(member, nameNode.text, visibility, ctx),
+  );
 
 const buildDefaultPropInitRecord = (
   init: ts.ArrowFunction | ts.FunctionExpression,
@@ -902,6 +909,17 @@ const buildDefaultPropInitRecord = (
   ) => RawProductionFn,
 ) => registerExport(formatDefaultPropName(pa.name.text), init, pa, pa.name);
 
+const buildDefaultMethodRecord = (
+  method: ts.MethodDeclaration &
+    Readonly<{ readonly name: ts.Identifier | ts.StringLiteral; readonly body: ts.Block }>,
+  registerExport: (
+    name: string,
+    fn: ts.FunctionLikeDeclaration,
+    reportNode: ts.Node,
+    symNode: ts.Node,
+  ) => RawProductionFn,
+) => registerExport(formatDefaultPropName(method.name.text), method, method, method.name);
+
 const buildDefaultMethodOption = (
   method: ts.MethodDeclaration &
     Readonly<{ readonly name: ts.Identifier | ts.StringLiteral; readonly body: ts.Block }>,
@@ -911,12 +929,32 @@ const buildDefaultMethodOption = (
     reportNode: ts.Node,
     symNode: ts.Node,
   ) => RawProductionFn,
+) => O.some(buildDefaultMethodRecord(method, registerExport));
+
+const extractPropInitFnOption = (
+  pa: ts.PropertyAssignment & Readonly<{ readonly name: ts.Identifier | ts.StringLiteral }>,
+  registerExport: (
+    name: string,
+    fn: ts.FunctionLikeDeclaration,
+    reportNode: ts.Node,
+    symNode: ts.Node,
+  ) => RawProductionFn,
 ) =>
   flow(
-    formatDefaultPropName,
-    (name) => registerExport(name, method, method, method.name),
-    O.some,
-  )(method.name.text);
+    unwrapExpression,
+    O.fromPredicate(isFunctionValueExpr),
+    O.map((init) => buildDefaultPropInitRecord(init, pa, registerExport)),
+  );
+
+const extractDefaultPropInitOption = (
+  pa: ts.PropertyAssignment & Readonly<{ readonly name: ts.Identifier | ts.StringLiteral }>,
+  registerExport: (
+    name: string,
+    fn: ts.FunctionLikeDeclaration,
+    reportNode: ts.Node,
+    symNode: ts.Node,
+  ) => RawProductionFn,
+) => extractPropInitFnOption(pa, registerExport)(pa.initializer);
 
 const extractDefaultObjPropRecord = (
   prop: ts.ObjectLiteralElementLike,
@@ -928,13 +966,7 @@ const extractDefaultObjPropRecord = (
   ) => RawProductionFn,
 ) =>
   match(prop)
-    .when(isNamedPropertyAssignment, (pa) =>
-      flow(
-        unwrapExpression,
-        O.fromPredicate(isFunctionValueExpr),
-        O.map((init) => buildDefaultPropInitRecord(init, pa, registerExport)),
-      )(pa.initializer),
-    )
+    .when(isNamedPropertyAssignment, (pa) => extractDefaultPropInitOption(pa, registerExport))
     .when(isNamedMethodWithBody, (method) => buildDefaultMethodOption(method, registerExport))
     .with(P._, () => O.none)
     .exhaustive();
@@ -979,7 +1011,16 @@ const extractStatementProductionFns = (node: ts.Statement, ctx: FileExportScope)
         vs.declarationList.declarations,
       ),
     )
-    .when(ts.isClassDeclaration, (cls) => extractClassDeclRecords(cls, ctx))
+    .when(ts.isClassDeclaration, (cls) =>
+      cls.name
+        ? extractNamedClassMethodRecords(
+            cls,
+            cls.name,
+            resolveNodeVisibility(cls, cls.name, ctx),
+            ctx,
+          )
+        : EMPTY_RAW_FNS,
+    )
     .when(ts.isExportAssignment, (exp) => extractExportAssignmentRecords(exp, ctx))
     .otherwise(() => EMPTY_RAW_FNS);
 
@@ -994,10 +1035,9 @@ const collectExportedCanonicalSyms = (
   checker: ts.TypeChecker,
 ) =>
   new Set(
-    flow(
-      RA.filterMap((e: (typeof runtimeExports)[number]) => e.symbol),
-      RA.map((s) => resolveCanonicalSymbol(s, checker)),
-    )(runtimeExports),
+    RA.map((s: ts.Symbol) => resolveCanonicalSymbol(s, checker))(
+      RA.filterMap((e: (typeof runtimeExports)[number]) => e.symbol)(runtimeExports),
+    ),
   );
 
 const buildFileExportScope = (sf: ts.SourceFile, checker: ts.TypeChecker) => {
@@ -1013,17 +1053,16 @@ const buildFileExportScope = (sf: ts.SourceFile, checker: ts.TypeChecker) => {
   } satisfies FileExportScope;
 };
 
+const collectFnsWithExportScope = (sf: ts.SourceFile) =>
+  flow(
+    (checker: ts.TypeChecker) => buildFileExportScope(sf, checker),
+    (ctx) =>
+      RA.flatMap((node: ts.Statement) => extractStatementProductionFns(node, ctx))(sf.statements),
+    dedupeRawFnsById,
+  );
+
 const collectFileProductionFns = (sf: ts.SourceFile, checker: ts.TypeChecker) =>
-  isBarrelFile(sf)
-    ? EMPTY_RAW_FNS
-    : flow(
-        (file: ts.SourceFile) => buildFileExportScope(file, checker),
-        (ctx) =>
-          RA.flatMap((node: ts.Statement) => extractStatementProductionFns(node, ctx))(
-            sf.statements,
-          ),
-        dedupeRawFnsById,
-      )(sf);
+  isBarrelFile(sf) ? EMPTY_RAW_FNS : collectFnsWithExportScope(sf)(checker);
 
 const resolveCallReceiverOrigins = (call: ts.CallExpression, ctx: OriginEnv) =>
   ts.isPropertyAccessExpression(call.expression)
@@ -1034,47 +1073,48 @@ const resolveCallArgOrigins = (call: ts.CallExpression, ctx: OriginEnv) =>
   RA.flatMap((arg: ts.Expression) => collectExprComponentOrigins(arg, ctx))(call.arguments);
 
 const resolveCallComponentOrigins = (call: ts.CallExpression, ctx: OriginEnv) =>
-  flow(
-    (expr: ts.Expression) =>
-      resolveExpressionToComponentId(expr, ctx.lookup.checker, ctx.lookup.idBySymbol),
-    O.match(
-      () =>
-        isPipeCallExpression(call)
-          ? RA.uniq(S.Eq)(resolveCallArgOrigins(call, ctx))
-          : RA.uniq(S.Eq)([
-              ...resolveCallReceiverOrigins(call, ctx),
-              ...resolveCallArgOrigins(call, ctx),
-            ]),
-      (id) => [id],
-    ),
-  )(call.expression);
+  O.match(
+    () =>
+      isPipeCallExpression(call)
+        ? RA.uniq(S.Eq)(resolveCallArgOrigins(call, ctx))
+        : RA.uniq(S.Eq)([
+            ...resolveCallReceiverOrigins(call, ctx),
+            ...resolveCallArgOrigins(call, ctx),
+          ]),
+    (id: string) => [id],
+  )(resolveExpressionToComponentId(call.expression, ctx.lookup.checker, ctx.lookup.idBySymbol));
 
-const resolveSymbolOrigins = (targetSym: ts.Symbol, ctx: OriginEnv) =>
+const resolveSymbolOriginList = (
+  lookup: OriginEnv["lookup"],
+  localVarOrigins: OriginEnv["localVarOrigins"],
+) =>
   flow(
-    (s: ts.Symbol) => lookupMapOption(s, ctx.localVarOrigins),
-    O.alt(() =>
-      O.map((id: string) => [id] as ReadonlyArray<string>)(
-        lookupComponentIdBySymbol(targetSym, ctx.lookup.checker, ctx.lookup.idBySymbol),
-      ),
-    ),
-  )(targetSym);
+    (targetSym: ts.Symbol) => ({
+      localOpt: lookupMapOption(targetSym, localVarOrigins),
+      directOpt: lookupComponentIdBySymbol(targetSym, lookup.checker, lookup.idBySymbol),
+    }),
+    ({ localOpt, directOpt }) => ({
+      localOpt,
+      lookupOpt: O.map((id: string) => [id])(directOpt),
+    }),
+    ({ localOpt, lookupOpt }) => O.altW(() => lookupOpt)(localOpt),
+  );
 
-const resolveIdentComponentOrigins = (ident: ts.Identifier, ctx: OriginEnv) =>
+const resolveIdentFromEnv = ({ lookup, localVarOrigins }: OriginEnv) =>
   flow(
-    (node: ts.Identifier) => resolveNodeSymbol(node, ctx.lookup.checker),
-    O.flatMap((sym) => resolveSymbolOrigins(sym, ctx)),
+    (ident: ts.Identifier) => resolveNodeSymbol(ident, lookup.checker),
+    O.flatMap(resolveSymbolOriginList(lookup, localVarOrigins)),
     O.getOrElse(() => EMPTY_STRINGS),
-  )(ident);
+  );
+
+const resolveIdentComponentOrigins = (ident: ts.Identifier, env: OriginEnv) =>
+  resolveIdentFromEnv(env)(ident);
 
 const resolvePropAccessComponentOrigins = (prop: ts.PropertyAccessExpression, ctx: OriginEnv) =>
-  flow(
-    (expr: ts.Expression) =>
-      resolveExpressionToComponentId(expr, ctx.lookup.checker, ctx.lookup.idBySymbol),
-    O.match(
-      () => collectExprComponentOrigins(prop.expression, ctx),
-      (id) => [id],
-    ),
-  )(prop);
+  O.match(
+    () => collectExprComponentOrigins(prop.expression, ctx),
+    (id: string) => [id],
+  )(resolveExpressionToComponentId(prop, ctx.lookup.checker, ctx.lookup.idBySymbol));
 
 const collectBranchOrigins = (
   firstExpr: ts.Expression,
@@ -1107,10 +1147,9 @@ const collectCallCalleeIds = (
   selfId: string,
   resolveExpr: (expr: ts.Expression) => O.Option<string>,
 ) =>
-  flow(
-    RA.filterMap(resolveExpr),
-    RA.filter((id) => id !== selfId),
-  )([call.expression, ...call.arguments]);
+  RA.filter((id: string) => id !== selfId)(
+    RA.filterMap(resolveExpr)([call.expression, ...call.arguments]),
+  );
 
 const collectCallNodeProvenance = (
   call: ts.CallExpression,
@@ -1128,7 +1167,7 @@ const extractBindingElementSymbol = (el: ts.BindingElement, checker: ts.TypeChec
   ts.isIdentifier(el.name) ? resolveNodeSymbol(el.name, checker) : O.none;
 
 const extractIdentSymbols = (id: ts.Identifier, checker: ts.TypeChecker) =>
-  flow((node: ts.Identifier) => resolveNodeSymbol(node, checker), RA.fromOption)(id);
+  RA.fromOption(resolveNodeSymbol(id, checker));
 
 const extractBindingNameSymbols = (name: ts.BindingName, checker: ts.TypeChecker) =>
   match(name)
@@ -1158,23 +1197,37 @@ const applyOriginBinding = (
   checker: ts.TypeChecker,
 ) => mergeOriginEntries(acc, extractBindingNameSymbols(name, checker), origins);
 
+type VarOriginEnv = Readonly<
+  Record<"selfId", string> & {
+    readonly checker: ts.TypeChecker;
+    readonly idBySymbol: ReadonlyMap<ts.Symbol, string>;
+  }
+>;
+
+const collectFilteredVarOrigins = (
+  initializer: ts.Expression,
+  acc: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
+  { selfId, checker, idBySymbol }: VarOriginEnv,
+) =>
+  RA.filter((id: string) => id !== selfId)(
+    collectExprComponentOrigins(initializer, {
+      lookup: { checker, idBySymbol },
+      localVarOrigins: acc,
+    }),
+  );
+
 const extendVarOriginMap = (
   acc: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
   node: ts.VariableDeclaration,
-  selfId: string,
-  checker: ts.TypeChecker,
-  idBySymbol: ReadonlyMap<ts.Symbol, string>,
+  env: VarOriginEnv,
 ) =>
   node.initializer
-    ? flow(
-        (init: ts.Expression) =>
-          collectExprComponentOrigins(init, {
-            lookup: { checker, idBySymbol },
-            localVarOrigins: acc,
-          }),
-        RA.filter((id) => id !== selfId),
-        (origins) => applyOriginBinding(acc, node.name, origins, checker),
-      )(node.initializer)
+    ? applyOriginBinding(
+        acc,
+        node.name,
+        collectFilteredVarOrigins(node.initializer, acc, env),
+        env.checker,
+      )
     : acc;
 
 const collectLocalVarOrigins = (
@@ -1183,45 +1236,48 @@ const collectLocalVarOrigins = (
   checker: ts.TypeChecker,
   idBySymbol: ReadonlyMap<ts.Symbol, string>,
 ) =>
-  flow(
-    RA.filter(ts.isVariableDeclaration),
-    RA.reduce<ts.VariableDeclaration, ReadonlyMap<ts.Symbol, ReadonlyArray<string>>>(
-      new Map(),
-      (acc, decl) => extendVarOriginMap(acc, decl, selfId, checker, idBySymbol),
-    ),
-  )(bodyNodes);
+  RA.reduce<ts.VariableDeclaration, ReadonlyMap<ts.Symbol, ReadonlyArray<string>>>(
+    new Map(),
+    (acc, decl) => extendVarOriginMap(acc, decl, { selfId, checker, idBySymbol }),
+  )(RA.filter(ts.isVariableDeclaration)(bodyNodes));
 
 const collectReturnExpressions = (body: ts.ConciseBody, bodyNodes: ReadonlyArray<ts.Node>) =>
   ts.isBlock(body)
-    ? flow(
-        RA.filter(ts.isReturnStatement),
-        RA.filterMap((stmt) => O.fromNullable(stmt.expression)),
-      )(bodyNodes)
+    ? RA.filterMap((stmt: ts.ReturnStatement) => O.fromNullable(stmt.expression))(
+        RA.filter(ts.isReturnStatement)(bodyNodes),
+      )
     : [body];
+
+const extractNonEmptyFieldOrigin = (fieldName: string) =>
+  flow(
+    O.filter((origins: ReadonlyArray<string>) => origins.length > 0),
+    O.map((origins: ReadonlyArray<string>) => [fieldName, origins] as const),
+    RA.fromOption,
+  );
 
 const extractShorthandFieldOrigin = (
   sp: ts.ShorthandPropertyAssignment,
   lookupShorthand: (node: ts.ShorthandPropertyAssignment) => O.Option<ReadonlyArray<string>>,
+) => extractNonEmptyFieldOrigin(sp.name.text)(lookupShorthand(sp));
+
+const resolveNonSelfPropOrigins = (
+  selfId: string,
+  resolveOrigins: (expr: ts.Expression) => ReadonlyArray<string>,
 ) =>
   flow(
-    lookupShorthand,
-    O.filter((origins) => origins.length > 0),
-    O.map((origins) => [sp.name.text, origins] as const),
-    RA.fromOption,
-  )(sp);
+    resolveOrigins,
+    RA.filter((id: string) => id !== selfId),
+    O.fromPredicate((origins: ReadonlyArray<string>) => origins.length > 0),
+  );
 
 const extractPropertyAssignmentFieldOrigin = (
   pa: ts.PropertyAssignment & Readonly<{ readonly name: ts.Identifier | ts.StringLiteral }>,
   selfId: string,
   resolveOrigins: (expr: ts.Expression) => ReadonlyArray<string>,
 ) =>
-  flow(
-    resolveOrigins,
-    RA.filter((id) => id !== selfId),
-    O.fromPredicate((origins) => origins.length > 0),
-    O.map((origins) => [pa.name.text, origins] as const),
-    RA.fromOption,
-  )(pa.initializer);
+  extractNonEmptyFieldOrigin(pa.name.text)(
+    resolveNonSelfPropOrigins(selfId, resolveOrigins)(pa.initializer),
+  );
 
 const extractObjectPropFieldProvenance = (
   prop: ts.ObjectLiteralElementLike,
@@ -1247,38 +1303,48 @@ const mergeFieldOriginEntries = RA.reduce<
   [field]: dedupeSortedStrings([...lookupRecordList(field, acc), ...origins]),
 }));
 
-const collectReturnFieldProvenance = (
-  unwrappedReturns: ReadonlyArray<ts.Expression>,
+const collectReturnObjFieldProvenance = (
   selfId: string,
   lookupShorthand: (node: ts.ShorthandPropertyAssignment) => O.Option<ReadonlyArray<string>>,
   resolveOrigins: (expr: ts.Expression) => ReadonlyArray<string>,
 ) =>
   flow(
     RA.filter(ts.isObjectLiteralExpression),
-    RA.flatMap((obj) => obj.properties),
-    RA.flatMap((prop) =>
+    RA.flatMap((obj: ts.ObjectLiteralExpression) => obj.properties),
+    RA.flatMap((prop: ts.ObjectLiteralElementLike) =>
       extractObjectPropFieldProvenance(prop, selfId, lookupShorthand, resolveOrigins),
     ),
     mergeFieldOriginEntries,
-  )(unwrappedReturns);
+  );
 
-const collectDirectReturnProvenance = (
+const collectReturnFieldProvenance = (
   unwrappedReturns: ReadonlyArray<ts.Expression>,
+  selfId: string,
+  lookupShorthand: (node: ts.ShorthandPropertyAssignment) => O.Option<ReadonlyArray<string>>,
+  resolveOrigins: (expr: ts.Expression) => ReadonlyArray<string>,
+) => collectReturnObjFieldProvenance(selfId, lookupShorthand, resolveOrigins)(unwrappedReturns);
+
+const collectDirectReturnOrigins = (
   selfId: string,
   resolveOrigins: (expr: ts.Expression) => ReadonlyArray<string>,
 ) =>
   flow(
     RA.filter((expr: ts.Expression) => !ts.isObjectLiteralExpression(expr)),
     RA.flatMap(resolveOrigins),
-    RA.filter((id) => id !== selfId),
+    RA.filter((id: string) => id !== selfId),
     dedupeSortedStrings,
-  )(unwrappedReturns);
+  );
+
+const collectDirectReturnProvenance = (
+  unwrappedReturns: ReadonlyArray<ts.Expression>,
+  selfId: string,
+  resolveOrigins: (expr: ts.Expression) => ReadonlyArray<string>,
+) => collectDirectReturnOrigins(selfId, resolveOrigins)(unwrappedReturns);
 
 const lookupShorthandOriginsInEnv = (node: ts.ShorthandPropertyAssignment, ctx: OriginEnv) =>
-  flow(
-    (sp: ts.ShorthandPropertyAssignment) => resolveShorthandSymbol(sp, ctx.lookup.checker),
-    O.flatMap((sym) => lookupMapOption(sym, ctx.localVarOrigins)),
-  )(node);
+  O.flatMap((sym: ts.Symbol) => lookupMapOption(sym, ctx.localVarOrigins))(
+    resolveShorthandSymbol(node, ctx.lookup.checker),
+  );
 
 const extractReturnProvenance = (
   returnExprs: ReadonlyArray<ts.Expression>,
@@ -1303,10 +1369,9 @@ const collectBodyCallSummary = (
   spec: FnBodySpec,
   resolveExpr: (expr: ts.Expression) => O.Option<string>,
 ) => {
-  const records = flow(
-    RA.filter(ts.isCallExpression),
-    RA.map((call) => collectCallNodeProvenance(call, spec, resolveExpr)),
-  )(bodyNodes);
+  const records = RA.map((call: ts.CallExpression) =>
+    collectCallNodeProvenance(call, spec, resolveExpr),
+  )(RA.filter(ts.isCallExpression)(bodyNodes));
   return {
     directCallees: dedupeSortedStrings(
       RA.flatMap((r: (typeof records)[number]) => r.callees)(records),
@@ -1375,23 +1440,21 @@ const walkTransitiveFrontier = (
   input: TransitiveWalkInput,
   // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for mutually recursive graph walk
 ): ReadonlySet<string> =>
-  flow(
-    RA.head<string>,
-    O.match(
-      () => state.visited,
-      (curr) => stepTransitiveNode(curr, state, input),
-    ),
-  )(state.frontier);
+  O.match(
+    () => state.visited,
+    (curr: string) => stepTransitiveNode(curr, state, input),
+  )(RA.head<string>(state.frontier));
 
 const computeTransitiveCallees = (
   startId: string,
   directById: Readonly<Record<string, ReadonlyArray<string>>>,
 ) =>
-  flow(
-    (initial: ReadonlyArray<string>) =>
-      walkTransitiveFrontier({ frontier: initial, visited: new Set() }, { startId, directById }),
-    sortStringSet,
-  )(lookupRecordList(startId, directById));
+  sortStringSet(
+    walkTransitiveFrontier(
+      { frontier: lookupRecordList(startId, directById), visited: new Set() },
+      { startId, directById },
+    ),
+  );
 
 const buildSymbolIdEntries = (fn: RawProductionFn, checker: ts.TypeChecker) =>
   O.match(
@@ -1400,7 +1463,7 @@ const buildSymbolIdEntries = (fn: RawProductionFn, checker: ts.TypeChecker) =>
       [
         [resolveCanonicalSymbol(sym, checker), fn.id] as const,
         [sym, fn.id] as const,
-      ] as ReadonlyArray<readonly [ts.Symbol, string]>,
+      ] satisfies ReadonlyArray<readonly [ts.Symbol, string]>,
   )(fn.symbol);
 
 const toProductionComponent = (
@@ -1422,16 +1485,21 @@ const toProductionComponent = (
     errorProvenance: entry.errorProvenance,
   }) satisfies ProductionComponent;
 
-const collectProductionRawFns = (
-  program: ts.Program,
+const collectProdFnsFromProgram = (
   checker: ts.TypeChecker,
   testPatterns: ReadonlyArray<string>,
 ) =>
   flow(
     collectProjectSourceFiles,
-    RA.filter((sf) => !isSourceFileMatchingPatterns(sf, testPatterns)),
-    RA.flatMap((sf) => collectFileProductionFns(sf, checker)),
-  )(program);
+    RA.filter((sf: ts.SourceFile) => !isSourceFileMatchingPatterns(sf, testPatterns)),
+    RA.flatMap((sf: ts.SourceFile) => collectFileProductionFns(sf, checker)),
+  );
+
+const collectProductionRawFns = (
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  testPatterns: ReadonlyArray<string>,
+) => collectProdFnsFromProgram(checker, testPatterns)(program);
 
 const indexDirectCalleesById = flow(
   RA.map((entry: AnalyzedProductionFn) => [entry.raw.id, entry.directCallees] as const),
@@ -1442,13 +1510,12 @@ const assembleComponentsById = (
   analyzedEntries: ReadonlyArray<AnalyzedProductionFn>,
   directById: Readonly<Record<string, ReadonlyArray<string>>>,
 ) =>
-  flow(
+  toReadonlyRecord(
     RA.map(
       (entry: AnalyzedProductionFn) =>
         [entry.raw.id, toProductionComponent(entry, directById)] as const,
-    ),
-    toReadonlyRecord,
-  )(analyzedEntries);
+    )(analyzedEntries),
+  );
 
 const analyzeRawProductionFns = (
   rawFns: ReadonlyArray<RawProductionFn>,
@@ -1497,9 +1564,15 @@ const isSignedNumericPrefix = (
 const isUndefinedIdentifier = (expr: ts.Expression): expr is ts.Identifier =>
   ts.isIdentifier(expr) && UNDEFINED_IDENT_NAMES.has(expr.text);
 
+const formatPropFingerprint = (propName: string) =>
+  flow(
+    fingerprintLiteralExpr,
+    O.map((fp: string) => `${propName}:${fp}`),
+  );
+
 const fingerprintObjectProp = (prop: ts.ObjectLiteralElementLike) =>
   isNamedPropertyAssignment(prop)
-    ? O.map((fp: string) => `${prop.name.text}:${fp}`)(fingerprintLiteralExpr(prop.initializer))
+    ? formatPropFingerprint(prop.name.text)(prop.initializer)
     : O.none;
 
 const fingerprintStringNode = flow(
@@ -1523,17 +1596,21 @@ const fingerprintPrimitiveLiteral = (u: ts.Expression) =>
     )
     .otherwise(() => O.none);
 
-const fingerprintArrayNode = (arr: ts.ArrayLiteralExpression) =>
-  flow(
-    RA.traverse(O.Applicative)(fingerprintLiteralExpr),
-    O.map(formatArrayFingerprint),
-  )(arr.elements);
+const traverseArrayFp = (elements: ts.NodeArray<ts.Expression>) =>
+  RA.traverse(O.Applicative)(fingerprintLiteralExpr)(elements);
+
+const fingerprintArrayNode = flow(
+  (arr: ts.ArrayLiteralExpression) => traverseArrayFp(arr.elements),
+  O.map(formatArrayFingerprint),
+);
+
+const formatObjectPropsFingerprint = flow(
+  RA.traverse(O.Applicative)(fingerprintObjectProp),
+  O.map(formatObjectFingerprint),
+);
 
 const fingerprintObjectNode = (obj: ts.ObjectLiteralExpression) =>
-  flow(
-    RA.traverse(O.Applicative)(fingerprintObjectProp),
-    O.map(formatObjectFingerprint),
-  )(obj.properties);
+  formatObjectPropsFingerprint(obj.properties);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive literal fingerprinting
 const fingerprintLiteralExpr = (expr: ts.Expression): O.Option<string> =>
@@ -1544,14 +1621,14 @@ const fingerprintLiteralExpr = (expr: ts.Expression): O.Option<string> =>
 
 const EMPTY_ARGS_FINGERPRINT: FingerprintValue = { tag: "literal", value: "()" };
 
+const formatArgTupleFingerprint = flow(
+  RA.traverse(O.Applicative)(fingerprintLiteralExpr),
+  O.map(formatTupleFingerprint),
+  toFingerprintValue,
+);
+
 const fingerprintArguments = (args: ReadonlyArray<ts.Expression>) =>
-  args.length === 0
-    ? EMPTY_ARGS_FINGERPRINT
-    : flow(
-        RA.traverse(O.Applicative)(fingerprintLiteralExpr),
-        O.map(formatTupleFingerprint),
-        toFingerprintValue,
-      )(args);
+  args.length === 0 ? EMPTY_ARGS_FINGERPRINT : formatArgTupleFingerprint(args);
 
 const extractObjectPropKey = (prop: ts.ObjectLiteralElementLike) =>
   match(prop)
@@ -1560,17 +1637,17 @@ const extractObjectPropKey = (prop: ts.ObjectLiteralElementLike) =>
     .with(P._, () => O.none)
     .exhaustive();
 
+const extractObjectLiteralKeys = flow(
+  unwrapExpression,
+  O.fromPredicate(ts.isObjectLiteralExpression),
+  O.map((obj: ts.ObjectLiteralExpression) => RA.filterMap(extractObjectPropKey)(obj.properties)),
+  O.getOrElse(() => EMPTY_STRINGS),
+);
+
 const extractExpectedObjectKeys = (expectedArg: ExpectedArgPresence) =>
   match(expectedArg)
     .with({ tag: "absent" }, () => EMPTY_STRINGS)
-    .with({ tag: "present" }, ({ expression }) =>
-      flow(
-        unwrapExpression,
-        O.fromPredicate(ts.isObjectLiteralExpression),
-        O.map((obj) => RA.filterMap(extractObjectPropKey)(obj.properties)),
-        O.getOrElse(() => EMPTY_STRINGS),
-      )(expression),
-    )
+    .with({ tag: "present" }, ({ expression }) => extractObjectLiteralKeys(expression))
     .exhaustive();
 
 const classifyMatcher = (matcher: string) =>
@@ -1596,32 +1673,55 @@ type ModuleMockLookup = Readonly<
   }
 >;
 
-const filterMockedFilesBySpec = (normalizedSpec: string, mockLookup: ModuleMockLookup) =>
+const filterMatchingMockedEntries = (sfDir: string, normalizedSpec: string) =>
   flow(
-    RR.toEntries<string, ReadonlyArray<string>>,
-    RA.filter(([prodFile]) => isMatchingMockedFile(prodFile, mockLookup.sfDir, normalizedSpec)),
-    RA.flatMap(([, cids]) => cids),
-  )(mockLookup.idsByFile);
+    RA.filter(([prodFile]: readonly [string, ReadonlyArray<string>]) =>
+      isMatchingMockedFile(prodFile, sfDir, normalizedSpec),
+    ),
+    RA.flatMap(([, cids]: readonly [string, ReadonlyArray<string>]) => cids),
+  );
+
+const filterMockedFilesBySpec = (normalizedSpec: string, mockLookup: ModuleMockLookup) =>
+  filterMatchingMockedEntries(mockLookup.sfDir, normalizedSpec)(
+    RR.toEntries<string, ReadonlyArray<string>>(mockLookup.idsByFile),
+  );
+
+const resolveMockDeclFile = (checker: ts.TypeChecker) =>
+  flow(
+    (modArg: ts.StringLiteral) => resolveNodeSymbol(modArg, checker),
+    O.flatMap((sym: ts.Symbol) => O.fromNullable(sym.valueDeclaration)),
+    O.map(resolveDeclFilePath),
+  );
 
 const resolveModuleMockTargetIds = (
   modArg: ts.StringLiteral,
   mockLookup: ModuleMockLookup,
   checker: ts.TypeChecker,
 ) =>
-  flow(
-    (arg: ts.StringLiteral) => resolveNodeSymbol(arg, checker),
-    O.flatMap((sym) => O.fromNullable(sym.valueDeclaration)),
-    O.map(resolveDeclFilePath),
-    O.match(
-      () => filterMockedFilesBySpec(normalizeMockSpecifier(modArg.text), mockLookup),
-      (declFile) => lookupRecordList(declFile, mockLookup.idsByFile),
-    ),
-  )(modArg);
+  O.match(
+    () => filterMockedFilesBySpec(normalizeMockSpecifier(modArg.text), mockLookup),
+    (declFile: string) => lookupRecordList(declFile, mockLookup.idsByFile),
+  )(resolveMockDeclFile(checker)(modArg));
 
 const isRunnerMethodAccess = (expr: ts.Expression, methodNames: ReadonlySet<string>) =>
   isIdentBasedPropertyAccess(expr) &&
   MOCK_RUNNER_NAMES.has(expr.expression.text) &&
   methodNames.has(expr.name.text);
+
+const extractFirstStringLiteralArg = flow(
+  RA.head<ts.Expression>,
+  O.map(unwrapExpression),
+  O.filter(ts.isStringLiteral),
+);
+
+const matchModuleMockArg = (mockLookup: ModuleMockLookup, checker: ts.TypeChecker) =>
+  flow(
+    extractFirstStringLiteralArg,
+    O.match(
+      () => EMPTY_STRINGS,
+      (modArg: ts.StringLiteral) => resolveModuleMockTargetIds(modArg, mockLookup, checker),
+    ),
+  );
 
 const extractModuleMockIds = (
   call: ts.CallExpression,
@@ -1629,15 +1729,7 @@ const extractModuleMockIds = (
   checker: ts.TypeChecker,
 ) =>
   isRunnerMethodAccess(call.expression, MOCK_METHOD_NAMES)
-    ? flow(
-        RA.head<ts.Expression>,
-        O.map(unwrapExpression),
-        O.filter(ts.isStringLiteral),
-        O.match(
-          () => EMPTY_STRINGS,
-          (modArg) => resolveModuleMockTargetIds(modArg, mockLookup, checker),
-        ),
-      )(call.arguments)
+    ? matchModuleMockArg(mockLookup, checker)(call.arguments)
     : EMPTY_STRINGS;
 
 const isSpyOnReceiverCall = (receiver: ts.Expression): receiver is ts.CallExpression =>
@@ -1651,62 +1743,74 @@ const extractSpyOnFromProp = (callee: ts.PropertyAccessExpression) =>
 const extractSpyOnTargetCall = (call: ts.CallExpression) =>
   ts.isPropertyAccessExpression(call.expression) ? extractSpyOnFromProp(call.expression) : O.none;
 
-const extractStringLiteralAt = (index: number, args: ReadonlyArray<ts.Expression>) =>
+const extractStringLiteralAt = (index: number) =>
   flow(
-    (items: ReadonlyArray<ts.Expression>) => RA.lookup(index)(items),
+    (args: ReadonlyArray<ts.Expression>) => RA.lookup(index, args),
     O.map(unwrapExpression),
     O.filter(ts.isStringLiteral),
-  )(args);
+  );
 
-const lookupPropertySymbolOnExpr = (
-  targetObj: ts.Expression,
-  propName: string,
-  checker: ts.TypeChecker,
-) => O.fromNullable(checker.getTypeAtLocation(targetObj).getProperty(propName));
+const lookupPropOnTarget = (propName: string, checker: ts.TypeChecker) =>
+  flow(
+    (targetObj: ts.Expression) => checker.getTypeAtLocation(targetObj),
+    (targetType) => targetType.getProperty(propName),
+    O.fromNullable,
+  );
 
 const resolveSpyMockComponentId = (
   spyCall: ts.CallExpression,
   checker: ts.TypeChecker,
   idBySymbol: ReadonlyMap<ts.Symbol, string>,
-) =>
-  flow(
-    () => O.Do,
-    O.apS("targetObj", RA.head(spyCall.arguments)),
-    O.apS("propArg", extractStringLiteralAt(1, spyCall.arguments)),
-    O.flatMap(({ targetObj, propArg }) =>
-      resolveSymbolOptionToComponentId(
-        lookupPropertySymbolOnExpr(targetObj, propArg.text, checker),
+) => {
+  const targetObjOpt = RA.head(spyCall.arguments);
+  const propArgOpt = extractStringLiteralAt(1)(spyCall.arguments);
+  return O.isSome(targetObjOpt) && O.isSome(propArgOpt)
+    ? resolveSymbolOptionToComponentId(
+        lookupPropOnTarget(propArgOpt.value.text, checker)(targetObjOpt.value),
         checker,
         idBySymbol,
-      ),
-    ),
-  )();
+      )
+    : O.none;
+};
 
-const extractSpyMockIds = (
-  call: ts.CallExpression,
+const resolveSpyTargetIds = (
   checker: ts.TypeChecker,
   idBySymbol: ReadonlyMap<ts.Symbol, string>,
 ) =>
   flow(
     extractSpyOnTargetCall,
-    O.flatMap((spyCall) => resolveSpyMockComponentId(spyCall, checker, idBySymbol)),
+    O.flatMap((spyCall: ts.CallExpression) =>
+      resolveSpyMockComponentId(spyCall, checker, idBySymbol),
+    ),
     RA.fromOption,
-  )(call);
+  );
 
-const collectMockIdsForDir = (
-  nodes: ReadonlyArray<ts.Node>,
+const extractSpyMockIds = (
+  call: ts.CallExpression,
+  checker: ts.TypeChecker,
+  idBySymbol: ReadonlyMap<ts.Symbol, string>,
+) => resolveSpyTargetIds(checker, idBySymbol)(call);
+
+const collectCallMockIds = (
   sfDir: string,
   checker: ts.TypeChecker,
   graph: ProductionGraph,
 ) =>
   flow(
     RA.filter(ts.isCallExpression),
-    RA.flatMap((call) => [
+    RA.flatMap((call: ts.CallExpression) => [
       ...extractModuleMockIds(call, { sfDir, idsByFile: graph.idsByFile }, checker),
       ...extractSpyMockIds(call, checker, graph.idBySymbol),
     ]),
     toReadonlySet,
-  )(nodes);
+  );
+
+const collectMockIdsForDir = (
+  nodes: ReadonlyArray<ts.Node>,
+  sfDir: string,
+  checker: ts.TypeChecker,
+  graph: ProductionGraph,
+) => collectCallMockIds(sfDir, checker, graph)(nodes);
 
 const resolveMockedComponentsInNodes = (
   nodes: ReadonlyArray<ts.Node>,
@@ -1715,24 +1819,29 @@ const resolveMockedComponentsInNodes = (
   graph: ProductionGraph,
 ) => collectMockIdsForDir(nodes, resolveSourceDir(sf), checker, graph);
 
+const buildWrapperFromIdent = (body: ts.ConciseBody, checker: ts.TypeChecker) =>
+  flow(
+    (nameIdent: ts.Identifier) => resolveNodeSymbol(nameIdent, checker),
+    O.map((symbol: ts.Symbol) => ({ symbol, body }) satisfies LocalWrapperEntry),
+  );
+
 const buildLocalWrapperFromInit = (
   init: ts.ArrowFunction | ts.FunctionExpression,
   nameIdent: ts.Identifier,
   checker: ts.TypeChecker,
-) =>
+) => buildWrapperFromIdent(init.body, checker)(nameIdent);
+
+const extractVarWrapperEntry = (nameIdent: ts.Identifier, checker: ts.TypeChecker) =>
   flow(
-    (ident: ts.Identifier) => resolveNodeSymbol(ident, checker),
-    O.map((symbol) => ({ symbol, body: init.body }) satisfies LocalWrapperEntry),
-  )(nameIdent);
+    unwrapExpression,
+    O.fromPredicate(isFunctionValueExpr),
+    O.flatMap((init: ts.ArrowFunction | ts.FunctionExpression) =>
+      buildLocalWrapperFromInit(init, nameIdent, checker),
+    ),
+  );
 
 const extractLocalWrapperVarEntry = (decl: ts.VariableDeclaration, checker: ts.TypeChecker) =>
-  isInitializedIdentVar(decl)
-    ? flow(
-        unwrapExpression,
-        O.fromPredicate(isFunctionValueExpr),
-        O.flatMap((init) => buildLocalWrapperFromInit(init, decl.name, checker)),
-      )(decl.initializer)
-    : O.none;
+  isInitializedIdentVar(decl) ? extractVarWrapperEntry(decl.name, checker)(decl.initializer) : O.none;
 
 const isNamedFnDeclWithBody = (
   node: ts.Statement,
@@ -1740,15 +1849,16 @@ const isNamedFnDeclWithBody = (
   Readonly<{ readonly name: ts.Identifier; readonly body: ts.Block }> =>
   ts.isFunctionDeclaration(node) && hasName(node) && hasBody(node);
 
+const extractFnDeclWrappers = (checker: ts.TypeChecker) =>
+  flow(
+    (fn: ts.FunctionDeclaration & Readonly<{ readonly name: ts.Identifier; readonly body: ts.Block }>) =>
+      buildWrapperFromIdent(fn.body, checker)(fn.name),
+    RA.fromOption,
+  );
+
 const extractStatementLocalWrappers = (node: ts.Statement, checker: ts.TypeChecker) =>
   match(node)
-    .when(isNamedFnDeclWithBody, (fn) =>
-      flow(
-        (nameNode: ts.Identifier) => resolveNodeSymbol(nameNode, checker),
-        O.map((symbol) => ({ symbol, body: fn.body }) satisfies LocalWrapperEntry),
-        RA.fromOption,
-      )(fn.name),
-    )
+    .when(isNamedFnDeclWithBody, (fn) => extractFnDeclWrappers(checker)(fn))
     .when(ts.isVariableStatement, (vs) =>
       RA.filterMap((decl: ts.VariableDeclaration) => extractLocalWrapperVarEntry(decl, checker))(
         vs.declarationList.declarations,
@@ -1756,30 +1866,43 @@ const extractStatementLocalWrappers = (node: ts.Statement, checker: ts.TypeCheck
     )
     .otherwise(() => EMPTY_LOCAL_WRAPPERS);
 
-const collectWrapperDirectCalls = (
-  body: ts.ConciseBody,
+const collectDirectCallTargets = (
   sf: ts.SourceFile,
   resolveExpr: (expr: ts.Expression) => O.Option<string>,
 ) =>
   flow(
+    (body: ts.ConciseBody) => collectTsNodes(body, sf),
     RA.filter(ts.isCallExpression),
-    RA.filterMap((call) => resolveExpr(call.expression)),
+    RA.filterMap((call: ts.CallExpression) => resolveExpr(call.expression)),
     RA.uniq(S.Eq),
-  )(collectTsNodes(body, sf));
+  );
+
+const collectWrapperDirectCalls = (
+  body: ts.ConciseBody,
+  sf: ts.SourceFile,
+  resolveExpr: (expr: ts.Expression) => O.Option<string>,
+) => collectDirectCallTargets(sf, resolveExpr)(body);
+
+const collectSecondHopTargets = (
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+  directByWrapper: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
+) =>
+  flow(
+    (body: ts.ConciseBody) => collectTsNodes(body, sf),
+    RA.filter(ts.isCallExpression),
+    RA.map((call: ts.CallExpression) => call.expression),
+    RA.filter(ts.isIdentifier),
+    RA.filterMap((ident: ts.Identifier) => resolveNodeSymbol(ident, checker)),
+    RA.flatMap((sym: ts.Symbol) => lookupMapList(sym, directByWrapper)),
+  );
 
 const collectSecondHopWrapperCalls = (
   body: ts.ConciseBody,
   sf: ts.SourceFile,
   checker: ts.TypeChecker,
   directByWrapper: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
-) =>
-  flow(
-    RA.filter(ts.isCallExpression),
-    RA.map((call) => call.expression),
-    RA.filter(ts.isIdentifier),
-    RA.filterMap((ident) => resolveNodeSymbol(ident, checker)),
-    RA.flatMap((sym) => lookupMapList(sym, directByWrapper)),
-  )(collectTsNodes(body, sf));
+) => collectSecondHopTargets(sf, checker, directByWrapper)(body);
 
 const expandWrapperCallTargets = (
   entry: LocalWrapperEntry,
@@ -1844,8 +1967,8 @@ const buildLocalWrapperMap = (
 const appendProjectedSegment = (binding: LocalTestBinding, segment: string) =>
   ({
     ...binding,
-    projectedPath: [...binding.projectedPath, segment] as ReadonlyArray<string>,
-  }) as LocalTestBinding;
+    projectedPath: [...binding.projectedPath, segment],
+  }) satisfies LocalTestBinding;
 
 const isFpErrorCheckProp = (expr: ts.Expression): expr is ts.PropertyAccessExpression =>
   ts.isPropertyAccessExpression(expr) && FP_ERROR_CHECK_METHODS.has(expr.name.text);
@@ -1855,8 +1978,7 @@ const isFpErrorWrapperCall = (
 ): call is ts.CallExpression & Readonly<{ readonly expression: ts.PropertyAccessExpression }> =>
   isFpErrorCheckProp(call.expression) && call.arguments.length === 1;
 
-const traceFpErrorArgs = (
-  args: ReadonlyArray<ts.Expression>,
+const traceFpErrorArgsFor = (
   methodName: string,
   traceExpr: (expr: ts.Expression) => O.Option<LocalTestBinding>,
 ) =>
@@ -1864,7 +1986,13 @@ const traceFpErrorArgs = (
     RA.head<ts.Expression>,
     O.flatMap(traceExpr),
     O.map((inner) => appendProjectedSegment(inner, methodName)),
-  )(args);
+  );
+
+const traceFpErrorArgs = (
+  args: ReadonlyArray<ts.Expression>,
+  methodName: string,
+  traceExpr: (expr: ts.Expression) => O.Option<LocalTestBinding>,
+) => traceFpErrorArgsFor(methodName, traceExpr)(args);
 
 const traceFpErrorProp = (
   prop: ts.PropertyAccessExpression,
@@ -1882,7 +2010,20 @@ const makeCallBinding = (componentId: string, args: ReadonlyArray<ts.Expression>
     componentId,
     projectedPath: EMPTY_STRINGS,
     inputFingerprint: fingerprintArguments(args),
-  }) as LocalTestBinding;
+  }) satisfies LocalTestBinding;
+
+const resolveLocalWrapperBinding = (
+  args: ReadonlyArray<ts.Expression>,
+  checker: ts.TypeChecker,
+  localWrapperMap: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
+) =>
+  flow(
+    (ident: ts.Identifier) => resolveNodeSymbol(ident, checker),
+    O.flatMap((sym) => lookupMapOption(sym, localWrapperMap)),
+    O.filter((targets) => targets.length === 1),
+    O.flatMap(RA.head),
+    O.map((componentId) => makeCallBinding(componentId, args)),
+  );
 
 const traceLocalWrapperCall = (
   call: ts.CallExpression,
@@ -1890,33 +2031,37 @@ const traceLocalWrapperCall = (
   localWrapperMap: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
 ) =>
   ts.isIdentifier(call.expression)
-    ? flow(
-        (ident: ts.Identifier) => resolveNodeSymbol(ident, checker),
-        O.flatMap((sym) => lookupMapOption(sym, localWrapperMap)),
-        O.filter((targets) => targets.length === 1),
-        O.flatMap(RA.head),
-        O.map((componentId) => makeCallBinding(componentId, call.arguments)),
-      )(call.expression)
+    ? resolveLocalWrapperBinding(call.arguments, checker, localWrapperMap)(call.expression)
     : O.none;
 
-const traceCallExprBinding = (
+type CallBindingEnv = Readonly<{
+  readonly checker: ts.TypeChecker;
+  readonly idBySymbol: ReadonlyMap<ts.Symbol, string>;
+  readonly localWrapperMap: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>;
+}>;
+
+const resolveDirectCallExprBinding = (
   call: ts.CallExpression,
-  checker: ts.TypeChecker,
-  idBySymbol: ReadonlyMap<ts.Symbol, string>,
-  localWrapperMap: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
+  { checker, idBySymbol, localWrapperMap }: CallBindingEnv,
   traceExpr: (expr: ts.Expression) => O.Option<LocalTestBinding>,
 ) =>
   flow(
     (expr: ts.Expression) => resolveExpressionToComponentId(expr, checker, idBySymbol),
     O.map((componentId) => makeCallBinding(componentId, call.arguments)),
-    O.alt(() => traceFpErrorWrapperCall(call, traceExpr)),
-    O.alt(() => traceLocalWrapperCall(call, checker, localWrapperMap)),
-  )(call.expression);
+    O.altW(() => traceFpErrorWrapperCall(call, traceExpr)),
+    O.altW(() => traceLocalWrapperCall(call, checker, localWrapperMap)),
+  );
+
+const traceCallExprBinding = (
+  call: ts.CallExpression,
+  env: CallBindingEnv,
+  traceExpr: (expr: ts.Expression) => O.Option<LocalTestBinding>,
+) => resolveDirectCallExprBinding(call, env, traceExpr)(call.expression);
 
 const traceReturnStatementExpr = (
   ret: ts.ReturnStatement,
   traceExpr: (expr: ts.Expression) => O.Option<LocalTestBinding>,
-) => flow((stmt: ts.ReturnStatement) => O.fromNullable(stmt.expression), O.flatMap(traceExpr))(ret);
+) => O.flatMap(traceExpr)(O.fromNullable(ret.expression));
 
 const traceCallbackStatementBinding = (
   node: ts.Statement,
@@ -1944,33 +2089,32 @@ const isStringElementAccess = (
   ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression);
 
 const traceIdentBinding = (ident: ts.Identifier, ctx: TestTraceEnv) =>
-  flow(
-    (node: ts.Identifier) => resolveNodeSymbol(node, ctx.checker),
-    O.flatMap((sym) => lookupMapOption(sym, ctx.localBindings)),
-  )(ident);
+  O.flatMap((sym: ts.Symbol) => lookupMapOption(sym, ctx.localBindings))(
+    resolveNodeSymbol(ident, ctx.checker),
+  );
 
 const tracePropertyAccessBinding = (prop: ts.PropertyAccessExpression, ctx: TestTraceEnv) =>
-  flow(
-    (expr: ts.Expression) => traceExprBinding(expr, ctx),
-    O.map((base) => appendProjectedSegment(base, prop.name.text)),
-  )(prop.expression);
+  O.map((base: LocalTestBinding) => appendProjectedSegment(base, prop.name.text))(
+    traceExprBinding(prop.expression, ctx),
+  );
 
 const traceStringElementBinding = (
   el: ts.ElementAccessExpression & Readonly<{ readonly argumentExpression: ts.StringLiteral }>,
   ctx: TestTraceEnv,
 ) =>
-  flow(
-    (expr: ts.Expression) => traceExprBinding(expr, ctx),
-    O.map((base) => appendProjectedSegment(base, el.argumentExpression.text)),
-  )(el.expression);
+  O.map((base: LocalTestBinding) => appendProjectedSegment(base, el.argumentExpression.text))(
+    traceExprBinding(el.expression, ctx),
+  );
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive expression binding trace
 const traceExprBinding = (expr: ts.Expression, ctx: TestTraceEnv): O.Option<LocalTestBinding> =>
   match(unwrapExpression(expr))
     .when(ts.isAwaitExpression, (aw) => traceExprBinding(aw.expression, ctx))
     .when(ts.isCallExpression, (call) =>
-      traceCallExprBinding(call, ctx.checker, ctx.idBySymbol, ctx.localWrapperMap, (inner) =>
-        traceExprBinding(inner, ctx),
+      traceCallExprBinding(
+        call,
+        { checker: ctx.checker, idBySymbol: ctx.idBySymbol, localWrapperMap: ctx.localWrapperMap },
+        (inner) => traceExprBinding(inner, ctx),
       ),
     )
     .when(ts.isPropertyAccessExpression, (prop) => tracePropertyAccessBinding(prop, ctx))
@@ -1987,8 +2131,7 @@ const contributionFromBinding = (binding: LocalTestBinding) =>
     subjectFields: RA.fromOption(RA.head(binding.projectedPath)),
   }) satisfies ExprReferenceContribution;
 
-const lookupIdentWrapperTargets = (
-  ident: ts.Identifier,
+const lookupWrapperTargetsForIdent = (
   checker: ts.TypeChecker,
   localWrapperMap: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
 ) =>
@@ -1996,7 +2139,13 @@ const lookupIdentWrapperTargets = (
     (node: ts.Identifier) => resolveNodeSymbol(node, checker),
     O.flatMap((sym) => lookupMapOption(sym, localWrapperMap)),
     O.getOrElse(() => EMPTY_STRINGS),
-  )(ident);
+  );
+
+const lookupIdentWrapperTargets = (
+  ident: ts.Identifier,
+  checker: ts.TypeChecker,
+  localWrapperMap: ReadonlyMap<ts.Symbol, ReadonlyArray<string>>,
+) => lookupWrapperTargetsForIdent(checker, localWrapperMap)(ident);
 
 const resolveCallFallbackContribution = (expr: ts.Expression, ctx: TestTraceEnv) =>
   ts.isIdentifier(expr)
@@ -2007,25 +2156,23 @@ const resolveCallFallbackContribution = (expr: ts.Expression, ctx: TestTraceEnv)
     : EMPTY_REF_CONTRIBUTION;
 
 const extractCallRefContribution = (call: ts.CallExpression, ctx: TestTraceEnv) =>
-  flow(
-    (expr: ts.Expression) => resolveExpressionToComponentId(expr, ctx.checker, ctx.idBySymbol),
-    O.match(
-      () => resolveCallFallbackContribution(call.expression, ctx),
-      (cid) => ({ components: [cid], subjectFields: EMPTY_STRINGS }) satisfies ExprReferenceContribution,
-    ),
-  )(call.expression);
+  O.match(
+    () => resolveCallFallbackContribution(call.expression, ctx),
+    (cid: string) =>
+      ({ components: [cid], subjectFields: EMPTY_STRINGS }) satisfies ExprReferenceContribution,
+  )(resolveExpressionToComponentId(call.expression, ctx.checker, ctx.idBySymbol));
 
 const resolveBindingContribution = O.match(() => EMPTY_REF_CONTRIBUTION, contributionFromBinding);
 
 const extractPropRefContribution = (
   prop: ts.PropertyAccessExpression,
   traceExpr: (expr: ts.Expression) => O.Option<LocalTestBinding>,
-) => flow(traceExpr, resolveBindingContribution)(prop);
+) => resolveBindingContribution(traceExpr(prop));
 
 const extractIdentRefContribution = (
   ident: ts.Identifier,
   traceIdent: (node: ts.Identifier) => O.Option<LocalTestBinding>,
-) => flow(traceIdent, resolveBindingContribution)(ident);
+) => resolveBindingContribution(traceIdent(ident));
 
 const extractNodeRefContribution = (
   node: ts.Node,
@@ -2049,7 +2196,7 @@ const mergeRefContributions = (contributions: ReadonlyArray<ExprReferenceContrib
     ),
   }) satisfies ExprReferenceContribution;
 
-const collectReferencedComponentsInExpr = (expr: ts.Node, sf: ts.SourceFile, ctx: TestTraceEnv) =>
+const collectExprRefContributions = (ctx: TestTraceEnv) =>
   flow(
     RA.map((node: ts.Node) =>
       extractNodeRefContribution(
@@ -2060,7 +2207,10 @@ const collectReferencedComponentsInExpr = (expr: ts.Node, sf: ts.SourceFile, ctx
       ),
     ),
     mergeRefContributions,
-  )(collectTsNodes(expr, sf));
+  );
+
+const collectReferencedComponentsInExpr = (expr: ts.Node, sf: ts.SourceFile, ctx: TestTraceEnv) =>
+  collectExprRefContributions(ctx)(collectTsNodes(expr, sf));
 
 const stepExpectPropertyAccess = (
   prop: ts.PropertyAccessExpression,
@@ -2088,9 +2238,13 @@ const isExpectCallWithArg = (expr: ts.Expression): expr is ts.CallExpression =>
   EXPECT_FN_NAMES.has(expr.expression.text) &&
   expr.arguments.length >= 1;
 
+type ExpectChainBase = Readonly<{
+  readonly base: ts.Expression;
+  readonly rejectionMode: ExpectRejectionMode;
+}>;
+
 const buildExpectChainResult = (
-  base: ts.Expression,
-  rejectionMode: ExpectRejectionMode,
+  { base, rejectionMode }: ExpectChainBase,
   matcher: string,
   nodeArgs: ReadonlyArray<ts.Expression>,
 ) =>
@@ -2107,12 +2261,9 @@ const parseExpectPropCall = (
   callee: ts.PropertyAccessExpression,
   args: ReadonlyArray<ts.Expression>,
 ) =>
-  flow(
-    (prop: ts.PropertyAccessExpression) => unwrapExpectChainBase(prop.expression, "standard"),
-    O.flatMap(({ base, rejectionMode }) =>
-      buildExpectChainResult(base, rejectionMode, callee.name.text, args),
-    ),
-  )(callee);
+  O.flatMap((chainBase: ExpectChainBase) =>
+    buildExpectChainResult(chainBase, callee.name.text, args),
+  )(unwrapExpectChainBase(callee.expression, "standard"));
 
 const tryParseExpectAssertion = (node: ts.CallExpression) =>
   ts.isPropertyAccessExpression(node.expression)
@@ -2135,33 +2286,47 @@ const buildMemberAssertChain = (
 const isAssertPropAccess = (expr: ts.Expression): expr is ts.PropertyAccessExpression =>
   isIdentBasedPropertyAccess(expr) && ASSERT_FN_NAMES.has(expr.expression.text);
 
+const parseMemberAssertWithProp = (
+  propExpr: ts.PropertyAccessExpression,
+  nodeArgs: ts.NodeArray<ts.Expression>,
+) =>
+  O.map((expectArg: ts.Expression) =>
+    buildMemberAssertChain(expectArg, propExpr.name.text, nodeArgs),
+  )(RA.head(nodeArgs));
+
 const tryParseMemberNodeAssert = (node: ts.CallExpression) =>
-  isAssertPropAccess(node.expression)
-    ? O.map((expectArg: ts.Expression) =>
-        buildMemberAssertChain(
-          expectArg,
-          (node.expression as ts.PropertyAccessExpression).name.text,
-          node.arguments,
-        ),
-      )(RA.head(node.arguments))
-    : O.none;
+  match(node.expression)
+    .when(isAssertPropAccess, (propExpr) => parseMemberAssertWithProp(propExpr, node.arguments))
+    .otherwise(() => O.none);
+
+const parseDirectNodeAssertArgs = flow(
+  RA.head<ts.Expression>,
+  O.map((expectArg: ts.Expression) => ({
+    expectArg,
+    matcher: "ok",
+    expectedArg: ABSENT_EXPECTED_ARG,
+    rejectionMode: STANDARD_REJECTION_MODE,
+  })),
+);
 
 const tryParseDirectNodeAssert = (node: ts.CallExpression) =>
   ts.isIdentifier(node.expression) && ASSERT_FN_NAMES.has(node.expression.text)
-    ? O.map((expectArg: ts.Expression) => ({
-        expectArg,
-        matcher: "ok",
-        expectedArg: ABSENT_EXPECTED_ARG,
-        rejectionMode: STANDARD_REJECTION_MODE,
-      }))(RA.head(node.arguments))
+    ? parseDirectNodeAssertArgs(node.arguments)
     : O.none;
 
-const parseTestAssertionCall = (node: ts.CallExpression) =>
+const parseFallbackAssertions = (node: ts.CallExpression) =>
   flow(
-    tryParseExpectAssertion,
     O.altW(() => tryParseMemberNodeAssert(node)),
     O.altW(() => tryParseDirectNodeAssert(node)),
-  )(node);
+  );
+
+const parseTestAssertionCall = flow(
+  (node: ts.CallExpression) => ({
+    node,
+    expectOpt: tryParseExpectAssertion(node),
+  }),
+  ({ node, expectOpt }) => parseFallbackAssertions(node)(expectOpt),
+);
 
 const makeTraceEnv = (
   fileEnv: TestFileEnv,
@@ -2174,19 +2339,24 @@ const makeTraceEnv = (
     localWrapperMap: fileEnv.localWrapperMap,
   }) satisfies TestTraceEnv;
 
-const collectCallDataflowEdges = (
-  call: ts.CallExpression,
+const mapArgDataflowEdges = (
   targetId: string,
   collectArgComponents: (arg: ts.Expression) => ReadonlyArray<string>,
 ) =>
   flow(
     RA.flatMap(collectArgComponents),
-    RA.filterMap((srcId) =>
+    RA.filterMap((srcId: string) =>
       srcId === targetId
         ? O.none
         : O.some({ fromComponentId: srcId, toComponentId: targetId } satisfies DataflowEdge),
     ),
-  )(call.arguments);
+  );
+
+const collectCallDataflowEdges = (
+  call: ts.CallExpression,
+  targetId: string,
+  collectArgComponents: (arg: ts.Expression) => ReadonlyArray<string>,
+) => mapArgDataflowEdges(targetId, collectArgComponents)(call.arguments);
 
 const appendWrapperCallTargets = (
   state: TestPass1State,
@@ -2231,38 +2401,49 @@ const stepPass1CallNode = (
   call: ts.CallExpression,
   fileEnv: TestFileEnv,
 ) =>
-  flow(
-    (expr: ts.Expression) =>
-      resolveExpressionToComponentId(expr, fileEnv.checker, fileEnv.graph.idBySymbol),
-    O.match(
-      () => appendWrapperCallTargets(state, call.expression, fileEnv),
-      (cid) => appendComponentCallState(state, call, cid, fileEnv),
-    ),
-  )(call.expression);
+  O.match(
+    () => appendWrapperCallTargets(state, call.expression, fileEnv),
+    (cid: string) => appendComponentCallState(state, call, cid, fileEnv),
+  )(resolveExpressionToComponentId(call.expression, fileEnv.checker, fileEnv.graph.idBySymbol));
 
 const resolveBindingElementPropKey = (el: ts.BindingElement, nameIdent: ts.Identifier) =>
   el.propertyName && isNamedPropertyKey(el.propertyName) ? el.propertyName.text : nameIdent.text;
+
+type BindingProjection = Readonly<{
+  readonly el: ts.BindingElement;
+  readonly traced: LocalTestBinding;
+}>;
+
+const buildProjectedBindingEntry = (
+  sym: ts.Symbol,
+  { el, traced }: BindingProjection,
+  elIdent: ts.Identifier,
+) => [sym, appendProjectedSegment(traced, resolveBindingElementPropKey(el, elIdent))] as const;
+
+const resolveProjectedBindingEntry = (
+  projection: BindingProjection,
+  checker: ts.TypeChecker,
+) =>
+  flow(
+    (elIdent: ts.Identifier) => ({
+      elIdent,
+      symOpt: resolveNodeSymbol(elIdent, checker),
+    }),
+    ({ elIdent, symOpt }) =>
+      O.map((sym: ts.Symbol) => buildProjectedBindingEntry(sym, projection, elIdent))(symOpt),
+  );
 
 const extractObjectBindingElementEntry = (
   el: ts.BindingElement,
   traced: LocalTestBinding,
   checker: ts.TypeChecker,
 ) =>
-  ts.isIdentifier(el.name)
-    ? flow(
-        (ident: ts.Identifier) => resolveNodeSymbol(ident, checker),
-        O.map(
-          (sym) =>
-            [
-              sym,
-              appendProjectedSegment(
-                traced,
-                resolveBindingElementPropKey(el, el.name as ts.Identifier),
-              ),
-            ] as const,
-        ),
-      )(el.name)
-    : O.none;
+  match(el.name)
+    .when(ts.isIdentifier, (elIdent) =>
+      resolveProjectedBindingEntry({ el, traced }, checker)(elIdent),
+    )
+    .with(P._, () => O.none)
+    .exhaustive();
 
 const extractLocalBindingEntries = (
   name: ts.BindingName,
@@ -2270,12 +2451,13 @@ const extractLocalBindingEntries = (
   checker: ts.TypeChecker,
 ) =>
   match(name)
-    .when(ts.isIdentifier, (id) =>
+    .when(
+      ts.isIdentifier,
       flow(
         (node: ts.Identifier) => resolveNodeSymbol(node, checker),
         O.map((sym) => [sym, traced] as const),
         RA.fromOption,
-      )(id),
+      ),
     )
     .when(ts.isObjectBindingPattern, (pat) =>
       RA.filterMap((el: ts.BindingElement) =>
@@ -2311,13 +2493,10 @@ const stepPass1VarDeclNode = (
   fileEnv: TestFileEnv,
 ) =>
   decl.initializer
-    ? flow(
-        (init: ts.Expression) => traceInitInState(init, state, fileEnv),
-        O.match(
-          () => state,
-          (traced) => mergePass1Binding(state, decl.name, traced, fileEnv.checker),
-        ),
-      )(decl.initializer)
+    ? O.match(
+        () => state,
+        (traced: LocalTestBinding) => mergePass1Binding(state, decl.name, traced, fileEnv.checker),
+      )(traceInitInState(decl.initializer, state, fileEnv))
     : state;
 
 const stepPass1Node = (state: TestPass1State, node: ts.Node, fileEnv: TestFileEnv) =>
@@ -2326,16 +2505,16 @@ const stepPass1Node = (state: TestPass1State, node: ts.Node, fileEnv: TestFileEn
     .when(ts.isVariableDeclaration, (decl) => stepPass1VarDeclNode(state, decl, fileEnv))
     .otherwise(() => state);
 
+const checkFpErrorLiteralTag = flow(
+  unwrapExpression,
+  O.fromPredicate(ts.isStringLiteral),
+  O.exists((lit) => FP_ERROR_TAGS.has(lit.text)),
+);
+
 const isFpErrorExpectedTag = (expectedArg: ExpectedArgPresence) =>
   match(expectedArg)
     .with({ tag: "absent" }, () => false)
-    .with({ tag: "present" }, ({ expression }) =>
-      flow(
-        unwrapExpression,
-        O.fromPredicate(ts.isStringLiteral),
-        O.exists((lit) => FP_ERROR_TAGS.has(lit.text)),
-      )(expression),
-    )
+    .with({ tag: "present" }, ({ expression }) => checkFpErrorLiteralTag(expression))
     .exhaustive();
 
 const isFpErrorAssertion = (
@@ -2426,22 +2605,33 @@ const buildExtractedAssertion = (
     resolveExpectedRefs(parsed.expectedArg, collectRefs),
   );
 
-const extractBodyAssertions = (
-  nodes: ReadonlyArray<ts.Node>,
-  sf: ts.SourceFile,
-  ctx: TestTraceEnv,
+const parseBodyAssertions = (
+  traceExpr: (expr: ts.Expression) => O.Option<LocalTestBinding>,
+  collectRefs: (node: ts.Node) => ExprReferenceContribution,
 ) =>
   flow(
     RA.filter(ts.isCallExpression),
     RA.filterMap(parseTestAssertionCall),
-    RA.map((parsed) =>
-      buildExtractedAssertion(
-        parsed,
-        (expr) => traceExprBinding(expr, ctx),
-        (node) => collectReferencedComponentsInExpr(node, sf, ctx),
-      ),
-    ),
+    RA.map((parsed) => buildExtractedAssertion(parsed, traceExpr, collectRefs)),
+  );
+
+const extractBodyAssertions = (
+  nodes: ReadonlyArray<ts.Node>,
+  sf: ts.SourceFile,
+  ctx: TestTraceEnv,
+) => {
+  const { checker, idBySymbol, localBindings, localWrapperMap } = ctx;
+  return parseBodyAssertions(
+    (expr) => traceExprBinding(expr, ctx),
+    (node) =>
+      collectReferencedComponentsInExpr(node, sf, {
+        checker,
+        idBySymbol,
+        localBindings,
+        localWrapperMap,
+      }),
   )(nodes);
+};
 
 const extractTestBodyAnalysis = (body: ts.Node, fileEnv: TestFileEnv) => {
   const nodes = collectTsNodes(body, fileEnv.sf);
@@ -2462,22 +2652,26 @@ const extractStringArg = flow(
   O.map((lit) => lit.text),
 );
 
-const extractCallbackArg = (args: ReadonlyArray<ts.Expression>) =>
-  flow(
-    (items: ReadonlyArray<ts.Expression>) => RA.lookup(1)(items),
-    O.map(unwrapExpression),
-    O.filter(isFunctionValueExpr),
-  )(args);
+const extractCallbackArg = flow(
+  (items: ReadonlyArray<ts.Expression>) => RA.lookup(1)(items),
+  O.map(unwrapExpression),
+  O.filter(isFunctionValueExpr),
+);
 
 const extractFirstStringArg = flow(RA.head<ts.Expression>, extractStringArg);
 
-const buildTestRegistration = (callNode: ts.CallExpression, eachCount: number) =>
-  flow(
-    () => O.Do,
-    O.apS("name", extractFirstStringArg(callNode.arguments)),
-    O.apS("callback", extractCallbackArg(callNode.arguments)),
-    O.map(({ name, callback }) => ({ callNode, name, callback, eachCount }) satisfies TestRegistration),
-  )();
+const buildTestRegistration = (callNode: ts.CallExpression, eachCount: number) => {
+  const nameOpt = extractFirstStringArg(callNode.arguments);
+  const callbackOpt = extractCallbackArg(callNode.arguments);
+  return O.isSome(nameOpt) && O.isSome(callbackOpt)
+    ? O.some<TestRegistration>({
+        callNode,
+        name: nameOpt.value,
+        callback: callbackOpt.value,
+        eachCount,
+      })
+    : O.none;
+};
 
 const isDirectOrModifierTestCallee = (callee: ts.Expression) =>
   (ts.isIdentifier(callee) && TEST_FN_NAMES.has(callee.text)) ||
@@ -2491,17 +2685,19 @@ const isEachMethodAccess = (expr: ts.Expression) =>
 const isTestEachCallee = (callee: ts.Expression): callee is ts.CallExpression =>
   ts.isCallExpression(callee) && isEachMethodAccess(callee.expression);
 
+const resolveEachCaseCountFromArgs = flow(
+  RA.head<ts.Expression>,
+  O.map(unwrapExpression),
+  O.filter(ts.isArrayLiteralExpression),
+  O.map((arr) => clampMinOne(arr.elements.length)),
+  O.getOrElse(() => 2),
+);
+
 const resolveEachCaseCount = (eachCall: ts.CallExpression) =>
-  flow(
-    RA.head<ts.Expression>,
-    O.map(unwrapExpression),
-    O.filter(ts.isArrayLiteralExpression),
-    O.map((arr) => clampMinOne(arr.elements.length)),
-    O.getOrElse(() => 2),
-  )(eachCall.arguments);
+  resolveEachCaseCountFromArgs(eachCall.arguments);
 
 const buildEachTestRegistration = (node: ts.CallExpression, eachCall: ts.CallExpression) =>
-  flow(resolveEachCaseCount, (count) => buildTestRegistration(node, count))(eachCall);
+  buildTestRegistration(node, resolveEachCaseCount(eachCall));
 
 const tryParseTestCall = (node: ts.CallExpression) =>
   match(node.expression)
@@ -2513,15 +2709,16 @@ const isDescribeCallee = (callee: ts.Expression) =>
   (ts.isIdentifier(callee) && DESCRIBE_FN_NAMES.has(callee.text)) ||
   (isIdentBasedPropertyAccess(callee) && DESCRIBE_FN_NAMES.has(callee.expression.text));
 
-const tryParseDescribeCall = (node: ts.CallExpression) =>
-  isDescribeCallee(node.expression)
-    ? flow(
-        () => O.Do,
-        O.apS("title", extractFirstStringArg(node.arguments)),
-        O.apS("callback", extractCallbackArg(node.arguments)),
-        O.map(({ title, callback }) => ({ title, body: callback.body }) satisfies DescribeRegistration),
-      )()
+const buildDescribeRegistration = (node: ts.CallExpression) => {
+  const titleOpt = extractFirstStringArg(node.arguments);
+  const callbackOpt = extractCallbackArg(node.arguments);
+  return O.isSome(titleOpt) && O.isSome(callbackOpt)
+    ? O.some<DescribeRegistration>({ title: titleOpt.value, body: callbackOpt.value.body })
     : O.none;
+};
+
+const tryParseDescribeCall = (node: ts.CallExpression) =>
+  isDescribeCallee(node.expression) ? buildDescribeRegistration(node) : O.none;
 
 const formatTestFullName = (describeStack: ReadonlyArray<string>, name: string) =>
   describeStack.length > 0 ? formatQualifiedTestName(joinDescribeStack(describeStack), name) : name;
@@ -2563,43 +2760,41 @@ const assembleExtractedTestCase = (
 };
 
 const extractTestCaseFromReg = (reg: TestRegistration, walkCtx: ScopeWalkContext) =>
-  flow(
-    (fn: ts.FunctionLikeDeclaration) => O.fromNullable(fn.body),
-    O.map((body) => assembleExtractedTestCase(reg, body, walkCtx)),
-  )(reg.callback);
+  O.map((body: ts.ConciseBody) => assembleExtractedTestCase(reg, body, walkCtx))(
+    O.fromNullable(reg.callback.body),
+  );
 
-const extractDirectTestCase = (call: ts.CallExpression, walkCtx: ScopeWalkContext) =>
+const extractDirectTestCaseFor = (walkCtx: ScopeWalkContext) =>
   flow(
     tryParseTestCall,
     O.flatMap((reg) => extractTestCaseFromReg(reg, walkCtx)),
     RA.fromOption,
-  )(call);
+  );
 
 const collectScopedTestsFromCall = (
   call: ts.CallExpression,
   walkCtx: ScopeWalkContext,
   // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for mutually recursive describe scope walk
 ): ReadonlyArray<ExtractedTestCase> =>
+  O.match(
+    () => extractDirectTestCaseFor(walkCtx)(call),
+    (desc: DescribeRegistration) =>
+      collectTestsInScope(desc.body, {
+        ...walkCtx,
+        describeStack: [...walkCtx.describeStack, desc.title],
+      }),
+  )(tryParseDescribeCall(call));
+
+const collectScopeCallTests = (walkCtx: ScopeWalkContext) =>
   flow(
-    tryParseDescribeCall,
-    O.match(
-      () => extractDirectTestCase(call, walkCtx),
-      (desc) =>
-        collectTestsInScope(desc.body, {
-          ...walkCtx,
-          describeStack: [...walkCtx.describeStack, desc.title],
-        }),
-    ),
-  )(call);
+    RA.filter(ts.isCallExpression),
+    RA.flatMap((call) => collectScopedTestsFromCall(call, walkCtx)),
+  );
 
 const collectTestsFromScopeNodes = (
   scopeOwnNodes: ReadonlyArray<ts.Node>,
   walkCtx: ScopeWalkContext,
-) =>
-  flow(
-    RA.filter(ts.isCallExpression),
-    RA.flatMap((call) => collectScopedTestsFromCall(call, walkCtx)),
-  )(scopeOwnNodes);
+) => collectScopeCallTests(walkCtx)(scopeOwnNodes);
 
 const collectTestsInScope = (
   root: ts.Node,
@@ -2648,14 +2843,17 @@ const extractSubjectComponentId = (subjectTarget: SubjectTarget) =>
     .with({ tag: "untracked" }, () => O.none)
     .exhaustive();
 
-const extractDirectAssertedTargets = ({ test, components }: TestComponentContext) =>
+const filterAssertedTargetIds = ({ test, components }: TestComponentContext) =>
   flow(
     RA.filterMap((a: ExtractedAssertion) => extractSubjectComponentId(a.subjectTarget)),
     RA.uniq(S.Eq),
     RA.filter(
       (targetId) => hasComponent(targetId, components) && hasStringMember(test.directTargets, targetId),
     ),
-  )(test.assertions);
+  );
+
+const extractDirectAssertedTargets = (ctx: TestComponentContext) =>
+  filterAssertedTargetIds(ctx)(ctx.test.assertions);
 
 const isTargetAssertion = (a: ExtractedAssertion, targetId: string) =>
   O.exists((id: string) => id === targetId)(extractSubjectComponentId(a.subjectTarget));
@@ -2680,17 +2878,23 @@ const extractTargetValuePairs = (test: ExtractedTestCase, targetId: string) =>
     isTargetAssertion(a, targetId) ? extractLiteralPairKey(a) : O.none,
   )(test.assertions);
 
-const expandTestTargetPairs = (test: ExtractedTestCase, components: ComponentMap) =>
-  RA.map((targetId: string) => ({ targetId, test }) satisfies TargetTestPair)(
-    extractDirectAssertedTargets({ test, components }),
+const expandTargetPairsForTest = (ctx: TestComponentContext) =>
+  flow(
+    () => extractDirectAssertedTargets(ctx),
+    RA.map((targetId: string) => ({ targetId, test: ctx.test }) satisfies TargetTestPair),
+  );
+
+const expandTestTargetPairs = (ctx: TestComponentContext) => expandTargetPairsForTest(ctx)();
+
+const groupTestsByComponent = (components: ComponentMap) =>
+  flow(
+    RA.flatMap((test: ExtractedTestCase) => expandTestTargetPairs({ test, components })),
+    (pairs) => groupItemsByKey(pairs, (pair) => pair.targetId),
+    RR.map(RA.map((pair: TargetTestPair) => pair.test)),
   );
 
 const buildTestsByComponent = (tests: ReadonlyArray<ExtractedTestCase>, components: ComponentMap) =>
-  flow(
-    RA.flatMap((test: ExtractedTestCase) => expandTestTargetPairs(test, components)),
-    (pairs) => groupItemsByKey(pairs, (pair) => pair.targetId),
-    RR.map(RA.map((pair: TargetTestPair) => pair.test)),
-  )(tests);
+  groupTestsByComponent(components)(tests);
 
 const buildErrorSigsByComponent = flow(
   RA.map(([targetId, compTests]: readonly [string, ReadonlyArray<ExtractedTestCase>]) =>
@@ -2727,17 +2931,21 @@ const buildDirectComponentIndex = (
   } satisfies DirectComponentIndex;
 };
 
+const collectUnmockedOwnersForFields = (
+  component: ProductionComponent,
+  mockedSet: ReadonlySet<string>,
+) =>
+  flow(
+    RA.flatMap((field: string) => lookupRecordList(field, component.returnFieldProvenance)),
+    RA.filter((prov) => !mockedSet.has(prov)),
+    toReadonlySet,
+  );
+
 const collectDistinctUnmockedFieldOwners = (
   fields: ReadonlyArray<string>,
   component: ProductionComponent,
   mockedSet: ReadonlySet<string>,
-) =>
-  toReadonlySet(
-    flow(
-      RA.flatMap((field: string) => lookupRecordList(field, component.returnFieldProvenance)),
-      RA.filter((prov) => !mockedSet.has(prov)),
-    )(fields),
-  );
+) => collectUnmockedOwnersForFields(component, mockedSet)(fields);
 
 const isUnmockedLowerDep = (id: string, directId: string, mockedSet: ReadonlySet<string>) =>
   !mockedSet.has(id) && id !== directId;
@@ -2806,10 +3014,10 @@ const makeProjectedOutputProp = (
       joinDot(assertion.projectedPath),
     ),
     assertion,
-  }) as InferredProperty;
+  }) satisfies InferredProperty;
 
-const inferProjectedOutput = (input: TrackedAssertionInput) => {
-  const { assertion, component, directId, evalEnv } = input;
+const resolveProjectedOutputFromPath = (input: TrackedAssertionInput) => {
+  const { component, directId, evalEnv } = input;
   return flow(
     RA.head<string>,
     O.flatMap((headField) => RR.lookup(headField)(component.returnFieldProvenance)),
@@ -2817,8 +3025,11 @@ const inferProjectedOutput = (input: TrackedAssertionInput) => {
     O.flatMap(RA.head),
     O.filter((lowerId) => isUnmockedLowerDep(lowerId, directId, evalEnv.mockedSet)),
     O.map((lowerId) => makeProjectedOutputProp(lowerId, input)),
-  )(assertion.projectedPath);
+  );
 };
+
+const inferProjectedOutput = (input: TrackedAssertionInput) =>
+  resolveProjectedOutputFromPath(input)(input.assertion.projectedPath);
 
 const isMatchingFingerprint = (left: FingerprintValue, right: FingerprintValue) =>
   left.tag === "literal" && right.tag === "literal" && left.value === right.value;
@@ -2846,20 +3057,21 @@ const makeDelegatedErrorProp = (
     ownerComponentId: lowerId,
     label: formatErrorLabel(resolveComponentName(lowerId, evalEnv.components)),
     assertion,
-  }) as InferredProperty;
+  }) satisfies InferredProperty;
 
-const inferDelegatedError = (input: TrackedAssertionInput) => {
-  const { assertion, component, directId, evalEnv } = input;
-  return assertion.category === "error"
-    ? flow(
-        RA.filter((id: string) => isUnmockedLowerDep(id, directId, evalEnv.mockedSet)),
-        RA.findFirst((lowerId) =>
-          hasMatchingDirectErrorSig(lowerId, assertion, evalEnv.directIndex),
-        ),
-        O.map((lowerId) => makeDelegatedErrorProp(lowerId, input)),
-      )(component.errorProvenance)
-    : O.none;
+const matchDelegatedErrorFromProvenance = (input: TrackedAssertionInput) => {
+  const { assertion, directId, evalEnv } = input;
+  return flow(
+    RA.filter((id: string) => isUnmockedLowerDep(id, directId, evalEnv.mockedSet)),
+    RA.findFirst((lowerId) => hasMatchingDirectErrorSig(lowerId, assertion, evalEnv.directIndex)),
+    O.map((lowerId) => makeDelegatedErrorProp(lowerId, input)),
+  );
 };
+
+const inferDelegatedError = (input: TrackedAssertionInput) =>
+  input.assertion.category === "error"
+    ? matchDelegatedErrorFromProvenance(input)(input.component.errorProvenance)
+    : O.none;
 
 const hasDirectValuePairMatch = (
   id: string,
@@ -2880,57 +3092,77 @@ const makeDirectPassthroughProp = (
     ownerComponentId: lowerId,
     label: formatBehaviorLabel(resolveComponentName(lowerId, evalEnv.components)),
     assertion,
-  }) as InferredProperty;
+  }) satisfies InferredProperty;
 
-const inferDirectPassthrough = (input: TrackedAssertionInput) => {
+const matchDirectPassthrough = (input: TrackedAssertionInput) => {
   const { assertion, component, directId, evalEnv } = input;
-  return assertion.projectedPath.length === 0 && component.directReturnProvenance.length === 1
-    ? flow(
-        () => O.Do,
-        O.apS("lowerId", RA.head(component.directReturnProvenance)),
-        O.apS("pairKey", extractLiteralPairKey(assertion)),
-        O.filter(({ lowerId }) => isUnmockedLowerDep(lowerId, directId, evalEnv.mockedSet)),
-        O.filter(({ lowerId, pairKey }) =>
-          hasDirectValuePairMatch(lowerId, pairKey, evalEnv.directIndex),
-        ),
-        O.map(({ lowerId }) => makeDirectPassthroughProp(lowerId, input)),
-      )()
+  const lowerIdOpt = RA.head(component.directReturnProvenance);
+  const pairKeyOpt = extractLiteralPairKey(assertion);
+  return O.isSome(lowerIdOpt) &&
+    O.isSome(pairKeyOpt) &&
+    isUnmockedLowerDep(lowerIdOpt.value, directId, evalEnv.mockedSet) &&
+    hasDirectValuePairMatch(lowerIdOpt.value, pairKeyOpt.value, evalEnv.directIndex)
+    ? O.some(makeDirectPassthroughProp(lowerIdOpt.value, input))
     : O.none;
 };
 
-const makeComponentBehaviorProperty = ({ assertion, component, directId }: TrackedAssertionInput) =>
+const inferDirectPassthrough = (input: TrackedAssertionInput) => {
+  const { assertion, component } = input;
+  return assertion.projectedPath.length === 0 && component.directReturnProvenance.length === 1
+    ? matchDirectPassthrough(input)
+    : O.none;
+};
+
+const makeComponentBehaviorProperty = ({
+  assertion,
+  component,
+  directId,
+}: TrackedAssertionInput) =>
   ({
     kind: "component-behavior",
     directTargetId: directId,
     ownerComponentId: directId,
     label: formatBehaviorLabel(component.name),
     assertion,
-  }) as InferredProperty;
+  }) satisfies InferredProperty;
 
-const inferTrackedAssertionProperty = (input: TrackedAssertionInput) =>
+const inferFallbackTrackedProperty = (input: TrackedAssertionInput) =>
   flow(
-    inferMultiComponentInvariant,
-    O.alt(() => inferCrossFieldInvariant(input)),
-    O.alt(() => inferWholeObjectComposition(input)),
-    O.alt(() => inferProjectedOutput(input)),
-    O.alt(() => inferDelegatedError(input)),
-    O.alt(() => inferDirectPassthrough(input)),
-    O.getOrElse(() => makeComponentBehaviorProperty(input)),
-  )(input);
+    O.altW(() => inferCrossFieldInvariant(input)),
+    O.altW(() => inferWholeObjectComposition(input)),
+    O.altW(() => inferProjectedOutput(input)),
+    O.altW(() => inferDelegatedError(input)),
+    O.altW(() => inferDirectPassthrough(input)),
+    O.getOrElseW(() => makeComponentBehaviorProperty(input)),
+  );
+
+const inferTrackedAssertionProperty = flow(
+  (input: TrackedAssertionInput) => ({
+    input,
+    multiOpt: inferMultiComponentInvariant(input),
+  }),
+  ({ input, multiOpt }) => inferFallbackTrackedProperty(input)(multiOpt),
+);
+
+const resolveSpyTargetId = flow(
+  (assertion: ExtractedAssertion) => ({
+    assertion,
+    subjectOpt: extractSubjectComponentId(assertion.subjectTarget),
+  }),
+  ({ assertion, subjectOpt }) =>
+    O.alt(() => RA.head(assertion.referencedComponents))(subjectOpt),
+  O.getOrElse(() => "<spy>"),
+);
 
 const inferSpyInteractionProperty = (assertion: ExtractedAssertion) => {
-  const targetId = flow(
-    extractSubjectComponentId,
-    O.alt(() => RA.head(assertion.referencedComponents)),
-    O.getOrElse(() => "<spy>"),
-  )(assertion.subjectTarget);
+  const targetId = resolveSpyTargetId(assertion);
   return {
     kind: "interaction",
     directTargetId: targetId,
     ownerComponentId: targetId,
     label: "interaction wiring",
     assertion,
-  } as InferredProperty;
+  } satisfies InferredProperty;
 };
 
 const inferTrackedSubjectProperty = (
@@ -2938,20 +3170,16 @@ const inferTrackedSubjectProperty = (
   assertion: ExtractedAssertion,
   ctx: AssertionEvalEnv,
 ) =>
-  flow(
-    (id: string) => lookupComponent(id, ctx.components),
-    O.map((component) =>
-      inferTrackedAssertionProperty({ directId, assertion, component, evalEnv: ctx }),
-    ),
-  )(directId);
+  O.map((component: ProductionComponent) =>
+    inferTrackedAssertionProperty({ directId, assertion, component, evalEnv: ctx }),
+  )(lookupComponent(directId, ctx.components));
 
 const inferAssertionProperty = (assertion: ExtractedAssertion, ctx: AssertionEvalEnv) =>
   assertion.category === "spy-interaction"
     ? O.some(inferSpyInteractionProperty(assertion))
-    : flow(
-        extractSubjectComponentId,
-        O.flatMap((directId) => inferTrackedSubjectProperty(directId, assertion, ctx)),
-      )(assertion.subjectTarget);
+    : O.flatMap((directId: string) => inferTrackedSubjectProperty(directId, assertion, ctx))(
+        extractSubjectComponentId(assertion.subjectTarget),
+      );
 
 const isDelegatedKind = (kind: InferredPropertyKind) =>
   kind === "projected-output" || kind === "delegated-error" || kind === "direct-passthrough";
@@ -2974,21 +3202,25 @@ const hasUnmockedDirectCallee = (tid: string, filterEnv: ComponentFilterEnv) =>
 const isTargetingHigherLevel = (test: ExtractedTestCase, filterEnv: ComponentFilterEnv) =>
   RA.some((tid: string) => hasUnmockedDirectCallee(tid, filterEnv))(test.directTargets);
 
+const collectUniqueOwnerIds = flow(
+  RA.map((p: InferredProperty) => p.ownerComponentId),
+  RA.uniq(S.Eq),
+);
+
 const classifyDelegatedProperties = (
   properties: ReadonlyArray<InferredProperty>,
   directIndex: DirectComponentIndex,
-) =>
-  flow(
-    RA.map((p: InferredProperty) => p.ownerComponentId),
-    RA.uniq(S.Eq),
-    (owners) =>
-      (owners.length === 1 &&
-      O.exists((lowerId: string) => hasDirectTestsForComponent(lowerId, directIndex))(
-        RA.head(owners),
-      )
-        ? "potentially-redundant"
-        : "composition") satisfies TestClassification,
-  )(properties);
+) => {
+  const owners = collectUniqueOwnerIds(properties);
+  return (
+    owners.length === 1 &&
+    O.exists((lowerId: string) => hasDirectTestsForComponent(lowerId, directIndex))(
+      RA.head(owners),
+    )
+      ? "potentially-redundant"
+      : "composition"
+  ) satisfies TestClassification;
+};
 
 const buildClassificationSignals = (
   { test, properties }: TestPropertyBundle,
@@ -3035,40 +3267,45 @@ const classifyTestCase = (test: ExtractedTestCase, scopeContext: ScopeIndexConte
 // Stage 3: Rule Engines (Redundancy, Lowest-Level, Single Responsibility)
 // ---------------------------------------------------------------------------
 
-const extractUniquePropField = (
-  properties: ReadonlyArray<InferredProperty>,
-  selectField: (p: InferredProperty) => string,
-) =>
+const extractUniqueFieldSelector = (selectField: (p: InferredProperty) => string) =>
   flow(
     RA.map(selectField),
     RA.uniq(S.Eq),
     O.fromPredicate((ids) => ids.length === 1),
     O.flatMap(RA.head),
-  )(properties);
+  );
 
-const extractUniqueDelegatedPair = (properties: ReadonlyArray<InferredProperty>) =>
-  flow(
-    () => O.Do,
-    O.apS("higherId", extractUniquePropField(properties, (p) => p.directTargetId)),
-    O.apS("lowerId", extractUniquePropField(properties, (p) => p.ownerComponentId)),
-    O.apS("firstProp", RA.head(properties)),
-  )();
+const extractUniquePropField = (
+  properties: ReadonlyArray<InferredProperty>,
+  selectField: (p: InferredProperty) => string,
+) => extractUniqueFieldSelector(selectField)(properties);
+
+const extractUniqueDelegatedPair = (properties: ReadonlyArray<InferredProperty>) => {
+  const higherOpt = extractUniquePropField(properties, (p) => p.directTargetId);
+  const lowerOpt = extractUniquePropField(properties, (p) => p.ownerComponentId);
+  const firstOpt = RA.head(properties);
+  return O.isSome(higherOpt) && O.isSome(lowerOpt) && O.isSome(firstOpt)
+    ? O.some({ higherId: higherOpt.value, lowerId: lowerOpt.value, firstProp: firstOpt.value })
+    : O.none;
+};
+
+type DelegatedPair = Readonly<
+  Record<"higherId" | "lowerId", string> & {
+    readonly firstProp: InferredProperty;
+  }
+>;
 
 const extractSingleEdgeDelegation = (ct: ClassifiedTestCase) =>
   isDelegatedOnlyProperties(ct.properties)
-    ? flow(
-        extractUniqueDelegatedPair,
-        O.map(
-          ({ higherId, lowerId, firstProp }) =>
-            ({
-              ct,
-              higherId,
-              lowerId,
-              propertyLabel: firstProp.label,
-              caseCount: ct.properties.length * ct.test.eachCount,
-            }) satisfies SingleEdgeDelegation,
-        ),
-      )(ct.properties)
+    ? O.map(({ higherId, lowerId, firstProp }: DelegatedPair) =>
+          ({
+            ct,
+            higherId,
+            lowerId,
+            propertyLabel: firstProp.label,
+            caseCount: ct.properties.length * ct.test.eachCount,
+          }) satisfies SingleEdgeDelegation,
+      )(extractUniqueDelegatedPair(ct.properties))
     : O.none;
 
 const isSingleEdgeDelegatedTest = flow(
@@ -3106,16 +3343,17 @@ const collectTestCoveredEdges = ({ test }: ClassifiedTestCase, components: Compo
     components,
   });
 
-const collectCompositionCoveredEdges = ({ classifiedTests, components }: ClassifiedTestSuite) =>
-  toReadonlySet(
-    flow(
-      RA.filter(isNonDelegatedCompositionTest),
-      RA.flatMap((ct) => collectTestCoveredEdges(ct, components)),
-    )(classifiedTests),
+const collectCompositionEdgesFromSuite = (components: ComponentMap) =>
+  flow(
+    RA.filter(isNonDelegatedCompositionTest),
+    RA.flatMap((ct: ClassifiedTestCase) => collectTestCoveredEdges(ct, components)),
+    toReadonlySet,
   );
 
-const evaluateDelegatedEdgeGroups = <F>(
-  classifiedTests: ReadonlyArray<ClassifiedTestCase>,
+const collectCompositionCoveredEdges = ({ classifiedTests, components }: ClassifiedTestSuite) =>
+  collectCompositionEdgesFromSuite(components)(classifiedTests);
+
+const evaluateDelegatedGroupsFor = <F>(
   isEligible: (cand: SingleEdgeDelegation) => boolean,
   evaluateGroup: (edgeKey: string, group: ReadonlyArray<SingleEdgeDelegation>) => ReadonlyArray<F>,
 ) =>
@@ -3125,7 +3363,13 @@ const evaluateDelegatedEdgeGroups = <F>(
     (items) => groupItemsByKey(items, (c) => makeEdgeKey(c.higherId, c.lowerId)),
     RR.toEntries,
     RA.flatMap(([edgeKey, group]) => evaluateGroup(edgeKey, group)),
-  )(classifiedTests);
+  );
+
+const evaluateDelegatedEdgeGroups = <F>(
+  classifiedTests: ReadonlyArray<ClassifiedTestCase>,
+  isEligible: (cand: SingleEdgeDelegation) => boolean,
+  evaluateGroup: (edgeKey: string, group: ReadonlyArray<SingleEdgeDelegation>) => ReadonlyArray<F>,
+) => evaluateDelegatedGroupsFor(isEligible, evaluateGroup)(classifiedTests);
 
 const isSoleWiringGuardActive = (
   coverage: CompositionCoverage,
@@ -3134,12 +3378,15 @@ const isSoleWiringGuardActive = (
   minRepeatedCases: number,
 ) => coverage === "uncovered" && idx === 0 && caseCount < minRepeatedCases;
 
-const collectExistingLowerTestNames = (id: string, directIndex: DirectComponentIndex) =>
+const collectLowerTestNamesFor = (directIndex: DirectComponentIndex) =>
   flow(
     (cid: string) => lookupRecordList(cid, directIndex.testsByComponent),
     RA.map((t) => t.fullName),
     RA.uniq(S.Eq),
-  )(id);
+  );
+
+const collectExistingLowerTestNames = (id: string, directIndex: DirectComponentIndex) =>
+  collectLowerTestNamesFor(directIndex)(id);
 
 const toCrossLevelFinding = (
   cand: SingleEdgeDelegation,
@@ -3219,10 +3466,7 @@ const formatConcreteAssertionSig = ({
 
 const extractConcreteTestSigSet = (test: ExtractedTestCase) =>
   test.directTargets.length > 0 && test.assertions.length > 0
-    ? flow(
-        RA.traverse(O.Applicative)(formatConcreteAssertionSig),
-        O.map(toReadonlySet),
-      )(test.assertions)
+    ? O.map(toReadonlySet)(RA.traverse(O.Applicative)(formatConcreteAssertionSig)(test.assertions))
     : O.none;
 
 const isSubsetSignatures = (subset: ReadonlySet<string>, superset: ReadonlySet<string>) =>
@@ -3238,9 +3482,14 @@ const formatDirectTargetLabel = (
   resolveName: (id: string) => string,
 ) => joinCommaSpace(RA.map(resolveName)(test.directTargets));
 
+type DuplicateTestTarget = Readonly<
+  Record<"targetLabel", string> & {
+    readonly test: ExtractedTestCase;
+  }
+>;
+
 const makeDuplicateFinding = (
-  test: ExtractedTestCase,
-  targetLabel: string,
+  { test, targetLabel }: DuplicateTestTarget,
   primaryTest: string,
 ) =>
   ({
@@ -3265,14 +3514,32 @@ const appendSeenConcreteEntry = (
 
 const recordDuplicateMatch = (
   state: DuplicateScanState,
-  test: ExtractedTestCase,
-  targetLabel: string,
+  target: DuplicateTestTarget,
   primaryTest: string,
 ) =>
   ({
     seenByBucket: state.seenByBucket,
-    findings: [...state.findings, makeDuplicateFinding(test, targetLabel, primaryTest)],
+    findings: [...state.findings, makeDuplicateFinding(target, primaryTest)],
   }) satisfies DuplicateScanState;
+
+const matchDuplicateBucket = (
+  sigSet: ReadonlySet<string>,
+  state: DuplicateScanState,
+  bucketKey: string,
+  target: DuplicateTestTarget,
+) =>
+  flow(
+    RA.findFirst((prev: ConcreteTestEntry) => isSubsetSignatures(sigSet, prev.signatures)),
+    O.match(
+      () =>
+        appendSeenConcreteEntry(state, bucketKey, {
+          test: target.test,
+          signatures: sigSet,
+          targetLabel: target.targetLabel,
+        }),
+      (dup) => recordDuplicateMatch(state, target, dup.test.fullName),
+    ),
+  );
 
 const recordOrReportDuplicate = (
   sigSet: ReadonlySet<string>,
@@ -3281,14 +3548,10 @@ const recordOrReportDuplicate = (
   resolveName: (id: string) => string,
 ) => {
   const bucketKey = formatTestBucketKey(test.directTargets, test.mockedTargets);
-  const targetLabel = formatDirectTargetLabel(test, resolveName);
-  return flow(
-    RA.findFirst((prev: ConcreteTestEntry) => isSubsetSignatures(sigSet, prev.signatures)),
-    O.match(
-      () => appendSeenConcreteEntry(state, bucketKey, { test, signatures: sigSet, targetLabel }),
-      (dup) => recordDuplicateMatch(state, test, targetLabel, dup.test.fullName),
-    ),
-  )(lookupRecordList(bucketKey, state.seenByBucket));
+  return matchDuplicateBucket(sigSet, state, bucketKey, {
+    test,
+    targetLabel: formatDirectTargetLabel(test, resolveName),
+  })(lookupRecordList(bucketKey, state.seenByBucket));
 };
 
 const stepDuplicateScan = (
@@ -3317,21 +3580,23 @@ const detectRedundancies = (input: RuleEvaluationContext) => {
   ] satisfies ReadonlyArray<RedundantTestFinding>;
 };
 
+const hasMultipleTransitiveCallees = (comp: ProductionComponent) =>
+  comp.transitiveCallees.length >= 2;
+
 const isEligibleLowestLevelCandidate = (
   cand: SingleEdgeDelegation,
   { components, directIndex }: ScopeIndexContext,
-) =>
-  flow(
-    () => O.Do,
-    O.apS("higherComp", lookupComponent(cand.higherId, components)),
-    O.apS("lowerComp", lookupComponent(cand.lowerId, components)),
-    O.exists(
-      ({ higherComp, lowerComp }) =>
-        lowerComp.visibility === "exported" &&
-        !hasDirectTestsForComponent(cand.lowerId, directIndex) &&
-        higherComp.transitiveCallees.length >= 2,
-    ),
-  )();
+) => {
+  const higherOpt = lookupComponent(cand.higherId, components);
+  const lowerOpt = lookupComponent(cand.lowerId, components);
+  return (
+    O.isSome(higherOpt) &&
+    O.isSome(lowerOpt) &&
+    lowerOpt.value.visibility === "exported" &&
+    !hasDirectTestsForComponent(cand.lowerId, directIndex) &&
+    hasMultipleTransitiveCallees(higherOpt.value)
+  );
+};
 
 const toLowestLevelFinding = (
   entry: SingleEdgeDelegation,
@@ -3397,21 +3662,28 @@ const hasJointAssertionLink = (
       hasStringMember(a.referencedComponents, rightId),
   )(assertions);
 
-const isComponentPairRelated = (pair: ComponentPair, { test, components }: TestComponentContext) =>
-  pair.leftId === pair.rightId ||
-  flow(
-    () => O.Do,
-    O.apS("a", lookupComponent(pair.leftId, components)),
-    O.apS("b", lookupComponent(pair.rightId, components)),
-    O.exists(
-      ({ a, b }) =>
-        a.fileName === b.fileName ||
-        hasStringMember(a.transitiveCallees, pair.rightId) ||
-        hasStringMember(b.transitiveCallees, pair.leftId) ||
-        hasDataflowLink(pair, test.dataflowEdges) ||
-        hasJointAssertionLink(pair, test.assertions),
-    ),
-  )();
+const isResolvedComponentPairRelated = (
+  a: ProductionComponent,
+  b: ProductionComponent,
+  pair: ComponentPair,
+  test: ExtractedTestCase,
+) =>
+  a.fileName === b.fileName ||
+  hasStringMember(a.transitiveCallees, pair.rightId) ||
+  hasStringMember(b.transitiveCallees, pair.leftId) ||
+  hasDataflowLink(pair, test.dataflowEdges) ||
+  hasJointAssertionLink(pair, test.assertions);
+
+const isComponentPairRelated = (pair: ComponentPair, { test, components }: TestComponentContext) => {
+  const aOpt = lookupComponent(pair.leftId, components);
+  const bOpt = lookupComponent(pair.rightId, components);
+  return (
+    pair.leftId === pair.rightId ||
+    (O.isSome(aOpt) &&
+      O.isSome(bOpt) &&
+      isResolvedComponentPairRelated(aOpt.value, bOpt.value, pair, test))
+  );
+};
 
 const stepClusterFrontier = (
   curr: string,
@@ -3438,19 +3710,19 @@ const expandClusterFrontier = (
   ctx: ClusterWalkContext,
   // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for mutually recursive BFS cluster walk
 ): Readonly<{ readonly visited: ReadonlySet<string>; readonly members: ReadonlyArray<string> }> =>
-  flow(
-    RA.head<string>,
-    O.match(
-      () => ({ visited: state.visited, members: state.members }),
-      (curr) => stepClusterFrontier(curr, state, ctx),
-    ),
-  )(state.frontier);
+  O.match(
+    () => ({ visited: state.visited, members: state.members }),
+    (curr: string) => stepClusterFrontier(curr, state, ctx),
+  )(RA.head<string>(state.frontier));
 
-const formatClusterNames = (memberIds: ReadonlyArray<string>, components: ComponentMap) =>
+const sortResolvedNames = (components: ComponentMap) =>
   flow(
     RA.map((id: string) => resolveComponentName(id, components)),
     RA.sort(S.Ord),
-  )(memberIds);
+  );
+
+const formatClusterNames = (memberIds: ReadonlyArray<string>, components: ComponentMap) =>
+  sortResolvedNames(components)(memberIds);
 
 const expandAndAppendCluster = (acc: ClusterAccum, start: string, ctx: ClusterWalkContext) => {
   const expanded = expandClusterFrontier(
@@ -3475,7 +3747,7 @@ const computeResponsibilityClusters = (
         : expandAndAppendCluster(acc, start, { assertedIds, subject }),
   )(assertedIds).clusters;
 
-const extractTestAssertedComponentIds = ({ test, components }: TestComponentContext) =>
+const filterTestAssertedComponentIds = (components: ComponentMap) =>
   flow(
     RA.flatMap((a: ExtractedAssertion) => [
       ...RA.fromOption(extractSubjectComponentId(a.subjectTarget)),
@@ -3483,7 +3755,10 @@ const extractTestAssertedComponentIds = ({ test, components }: TestComponentCont
     ]),
     RA.filter((id) => hasComponent(id, components)),
     RA.uniq(S.Eq),
-  )(test.assertions);
+  );
+
+const extractTestAssertedComponentIds = ({ test, components }: TestComponentContext) =>
+  filterTestAssertedComponentIds(components)(test.assertions);
 
 const makeResponsibilityFinding = (
   test: ExtractedTestCase,
@@ -3497,7 +3772,7 @@ const makeResponsibilityFinding = (
     groups,
   }) satisfies SingleResponsibilityFinding;
 
-const evaluateSingleResponsibilityTest = (
+const evaluateSingleResponsibilityFor = (
   subject: TestComponentContext,
   minUnrelatedComponents: number,
 ) =>
@@ -3507,7 +3782,12 @@ const evaluateSingleResponsibilityTest = (
     O.map((ids) => computeResponsibilityClusters(ids, subject)),
     O.filter((clusters) => clusters.length >= minUnrelatedComponents),
     O.map((groups) => makeResponsibilityFinding(subject.test, groups)),
-  )(subject);
+  );
+
+const evaluateSingleResponsibilityTest = (
+  subject: TestComponentContext,
+  minUnrelatedComponents: number,
+) => evaluateSingleResponsibilityFor(subject, minUnrelatedComponents)(subject);
 
 const detectSingleResponsibilityViolations = (
   { classifiedTests, components }: ClassifiedTestSuite,
@@ -3540,22 +3820,22 @@ const toTestCaseSummary = (
     mockedTargets: RA.map((id: string) => resolveComponentName(id, components))(test.mockedTargets),
   }) satisfies TestCaseSummary;
 
-const extractFileTestsWithChecker = (
-  sf: ts.SourceFile,
-  program: ts.Program,
-  graph: ProductionGraph,
-) => extractTestCasesFromFile(sf, program.getTypeChecker(), graph);
-
-const collectProjectExtractedTests = (
-  program: ts.Program,
+const collectMatchingProjectTests = (
+  checker: ts.TypeChecker,
   graph: ProductionGraph,
   testPatterns: ReadonlyArray<string>,
 ) =>
   flow(
     collectProjectSourceFiles,
     RA.filter((sf) => isSourceFileMatchingPatterns(sf, testPatterns)),
-    RA.flatMap((sf) => extractFileTestsWithChecker(sf, program, graph)),
-  )(program);
+    RA.flatMap((sf) => extractTestCasesFromFile(sf, checker, graph)),
+  );
+
+const collectProjectExtractedTests = (
+  program: ts.Program,
+  graph: ProductionGraph,
+  testPatterns: ReadonlyArray<string>,
+) => collectMatchingProjectTests(program.getTypeChecker(), graph, testPatterns)(program);
 
 const collectResponsibilityFindings = ({
   classifiedTests,
@@ -3609,7 +3889,7 @@ const analysisCache = new WeakMap<ts.Program, Readonly<Record<string, TestScopeA
 export const analyzeTestScope = (
   program: ts.Program,
   options: TestScopeOptions = DEFAULT_TEST_SCOPE_OPTIONS,
-) =>
+): TestScopeAnalysis =>
   memoizeByProgramAndKey(program, serializeOptionsKey(options), analysisCache, (p) =>
     computeTestScopeAnalysis(p, options),
   );

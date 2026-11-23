@@ -1,7 +1,6 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../lib/rule-factory.js";
 
@@ -74,12 +73,9 @@ export const noOptionalStateBags = createRule<[], MessageIds>({
   },
   create: (context) => ({
     TSTypeLiteral: (node) => {
-      flow(
-        classifyTypeLiteral,
-        O.map((messageId) => {
-          context.report({ node, messageId });
-        }),
-      )(node);
+      O.map((messageId: MessageIds) => {
+        context.report({ node, messageId });
+      })(classifyTypeLiteral(node));
     },
   }),
 });

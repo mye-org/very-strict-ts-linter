@@ -73,11 +73,16 @@ describe("strict-fp-init CLI", () => {
       expect(eslintConfig).toContain("strictFp.createStrictFpConfig(");
       expect(eslintConfig).toContain("projectService: true");
 
-      const pkg = JSON.parse(readInDir(tmpDir, "package.json")) as {
-        readonly scripts: Record<string, string>;
-      };
-      expect(pkg.scripts["lint"]).toBe("strict-fp-lint");
-      expect(pkg.scripts["test"]).toBe("vitest");
+      const parsedPkg: unknown = JSON.parse(readInDir(tmpDir, "package.json"));
+      const scripts =
+        typeof parsedPkg === "object" &&
+        parsedPkg !== null &&
+        "scripts" in parsedPkg &&
+        typeof parsedPkg.scripts === "object" &&
+        parsedPkg.scripts !== null
+          ? parsedPkg.scripts
+          : {};
+      expect(scripts).toMatchObject({ lint: "strict-fp-lint", test: "vitest" });
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

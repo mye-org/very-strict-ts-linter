@@ -93,13 +93,13 @@ const extractModelDef = (node: ts.Node, sf: ts.SourceFile, checker: ts.TypeCheck
     ? buildModelDefIfLarge(node, node.name.text, sf, checker)
     : O.none;
 
-const resolveModelKeyForType = (type: ts.Type) =>
-  flow(
-    () => O.Do,
-    O.apS("name", resolveTsTypeName(type)),
-    O.apS("file", resolveTsTypeDeclarationFile(type)),
-    O.map(({ file, name }) => makeModelKey(file, name)),
-  )();
+const resolveModelKeyForType = (type: ts.Type) => {
+  const nameOpt = resolveTsTypeName(type);
+  const fileOpt = resolveTsTypeDeclarationFile(type);
+  return O.isSome(nameOpt) && O.isSome(fileOpt)
+    ? O.some(makeModelKey(fileOpt.value, nameOpt.value))
+    : O.none;
+};
 
 const isIgnoredReceiver = (expr: ts.Expression) =>
   ts.isIdentifier(expr) && IGNORED_RECEIVER_NAMES.has(expr.text);
@@ -116,16 +116,27 @@ const hasModelField = (
   fieldName: string,
 ) => O.exists((m: ModelDef) => m.fields.has(fieldName))(RR.lookup(modelKey, models));
 
+const resolveMatchingModelEdge = (
+  modulePath: string,
+  fieldName: string,
+  models: Readonly<Record<string, ModelDef>>,
+) =>
+  flow(
+    resolveModelKeyForType,
+    O.filter((modelKey: string) => hasModelField(models, modelKey, fieldName)),
+    O.map((modelKey: string) => ({ modelKey, modulePath, field: fieldName })),
+  );
+
 const extractPropAccessEdge = (
   node: ts.PropertyAccessExpression,
   modulePath: string,
   { candidateFieldNames, models, checker }: EdgeExtractionContext,
 ) =>
   candidateFieldNames.has(node.name.text) && !isIgnoredReceiver(node.expression)
-    ? flow(
-        resolveModelKeyForType,
-        O.filter((modelKey) => hasModelField(models, modelKey, node.name.text)),
-        O.map((modelKey) => ({ modelKey, modulePath, field: node.name.text })),
+    ? resolveMatchingModelEdge(
+        modulePath,
+        node.name.text,
+        models,
       )(checker.getTypeAtLocation(node.expression))
     : O.none;
 
@@ -143,39 +154,47 @@ const resolveBindingFieldName = (el: ts.BindingElement) =>
 const toModelFieldEdge = (model: ModelDef, modulePath: string) => (field: string) =>
   model.fields.has(field) ? O.some({ modelKey: model.modelKey, modulePath, field }) : O.none;
 
+type BindingEdgeTarget = Readonly<
+  Record<"modulePath", string> & {
+    readonly fields: ReadonlyArray<string>;
+  }
+>;
+
 const mapModelFieldsToEdges = (
   model: ModelDef,
-  fields: ReadonlyArray<string>,
-  modulePath: string,
+  { fields, modulePath }: BindingEdgeTarget,
 ) => RA.filterMap(toModelFieldEdge(model, modulePath))(fields);
 
-const resolveBindingEdgesForFields = (
-  pattern: ts.ObjectBindingPattern,
-  fields: ReadonlyArray<string>,
-  modulePath: string,
-  { models, checker }: EdgeExtractionContext,
+const resolveEdgesForModelKey = (
+  target: BindingEdgeTarget,
+  models: Readonly<Record<string, ModelDef>>,
 ) =>
   flow(
     resolveModelKeyForType,
-    O.flatMap((modelKey) => RR.lookup(modelKey, models)),
+    O.flatMap((modelKey: string) => RR.lookup(modelKey, models)),
     O.match(
-      () => [] as ReadonlyArray<AccessEdge>,
-      (model) => mapModelFieldsToEdges(model, fields, modulePath),
+      () => [] satisfies ReadonlyArray<AccessEdge>,
+      (model: ModelDef) => mapModelFieldsToEdges(model, target),
     ),
-  )(checker.getTypeAtLocation(pattern));
+  );
+
+const resolveBindingEdgesForFields = (
+  pattern: ts.ObjectBindingPattern,
+  target: BindingEdgeTarget,
+  { models, checker }: EdgeExtractionContext,
+) => resolveEdgesForModelKey(target, models)(checker.getTypeAtLocation(pattern));
 
 const extractBindingEdges = (
   pattern: ts.ObjectBindingPattern,
   modulePath: string,
   ctx: EdgeExtractionContext,
 ) => {
-  const fields = flow(
-    RA.filterMap(resolveBindingFieldName),
-    RA.filter((f) => ctx.candidateFieldNames.has(f)),
-  )(pattern.elements);
+  const fields = RA.filter((f: string) => ctx.candidateFieldNames.has(f))(
+    RA.filterMap(resolveBindingFieldName)(pattern.elements),
+  );
   return fields.length === 0
-    ? ([] as ReadonlyArray<AccessEdge>)
-    : resolveBindingEdgesForFields(pattern, fields, modulePath, ctx);
+    ? ([] satisfies ReadonlyArray<AccessEdge>)
+    : resolveBindingEdgesForFields(pattern, { fields, modulePath }, ctx);
 };
 
 const extractFilePropAccessEdges = (
@@ -183,20 +202,18 @@ const extractFilePropAccessEdges = (
   modulePath: string,
   ctx: EdgeExtractionContext,
 ) =>
-  flow(
-    RA.filter(ts.isPropertyAccessExpression),
-    RA.filterMap((n) => extractPropAccessEdge(n, modulePath, ctx)),
-  )(nodes);
+  RA.filterMap((n: ts.PropertyAccessExpression) => extractPropAccessEdge(n, modulePath, ctx))(
+    RA.filter(ts.isPropertyAccessExpression)(nodes),
+  );
 
 const extractFileBindingEdges = (
   nodes: ReadonlyArray<ts.Node>,
   modulePath: string,
   ctx: EdgeExtractionContext,
 ) =>
-  flow(
-    RA.filter(ts.isObjectBindingPattern),
-    RA.flatMap((n) => extractBindingEdges(n, modulePath, ctx)),
-  )(nodes);
+  RA.flatMap((n: ts.ObjectBindingPattern) => extractBindingEdges(n, modulePath, ctx))(
+    RA.filter(ts.isObjectBindingPattern)(nodes),
+  );
 
 const extractEdgesFromFile = (ctx: EdgeExtractionContext) => (sf: ts.SourceFile) => {
   const nodes = collectTsNodes(sf, sf);
@@ -209,11 +226,11 @@ const extractEdgesFromFile = (ctx: EdgeExtractionContext) => (sf: ts.SourceFile)
 
 const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
 
-const extractFileModels = (checker: ts.TypeChecker) => (sf: ts.SourceFile) =>
+const extractFileModels = (checker: ts.TypeChecker) =>
   flow(
-    collectFileNodes,
-    RA.filterMap((n) => extractModelDef(n, sf, checker)),
-  )(sf);
+    (sf: ts.SourceFile) => ({ sf, nodes: collectFileNodes(sf) }),
+    ({ sf, nodes }) => RA.filterMap((n: ts.Node) => extractModelDef(n, sf, checker))(nodes),
+  );
 
 const indexModelsByKey = flow(
   RA.map((m: ModelDef) => [m.modelKey, m] as const),
@@ -221,7 +238,7 @@ const indexModelsByKey = flow(
 );
 
 const collectModelsFromFiles = (files: ReadonlyArray<ts.SourceFile>, checker: ts.TypeChecker) =>
-  flow(RA.flatMap(extractFileModels(checker)), indexModelsByKey)(files);
+  indexModelsByKey(RA.flatMap(extractFileModels(checker))(files));
 
 const collectCandidateFieldNames = (models: Readonly<Record<string, ModelDef>>) =>
   new Set(
@@ -233,16 +250,15 @@ const collectEdgesByModel = (
   models: Readonly<Record<string, ModelDef>>,
   checker: ts.TypeChecker,
 ) =>
-  flow(
+  RNEA.groupBy((edge: AccessEdge) => edge.modelKey)(
     RA.flatMap(
       extractEdgesFromFile({
         candidateFieldNames: collectCandidateFieldNames(models),
         models,
         checker,
       }),
-    ),
-    RNEA.groupBy((edge) => edge.modelKey),
-  )(files);
+    )(files),
+  );
 
 const collectProgramPolysemyGraph = (program: ts.Program) => {
   const checker = program.getTypeChecker();
@@ -309,21 +325,23 @@ type ModelEdgeGroup = Readonly<{
   readonly edges: ReadonlyArray<AccessEdge>;
 }>;
 
-const groupEdgesByModule = ({ edges, model }: ModelEdgeGroup) =>
+const buildModuleFieldUsages = (model: ModelDef) =>
   flow(
     RA.filter((e: AccessEdge) => model.fields.has(e.field)),
-    RNEA.groupBy((e) => e.modulePath),
+    RNEA.groupBy((e: AccessEdge) => e.modulePath),
     RR.toEntries,
     RA.map(toModuleFieldUsage),
-  )(edges);
+  );
+
+const groupEdgesByModule = ({ edges, model }: ModelEdgeGroup) =>
+  buildModuleFieldUsages(model)(edges);
 
 type PolysemyThresholds = Readonly<Record<"minFields" | "minClusterFields" | "maxOverlap", number>>;
 
 const collectQualifiedClusters = (group: ModelEdgeGroup, minClusterFields: number) =>
-  flow(
-    groupEdgesByModule,
-    RA.filter((c) => c.fields.length >= minClusterFields),
-  )(group);
+  RA.filter((c: ModuleFieldUsage) => c.fields.length >= minClusterFields)(
+    groupEdgesByModule(group),
+  );
 
 const findDisjointModelFinding = (
   group: ModelEdgeGroup,
@@ -366,21 +384,17 @@ const polysemyIndexCache = new WeakMap<ts.Program, Readonly<Record<string, Polys
 
 const readModelEntries = (graph: ProgramPolysemyGraph) => RR.toEntries(graph.models);
 
-const extractPolysemyFindings =
-  (thresholds: PolysemyThresholds) => (graph: ProgramPolysemyGraph) =>
-    flow(
-      readModelEntries,
-      RA.filterMap(([, model]) =>
-        toPolysemyFinding({ model, edges: graph.edgesByModel[model.modelKey] ?? [] }, thresholds),
-      ),
-    )(graph);
-
-const computePolysemyIndex = (program: ts.Program, thresholds: PolysemyThresholds) =>
+const extractPolysemyFindings = (thresholds: PolysemyThresholds) =>
   flow(
-    resolveProgramPolysemyGraph,
-    extractPolysemyFindings(thresholds),
-    indexPolysemyFindings,
-  )(program);
+    (graph: ProgramPolysemyGraph) => ({ graph, entries: readModelEntries(graph) }),
+    ({ graph, entries }) =>
+      RA.filterMap(([, model]: readonly [string, ModelDef]) =>
+        toPolysemyFinding({ model, edges: graph.edgesByModel[model.modelKey] ?? [] }, thresholds),
+      )(entries),
+  );
+
+const computePolysemyIndexForThresholds = (thresholds: PolysemyThresholds) =>
+  flow(resolveProgramPolysemyGraph, extractPolysemyFindings(thresholds), indexPolysemyFindings);
 
 const makePolysemyCacheKey = (
   minFields: number,
@@ -393,10 +407,10 @@ export const analyzePolysemy = (
   minFields = 4,
   minClusterFields = 2,
   maxOverlap = 0.2,
-) =>
+): PolysemyIndex =>
   memoizeByProgramAndKey(
     program,
     makePolysemyCacheKey(minFields, minClusterFields, maxOverlap),
     polysemyIndexCache,
-    (p) => computePolysemyIndex(p, { minFields, minClusterFields, maxOverlap }),
+    computePolysemyIndexForThresholds({ minFields, minClusterFields, maxOverlap }),
   );

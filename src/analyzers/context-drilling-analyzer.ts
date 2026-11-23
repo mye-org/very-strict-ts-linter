@@ -4,7 +4,7 @@ import * as RNEA from "fp-ts/lib/ReadonlyNonEmptyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import * as S from "fp-ts/lib/string.js";
 import { flow } from "fp-ts/lib/function.js";
-import { match } from "ts-pattern";
+import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 import { memoizeByProgram, memoizeByProgramAndKey } from "../lib/program-memo.js";
 import { collectProjectSourceFiles, normalizeFilePath } from "../lib/source-paths.js";
@@ -173,19 +173,21 @@ const extractParamSlot = (
   index: number,
   checker: ts.TypeChecker,
 ) =>
-  ts.isIdentifier(param.name)
-    ? flow(
-        () => O.Do,
-        O.apS("typeName", resolveContextTypeName(param, checker)),
-        O.apS("symbol", resolveParamSymbol(param.name, checker)),
-        O.map(({ typeName, symbol }) => ({
-          index,
-          name: (param.name as ts.Identifier).text,
-          typeName,
-          symbol,
-        })),
-      )()
-    : O.none;
+  match(param.name)
+    .when(ts.isIdentifier, (paramId) => {
+      const typeOpt = resolveContextTypeName(param, checker);
+      const symOpt = resolveParamSymbol(paramId, checker);
+      return O.isSome(typeOpt) && O.isSome(symOpt)
+        ? O.some<ParamSlot>({
+            index,
+            name: paramId.text,
+            typeName: typeOpt.value,
+            symbol: symOpt.value,
+          })
+        : O.none;
+    })
+    .with(P._, () => O.none)
+    .exhaustive();
 
 const toParamArray = (params: ts.NodeArray<ts.ParameterDeclaration>) => Array.from(params);
 
@@ -252,17 +254,21 @@ const resolveSymbolDecl = (sym: ts.Symbol) =>
 const lookupCalleeSymbol = (call: ts.CallExpression, checker: ts.TypeChecker) =>
   O.fromNullable(checker.getSymbolAtLocation(call.expression));
 
-const resolveCalleeFn = (
-  call: ts.CallExpression,
+const resolveCalleeFromSymbol = (
   fnByKey: Readonly<Record<string, FunctionEntry>>,
   checker: ts.TypeChecker,
 ) =>
   flow(
-    lookupCalleeSymbol,
-    O.map((sym) => resolveAliasSymbol(sym, checker)),
-    O.flatMap(resolveSymbolDecl),
-    O.flatMap((decl) => lookupDeclEntry(decl, fnByKey)),
-  )(call, checker);
+    (sym: ts.Symbol) => resolveAliasSymbol(sym, checker),
+    resolveSymbolDecl,
+    O.flatMap((decl: ts.Declaration) => lookupDeclEntry(decl, fnByKey)),
+  );
+
+const resolveCalleeFn = (
+  call: ts.CallExpression,
+  fnByKey: Readonly<Record<string, FunctionEntry>>,
+  checker: ts.TypeChecker,
+) => O.flatMap(resolveCalleeFromSymbol(fnByKey, checker))(lookupCalleeSymbol(call, checker));
 
 const matchTargetSlotEdge = (
   fromNode: string,
@@ -270,10 +276,12 @@ const matchTargetSlotEdge = (
   argIdx: number,
   typeName: string,
 ) =>
-  flow(
-    RA.findFirst((p: ParamSlot) => p.index === argIdx && p.typeName === typeName),
-    O.map((targetSlot) => ({ fromNode, toNode: makeSlotKey(target.key, targetSlot.index) })),
-  )(target.paramSlots);
+  O.map((targetSlot: ParamSlot) => ({
+    fromNode,
+    toNode: makeSlotKey(target.key, targetSlot.index),
+  }))(
+    RA.findFirst((p: ParamSlot) => p.index === argIdx && p.typeName === typeName)(target.paramSlots),
+  );
 
 const findArgumentIndex = (call: ts.CallExpression, id: ts.Identifier) =>
   call.arguments.indexOf(id);
@@ -292,19 +300,32 @@ const matchTargetWithSlot = (
     slot.typeName,
   );
 
-const toForwardEdge = (
-  id: ts.Identifier,
-  fn: FunctionEntry,
-  slot: ParamSlot,
-  fnByKey: Readonly<Record<string, FunctionEntry>>,
-  checker: ts.TypeChecker,
-) => {
-  const call = id.parent as ts.CallExpression;
-  return flow(
-    O.filter((target: FunctionEntry) => target.key !== fn.key),
-    O.flatMap((target) => matchTargetWithSlot(fn, slot, call, id, target)),
-  )(resolveCalleeFn(call, fnByKey, checker));
-};
+type SlotEdgeQuery = Readonly<{
+  fn: FunctionEntry;
+  slot: ParamSlot;
+  id: ts.Identifier;
+  fnByKey: Readonly<Record<string, FunctionEntry>>;
+  checker: ts.TypeChecker;
+}>;
+
+const matchSlotEdgeWithCall = (query: SlotEdgeQuery) =>
+  flow(
+    (call: ts.CallExpression) => ({
+      call,
+      targetOpt: resolveCalleeFn(call, query.fnByKey, query.checker),
+    }),
+    ({ call, targetOpt }) =>
+      O.flatMap((target: FunctionEntry) =>
+        target.key === query.fn.key
+          ? O.none
+          : matchTargetWithSlot(query.fn, query.slot, call, query.id, target),
+      )(targetOpt),
+  );
+
+const toForwardEdge = (query: SlotEdgeQuery) =>
+  match(query.id.parent)
+    .when(ts.isCallExpression, (call) => matchSlotEdgeWithCall(query)(call))
+    .otherwise(() => O.none);
 
 const collectSlotEdges = (
   fn: FunctionEntry,
@@ -314,8 +335,8 @@ const collectSlotEdges = (
 ) => {
   const refs = findParamReferences(fn, slot, checker);
   return refs.length > 0 && RA.every(isDirectCallArgument)(refs)
-    ? RA.filterMap((id: ts.Identifier) => toForwardEdge(id, fn, slot, fnByKey, checker))(refs)
-    : ([] as ReadonlyArray<ForwardEdge>);
+    ? RA.filterMap((id: ts.Identifier) => toForwardEdge({ fn, slot, id, fnByKey, checker }))(refs)
+    : ([] satisfies ReadonlyArray<ForwardEdge>);
 };
 
 const indexFunctions = flow(
@@ -388,7 +409,7 @@ const buildProgramGraph = (program: ts.Program) => {
 const resolveOutgoingNeighbors = (
   nodeId: string,
   outgoing: Readonly<Record<string, ReadonlyArray<string>>>,
-) => O.getOrElse(() => [] as ReadonlyArray<string>)(RR.lookup(nodeId, outgoing));
+) => O.getOrElseW(() => [])(RR.lookup(nodeId, outgoing));
 
 const pickLongerPath = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
   b.length > a.length ? b : a;
@@ -440,25 +461,26 @@ const reduceNeighborsWithEnv = (nextEnv: WalkEnv, memo: PathMemo) =>
     sweepNeighbor(nextEnv),
   );
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive longest-path traversal
-const computeLongestPath = (req: PathWalkRequest): LongestPathOutcome =>
-  flow(
-    (id: string) => resolveOutgoingNeighbors(id, req.env.outgoing),
-    reduceNeighborsWithEnv(enterNodeEnv(req), req.memo),
-    (outcome) => finalizeNodePath(req.nodeId, outcome),
-  )(req.nodeId);
+const computeLongestPath: (req: PathWalkRequest) => LongestPathOutcome = flow(
+  (req: PathWalkRequest) => ({
+    nodeId: req.nodeId,
+    outcome: reduceNeighborsWithEnv(enterNodeEnv(req), req.memo)(
+      resolveOutgoingNeighbors(req.nodeId, req.env.outgoing),
+    ),
+  }),
+  ({ nodeId, outcome }) => finalizeNodePath(nodeId, outcome),
+);
 
 const lookupMemoPath = (req: PathWalkRequest) => RR.lookup(req.nodeId, req.memo);
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive longest-path traversal
-const walkLongestPath = (req: PathWalkRequest): LongestPathOutcome =>
-  flow(
-    lookupMemoPath,
+const walkLongestPath: (req: PathWalkRequest) => LongestPathOutcome = flow(
+  (req: PathWalkRequest) => ({ req, memoPath: lookupMemoPath(req) }),
+  ({ req, memoPath }) =>
     O.match(
       () => computeLongestPath(req),
-      (path) => ({ path, memo: req.memo }),
-    ),
-  )(req);
+      (path: ReadonlyArray<string>) => ({ path, memo: req.memo }),
+    )(memoPath),
+);
 
 const lookupSlotMeta = (id: string, slotMeta: Readonly<Record<string, SlotMeta>>) =>
   RR.lookup(id, slotMeta);
@@ -495,21 +517,26 @@ const buildFindingFromRoot = (rootMeta: SlotMeta, view: PathView) => ({
   locations: extractChainLocations(view),
 });
 
-const pathToFinding = (path: ReadonlyArray<string>, graph: ProgramGraph) =>
+const resolveFindingFromRootId = (path: ReadonlyArray<string>, graph: ProgramGraph) =>
   flow(
-    O.flatMap((rootId: string) => lookupSlotMeta(rootId, graph.slotMeta)),
-    O.map((rootMeta) => buildFindingFromRoot(rootMeta, { path, slotMeta: graph.slotMeta })),
-  )(O.fromNullable(path[0]));
+    (rootId: string) => lookupSlotMeta(rootId, graph.slotMeta),
+    O.map((rootMeta: SlotMeta) => buildFindingFromRoot(rootMeta, { path, slotMeta: graph.slotMeta })),
+  );
+
+const pathToFinding = (path: ReadonlyArray<string>, graph: ProgramGraph) =>
+  O.flatMap(resolveFindingFromRootId(path, graph))(O.fromNullable(path[0]));
 
 const indexChainsByLocation = RNEA.groupBy((f: ContextDrillingFinding) =>
   makeLocationKey(f.rootLocation),
 );
 
-const collectRootNodeIds = (graph: ProgramGraph) =>
-  flow(
-    (g: ProgramGraph) => RR.keys(g.outgoing),
-    RA.filter((nodeId) => (graph.incomingCount[nodeId] ?? 0) === 0),
-  )(graph);
+const collectRootNodeIds = flow(
+  (graph: ProgramGraph) => ({
+    keys: RR.keys(graph.outgoing),
+    incomingCount: graph.incomingCount,
+  }),
+  ({ keys, incomingCount }) => RA.filter((nodeId: string) => (incomingCount[nodeId] ?? 0) === 0)(keys),
+);
 
 const appendRootLongestPath =
   (outgoing: Readonly<Record<string, ReadonlyArray<string>>>) =>
@@ -524,33 +551,45 @@ const appendRootLongestPath =
 const EMPTY_ROOT_SWEEP: RootSweepState = { paths: [], memo: {} };
 
 const collectRootLongestPaths = (graph: ProgramGraph) =>
-  flow(
-    collectRootNodeIds,
-    RA.reduce(EMPTY_ROOT_SWEEP, appendRootLongestPath(graph.outgoing)),
-    (state) => state.paths,
-  )(graph);
+  RA.reduce(EMPTY_ROOT_SWEEP, appendRootLongestPath(graph.outgoing))(
+    collectRootNodeIds(graph),
+  ).paths;
 
 const buildDrillingAnalysis = (chains: ReadonlyArray<ContextDrillingFinding>) => ({
   chains,
   locationIndex: indexChainsByLocation(chains),
 });
 
-const computeContextDrilling = (program: ts.Program, minDepth: number) => {
-  const graph = memoizeByProgram(program, graphCache, buildProgramGraph);
-  return flow(
+const filterDeepPaths = (minDepth: number) =>
+  flow(
     collectRootLongestPaths,
-    RA.filter((path) => path.length - 1 >= minDepth),
-    RA.filterMap((path) => pathToFinding(path, graph)),
-    buildDrillingAnalysis,
-  )(graph);
-};
+    RA.filter((path: ReadonlyArray<string>) => path.length - 1 >= minDepth),
+  );
+
+const analyzeProgramGraph = (minDepth: number) =>
+  flow(
+    (graph: ProgramGraph) => ({ graph, paths: filterDeepPaths(minDepth)(graph) }),
+    ({ graph, paths }) =>
+      buildDrillingAnalysis(
+        RA.filterMap((path: ReadonlyArray<string>) => pathToFinding(path, graph))(paths),
+      ),
+  );
+
+const computeContextDrillingForMinDepth = (minDepth: number) =>
+  flow(
+    (program: ts.Program) => memoizeByProgram(program, graphCache, buildProgramGraph),
+    analyzeProgramGraph(minDepth),
+  );
 
 const makeDrillingCacheKey = (minDepth: number) => String(minDepth);
 
-export const analyzeContextDrilling = (program: ts.Program, minDepth = 3) =>
+export const analyzeContextDrilling = (
+  program: ts.Program,
+  minDepth = 3,
+): ContextDrillingAnalysis =>
   memoizeByProgramAndKey(
     program,
     makeDrillingCacheKey(minDepth),
     analysisCache,
-    (p) => computeContextDrilling(p, minDepth),
+    computeContextDrillingForMinDepth(minDepth),
   );

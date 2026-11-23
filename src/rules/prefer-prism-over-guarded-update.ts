@@ -106,10 +106,9 @@ const isSpreadUpdateArrow = (fn: TSESTree.ArrowFunctionExpression) => {
   return (
     fn.params.length === 1 &&
     body.type === AST_NODE_TYPES.ObjectExpression &&
-    flow(
-      extractFirstIdentifierParam,
-      O.exists((paramName) => isSpreadUpdateOf(body, paramName)),
-    )(fn.params)
+    O.exists((paramName: string) => isSpreadUpdateOf(body, paramName))(
+      extractFirstIdentifierParam(fn.params),
+    )
   );
 };
 
@@ -130,23 +129,24 @@ const isIdentityFallbackCallback = (
   arg: O.Option<TSESTree.CallExpressionArgument>,
   targetName: string,
 ) =>
-  flow(
+  O.exists((fn: TSESTree.ArrowFunctionExpression) => isIdentityArrowFor(fn, targetName))(
     O.filter(
       (a: TSESTree.CallExpressionArgument): a is TSESTree.ArrowFunctionExpression =>
         a.type === AST_NODE_TYPES.ArrowFunctionExpression,
-    ),
-    O.exists((fn) => isIdentityArrowFor(fn, targetName)),
-  )(arg);
+    )(arg),
+  );
+
+const extractFirstIdentifierName = flow(
+  RA.head<TSESTree.CallExpressionArgument>,
+  O.filter((a): a is TSESTree.Identifier => a.type === AST_NODE_TYPES.Identifier),
+  O.map((a) => a.name),
+);
 
 const extractMatchSubjectName = (expr: TSESTree.Expression) =>
   expr.type === AST_NODE_TYPES.CallExpression &&
   expr.callee.type === AST_NODE_TYPES.Identifier &&
   MATCH_CALLEES.has(expr.callee.name)
-    ? flow(
-        RA.head<TSESTree.CallExpressionArgument>,
-        O.filter((a): a is TSESTree.Identifier => a.type === AST_NODE_TYPES.Identifier),
-        O.map((a) => a.name),
-      )(expr.arguments)
+    ? extractFirstIdentifierName(expr.arguments)
     : O.none;
 
 const extractMethodCallObject =
@@ -160,32 +160,37 @@ const extractMethodCallObject =
 const extractMatchTargetFromWith = (withCall: TSESTree.CallExpression) =>
   isDiscriminantPatternArg(O.fromNullable(withCall.arguments[0])) &&
   isSpreadUpdateCallback(O.fromNullable(withCall.arguments[1]))
-    ? flow(extractMethodCallObject(WITH_METHODS), O.flatMap(extractMatchSubjectName))(
-        withCall.callee,
-      )
+    ? O.flatMap(extractMatchSubjectName)(extractMethodCallObject(WITH_METHODS)(withCall.callee))
     : O.none;
 
 const isIdentityFallbackForCall = (node: TSESTree.CallExpression, targetName: string) =>
   isIdentityFallbackCallback(O.fromNullable(node.arguments[0]), targetName);
 
-const isSingleVariantGuardedMatch = (node: TSESTree.CallExpression) =>
-  flow(
-    extractMethodCallObject(OTHERWISE_METHODS),
-    O.filter((obj): obj is TSESTree.CallExpression => obj.type === AST_NODE_TYPES.CallExpression),
-    O.flatMap(extractMatchTargetFromWith),
+const extractWithCallFromOtherwise = flow(
+  extractMethodCallObject(OTHERWISE_METHODS),
+  O.filter((obj): obj is TSESTree.CallExpression => obj.type === AST_NODE_TYPES.CallExpression),
+  O.flatMap(extractMatchTargetFromWith),
+);
+
+const isSingleVariantGuardedMatch = (node: TSESTree.CallExpression) => {
+  const check = flow(
+    extractWithCallFromOtherwise,
     O.exists((targetName) => isIdentityFallbackForCall(node, targetName)),
-  )(node.callee);
+  );
+  return check(node.callee);
+};
 
 const checkTernaryNode = (node: TSESTree.ConditionalExpression, report: () => void) => {
-  flow(
+  const check = flow(
     extractTernaryGuardedTarget,
     O.filter((targetName) => isVariantGuardOn({ expr: node.test, targetName })),
     O.map(report),
-  )(node);
+  );
+  check(node);
 };
 
 const checkCallNode = (node: TSESTree.CallExpression, report: () => void) => {
-  flow(O.fromPredicate(isSingleVariantGuardedMatch), O.map(report))(node);
+  O.map(report)(O.fromPredicate(isSingleVariantGuardedMatch)(node));
 };
 
 export const preferPrismOverGuardedUpdate = createRule<[], MessageIds>({

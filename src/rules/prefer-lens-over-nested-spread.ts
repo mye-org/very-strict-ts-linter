@@ -20,11 +20,11 @@ const resolveStaticPropertyKey = (prop: TSESTree.Property) =>
 const isSpreadElement = (p: TSESTree.ObjectLiteralElement): p is TSESTree.SpreadElement =>
   p.type === AST_NODE_TYPES.SpreadElement;
 
-const resolveSpreadTarget = (node: TSESTree.ObjectExpression) =>
-  flow(
-    RA.findFirst(isSpreadElement),
-    O.map((spread) => spread.argument),
-  )(node.properties);
+const resolveSpreadTarget = flow(
+  (node: TSESTree.ObjectExpression) => node.properties,
+  RA.findFirst(isSpreadElement),
+  O.map((spread) => spread.argument),
+);
 
 const isChildPropertyAccess = (
   innerTarget: TSESTree.Expression,
@@ -72,23 +72,26 @@ const collectMatchingChildren = (
   outerTarget: TSESTree.Expression,
 ) => RA.filterMap((p: TSESTree.ObjectLiteralElement) => extractNestedSpreadObject(p, outerTarget))(properties);
 
-const resolveNestedSpreadChildren = (node: TSESTree.ObjectExpression) =>
-  flow(
+const resolveNestedSpreadChildren = (node: TSESTree.ObjectExpression) => {
+  const resolve = flow(
     resolveSpreadTarget,
     O.match(
-      () => [] as ReadonlyArray<TSESTree.ObjectExpression>,
+      () => [] satisfies ReadonlyArray<TSESTree.ObjectExpression>,
       (outerTarget) => collectMatchingChildren(node.properties, outerTarget),
     ),
-  )(node);
+  );
+  return resolve(node);
+};
 
 const pickGreater = (a: number, b: number) => Math.max(a, b);
 
 const accumulateSpreadDepth = (maxD: number, child: TSESTree.ObjectExpression) =>
   pickGreater(maxD, 1 + computeSpreadDepth(child));
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive spread depth
-const computeSpreadDepth = (node: TSESTree.ObjectExpression): number =>
-  flow(resolveNestedSpreadChildren, RA.reduce(1, accumulateSpreadDepth))(node);
+const computeSpreadDepth: (node: TSESTree.ObjectExpression) => number = flow(
+  resolveNestedSpreadChildren,
+  RA.reduce(1, accumulateSpreadDepth),
+);
 
 const isChildOfMatchingSpreadObj = (prop: TSESTree.Property) =>
   prop.parent.type === AST_NODE_TYPES.ObjectExpression &&

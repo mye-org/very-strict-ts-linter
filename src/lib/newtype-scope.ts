@@ -13,12 +13,7 @@ const isNewtypeReference = (node: TSESTree.Node) =>
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive ancestor walk
 const hasNewtypeAncestor = (node: TSESTree.Node): boolean =>
-  isNewtypeReference(node) ||
-  flow(
-    (n: TSESTree.Node) => n.parent,
-    O.fromNullable,
-    O.exists(hasNewtypeAncestor),
-  )(node);
+  isNewtypeReference(node) || O.exists(hasNewtypeAncestor)(O.fromNullable(node.parent));
 
 export const isInsideNewtypeDefinition = flow(
   (node: TSESTree.Node) => node.parent,

@@ -68,8 +68,8 @@ const RUNTIME_SYMBOL_FLAGS =
   ts.SymbolFlags.Variable |
   ts.SymbolFlags.ValueModule;
 
-const EMPTY_EDGES = [] as ReadonlyArray<RawImportEdge>;
-const EMPTY_STRINGS = [] as ReadonlyArray<string>;
+const EMPTY_EDGES: ReadonlyArray<RawImportEdge> = [];
+const EMPTY_STRINGS: ReadonlyArray<string> = [];
 
 type ExportDescriptor = Readonly<
   Record<"exportName" | "localName", string> & {
@@ -152,16 +152,16 @@ const formatExportKey = (filePath: string, memberName: string) => `${filePath}#$
 const formatDefaultBagName = (propName: string) => `default.${propName}`;
 
 const fromStringEntries = <V>(entries: ReadonlyArray<readonly [string, V]>) =>
-  Object.fromEntries(entries) as Readonly<Record<string, V>>;
+  Object.fromEntries(entries) satisfies Readonly<Record<string, V>>;
 
 const extractRecordValues = <V>(rec: Readonly<Record<string, V>>) =>
-  Object.values(rec) as ReadonlyArray<V>;
+  Object.values(rec) satisfies ReadonlyArray<V>;
 
 const extractRecordEntries = <V>(rec: Readonly<Record<string, V>>) =>
-  Object.entries(rec) as ReadonlyArray<readonly [string, V]>;
+  Object.entries(rec) satisfies ReadonlyArray<readonly [string, V]>;
 
 const extractMapValues = <V>(map: ReadonlyMap<string, V>) =>
-  Array.from(map.values()) as ReadonlyArray<V>;
+  Array.from(map.values()) satisfies ReadonlyArray<V>;
 
 const hasModifierKind = (node: ts.Node, kind: ts.SyntaxKind) =>
   ts.canHaveModifiers(node) &&
@@ -171,7 +171,6 @@ const isExportedStmt = (node: ts.Node) => hasModifierKind(node, ts.SyntaxKind.Ex
 const isDefaultStmt = (node: ts.Node) => hasModifierKind(node, ts.SyntaxKind.DefaultKeyword);
 const isAmbientStmt = (node: ts.Node) => hasModifierKind(node, ts.SyntaxKind.DeclareKeyword);
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive expression unwrap
 export const unwrapExpression = (expr: ts.Expression): ts.Expression =>
   ts.isParenthesizedExpression(expr) ||
   ts.isAsExpression(expr) ||
@@ -211,7 +210,7 @@ const isBarrelAllowedStatement = (stmt: ts.Statement) =>
 const isValueExportDeclaration = (stmt: ts.Statement) =>
   ts.isExportDeclaration(stmt) && !stmt.isTypeOnly;
 
-export const isBarrelFile = (sf: ts.SourceFile) =>
+export const isBarrelFile = (sf: ts.SourceFile): boolean =>
   sf.statements.length > 0 &&
   RA.some(isValueExportDeclaration)(sf.statements) &&
   RA.every(isBarrelAllowedStatement)(sf.statements);
@@ -243,15 +242,12 @@ const walkCanonicalSymbol = (
 ): ts.Symbol =>
   (current.flags & ts.SymbolFlags.Alias) === 0 || visited.has(current)
     ? current
-    : flow(
-        (sym: ts.Symbol) => resolveAliasedStep(sym, checker),
-        E.match(
-          () => current,
-          (aliased) => continueAliasWalk(aliased, current, visited, checker),
-        ),
-      )(current);
+    : E.match(
+        () => current,
+        (aliased: ts.Symbol) => continueAliasWalk(aliased, current, visited, checker),
+      )(resolveAliasedStep(current, checker));
 
-export const resolveCanonicalSymbol = (symbol: ts.Symbol, checker: ts.TypeChecker) =>
+export const resolveCanonicalSymbol = (symbol: ts.Symbol, checker: ts.TypeChecker): ts.Symbol =>
   walkCanonicalSymbol(symbol, new Set<ts.Symbol>(), checker);
 
 const extractPropertyNameText = (name: ts.PropertyName | ts.BindingName) =>
@@ -288,7 +284,7 @@ const buildRuntimeExport = (sf: ts.SourceFile, descriptor: ExportDescriptor) =>
     declaration: descriptor.declaration,
     symbol: descriptor.symbol,
     defaultBagProperty: descriptor.defaultBagProperty,
-  }) as RuntimeExport;
+  }) satisfies RuntimeExport;
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive binding walk
 const collectBindingIdentifiers = (name: ts.BindingName): ReadonlyArray<ts.Identifier> =>
@@ -370,10 +366,9 @@ const resolveSpecifierSymbol = (spec: ts.ExportSpecifier, checker: ts.TypeChecke
   );
 
 const resolveSameFileDecl = (canonical: ts.Symbol, sf: ts.SourceFile) =>
-  flow(
-    extractPrimaryDeclaration,
-    O.filter((decl) => extractNodeFilePath(decl) === normalizeFilePath(sf.fileName)),
-  )(canonical);
+  O.filter((decl: ts.Declaration) => extractNodeFilePath(decl) === normalizeFilePath(sf.fileName))(
+    extractPrimaryDeclaration(canonical),
+  );
 
 const buildReExportFromDecl = (
   spec: ts.ExportSpecifier,
@@ -399,17 +394,28 @@ const buildSameFileReExport = (
     resolveSameFileDecl(canonical, sf),
   );
 
-const extractSingleReExportSpecifier = (
-  spec: ts.ExportSpecifier,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
+const resolveRuntimeExportCanonical = (checker: ts.TypeChecker) =>
   flow(
     (s: ts.ExportSpecifier) => resolveSpecifierSymbol(s, checker),
     O.map((raw) => resolveCanonicalSymbol(raw, checker)),
     O.filter(isRuntimeSymbol),
-    O.flatMap((canonical) => buildSameFileReExport(spec, canonical, sf)),
-  )(spec);
+  );
+
+const resolveReExportSpec = (sf: ts.SourceFile, checker: ts.TypeChecker) =>
+  flow(
+    (spec: ts.ExportSpecifier) => ({
+      spec,
+      canonical: resolveRuntimeExportCanonical(checker)(spec),
+    }),
+    ({ spec, canonical }) =>
+      O.flatMap((sym: ts.Symbol) => buildSameFileReExport(spec, sym, sf))(canonical),
+  );
+
+const extractSingleReExportSpecifier = (
+  spec: ts.ExportSpecifier,
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+) => resolveReExportSpec(sf, checker)(spec);
 
 const isLocalNamedExportDecl = (stmt: ts.ExportDeclaration) =>
   !stmt.isTypeOnly && !stmt.moduleSpecifier && Boolean(stmt.exportClause);
@@ -420,21 +426,22 @@ const extractNamedReExportSpecifiers = (
   checker: ts.TypeChecker,
 ) =>
   isLocalNamedExportDecl(stmt) && stmt.exportClause && ts.isNamedExports(stmt.exportClause)
-    ? flow(
-        RA.filter((spec: ts.ExportSpecifier) => !spec.isTypeOnly),
-        RA.filterMap((spec) => extractSingleReExportSpecifier(spec, sf, checker)),
-      )(stmt.exportClause.elements)
+    ? RA.filterMap((spec: ts.ExportSpecifier) => extractSingleReExportSpecifier(spec, sf, checker))(
+        RA.filter((spec: ts.ExportSpecifier) => !spec.isTypeOnly)(stmt.exportClause.elements),
+      )
     : [];
+
+const resolveCanonicalDeclKind = (prop: ts.ShorthandPropertyAssignment) =>
+  flow(
+    O.flatMap(extractPrimaryDeclaration),
+    O.getOrElseW(() => prop),
+    classifyDeclarationNode,
+  );
 
 const resolveShorthandKind = (
   canonical: O.Option<ts.Symbol>,
   prop: ts.ShorthandPropertyAssignment,
-) =>
-  flow(
-    O.flatMap(extractPrimaryDeclaration),
-    O.getOrElse(() => prop as ts.Node),
-    classifyDeclarationNode,
-  )(canonical);
+) => resolveCanonicalDeclKind(prop)(canonical);
 
 const buildShorthandBagExport = (
   prop: ts.ShorthandPropertyAssignment,
@@ -460,21 +467,17 @@ const lookupShorthandSymbol = (checker: ts.TypeChecker) =>
   );
 
 const resolveCanonicalAtNode = (node: ts.Node, checker: ts.TypeChecker) =>
-  flow(
-    lookupNodeSymbol(checker),
-    O.map((raw) => resolveCanonicalSymbol(raw, checker)),
-  )(node);
+  O.map((raw: ts.Symbol) => resolveCanonicalSymbol(raw, checker))(lookupNodeSymbol(checker)(node));
 
 const resolveShorthandCanonical = (
   prop: ts.ShorthandPropertyAssignment,
   checker: ts.TypeChecker,
 ) =>
-  flow(
-    lookupShorthandSymbol(checker),
-    O.map((raw) => resolveCanonicalSymbol(raw, checker)),
-  )(prop);
+  O.map((raw: ts.Symbol) => resolveCanonicalSymbol(raw, checker))(
+    lookupShorthandSymbol(checker)(prop),
+  );
 
-const extractShorthandBagProperty = (
+const buildShorthandOption = (
   prop: ts.ShorthandPropertyAssignment,
   sf: ts.SourceFile,
   checker: ts.TypeChecker,
@@ -483,7 +486,13 @@ const extractShorthandBagProperty = (
     (p: ts.ShorthandPropertyAssignment) => resolveShorthandCanonical(p, checker),
     (canonical) => buildShorthandBagExport(prop, canonical, sf),
     O.some,
-  )(prop);
+  );
+
+const extractShorthandBagProperty = (
+  prop: ts.ShorthandPropertyAssignment,
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+) => buildShorthandOption(prop, sf, checker)(prop);
 
 const resolvePropAssignmentSymbol = (
   prop: ts.PropertyAssignment,
@@ -494,17 +503,20 @@ const resolvePropAssignmentSymbol = (
     ? resolveCanonicalAtNode(unwrappedInit, checker)
     : O.fromNullable(checker.getSymbolAtLocation(prop.name));
 
+const classifyTargetSymKind = (fallbackExpr: ts.Expression) =>
+  flow(
+    O.flatMap((sym: ts.Symbol) => O.fromNullable(sym.valueDeclaration)),
+    O.map(classifyDeclarationNode),
+    O.getOrElse(() => classifyInitializerKind(O.some(fallbackExpr))),
+  );
+
 const classifyAssignedTargetKind = (
   unwrapped: ts.Expression,
   targetSym: O.Option<ts.Symbol>,
   fallbackExpr: ts.Expression,
 ) =>
   ts.isIdentifier(unwrapped)
-    ? flow(
-        O.flatMap((sym: ts.Symbol) => O.fromNullable(sym.valueDeclaration)),
-        O.map(classifyDeclarationNode),
-        O.getOrElse(() => classifyInitializerKind(O.some(fallbackExpr))),
-      )(targetSym)
+    ? classifyTargetSymKind(fallbackExpr)(targetSym)
     : classifyInitializerKind(O.some(fallbackExpr));
 
 const buildPropertyAssignmentBagExport = (
@@ -696,8 +708,11 @@ const extractStatementExports = (
         .otherwise(() => []);
 
 const deduplicateByExportName = (exports: ReadonlyArray<RuntimeExport>) =>
-  RA.reduce(
-    { seen: new Set<string>(), items: [] as ReadonlyArray<RuntimeExport> },
+  RA.reduce<
+    RuntimeExport,
+    { readonly seen: ReadonlySet<string>; readonly items: ReadonlyArray<RuntimeExport> }
+  >(
+    { seen: new Set<string>(), items: [] },
     (acc, exp: RuntimeExport) =>
       acc.seen.has(exp.exportName)
         ? acc
@@ -707,19 +722,23 @@ const deduplicateByExportName = (exports: ReadonlyArray<RuntimeExport>) =>
           },
   )(exports).items;
 
-export const extractFileRuntimeExports = (sf: ts.SourceFile, checker: ts.TypeChecker) =>
+export const extractFileRuntimeExports = (
+  sf: ts.SourceFile,
+  checker: ts.TypeChecker,
+): ReadonlyArray<RuntimeExport> =>
   isBarrelFile(sf)
     ? []
-    : flow(
-        RA.flatMap((stmt: ts.Statement) => extractStatementExports(stmt, sf, checker)),
-        deduplicateByExportName,
-      )(sf.statements);
+    : deduplicateByExportName(
+        RA.flatMap((stmt: ts.Statement) => extractStatementExports(stmt, sf, checker))(
+          sf.statements,
+        ),
+      );
 
 const isFunctionVariableDecl = (node: ts.Node) =>
   ts.isVariableDeclaration(node) &&
   O.exists(isFunctionExpressionLike)(O.fromNullable(node.initializer));
 
-export const isRuntimeFunctionNode = (node: ts.Node) =>
+export const isRuntimeFunctionNode = (node: ts.Node): boolean =>
   ts.isFunctionDeclaration(node) ||
   ts.isMethodDeclaration(node) ||
   isFunctionExpressionNode(node) ||
@@ -744,15 +763,18 @@ const groupDefaultPropsByFile = RA.reduce<
   [item.filePath]: RA.append([item.propName, item.exp] as const)(acc[item.filePath] ?? []),
 }));
 
+const buildFileDefaultPropsEntries = flow(
+  RA.filterMap(toDefaultPropPair),
+  groupDefaultPropsByFile,
+  extractRecordEntries,
+  RA.map(
+    ([filePath, pairs]: readonly [string, ReadonlyArray<readonly [string, RuntimeExport]>]) =>
+      [filePath, new Map(pairs)] as const,
+  ),
+);
+
 const buildDefaultPropsMap = (exports: ReadonlyArray<RuntimeExport>) =>
-  new Map(
-    flow(
-      RA.filterMap(toDefaultPropPair),
-      groupDefaultPropsByFile,
-      extractRecordEntries,
-      RA.map(([filePath, pairs]) => [filePath, new Map(pairs)] as const),
-    )(exports),
-  );
+  new Map(buildFileDefaultPropsEntries(exports));
 
 const buildSymbolLookup = (exportByKey: Readonly<Record<string, RuntimeExport>>) => {
   const allExports = extractRecordValues(exportByKey);
@@ -760,7 +782,7 @@ const buildSymbolLookup = (exportByKey: Readonly<Record<string, RuntimeExport>>)
     bySymbol: new Map(RA.filterMap(toSymbolEntry)(allExports)),
     byFileAndLocal: new Map(RA.flatMap(toFileAndLocalEntries)(allExports)),
     byFileDefaultProps: buildDefaultPropsMap(allExports),
-  } as SymbolLookup;
+  } satisfies SymbolLookup;
 };
 
 const lookupInStringMap = <V>(map: ReadonlyMap<string, V>) =>
@@ -770,7 +792,7 @@ const lookupFileExportByKey = (
   byFileAndLocal: ReadonlyMap<string, RuntimeExport>,
   declFile: string,
   memberName: string,
-) => flow(formatExportKey, lookupInStringMap(byFileAndLocal))(declFile, memberName);
+) => lookupInStringMap(byFileAndLocal)(formatExportKey(declFile, memberName));
 
 const lookupByFileAndSymbol = (
   canonical: ts.Symbol,
@@ -787,10 +809,9 @@ const lookupByCanonicalFile = (
   canonical: ts.Symbol,
   byFileAndLocal: ReadonlyMap<string, RuntimeExport>,
 ) =>
-  flow(
-    resolveSymbolFilePath,
-    O.flatMap((declFile) => lookupByFileAndSymbol(canonical, declFile, byFileAndLocal)),
-  )(canonical);
+  O.flatMap((declFile: string) => lookupByFileAndSymbol(canonical, declFile, byFileAndLocal))(
+    resolveSymbolFilePath(canonical),
+  );
 
 const lookupDirectSymbol = (
   canonical: ts.Symbol,
@@ -884,25 +905,27 @@ const collectIdentifierMemberAccesses = (
 ) => {
   const nodes = collectAstNodes(sf, sf);
   return {
-    accessedNames: flow(
-      RA.flatMap((node: ts.Node) => extractAccessedNamesFromNode(node, targetSym, checker)),
-      RA.uniq(S.Eq),
-    )(nodes),
+    accessedNames: RA.uniq(S.Eq)(
+      RA.flatMap((node: ts.Node) => extractAccessedNamesFromNode(node, targetSym, checker))(nodes),
+    ),
     escapeState: RA.some((node: ts.Node) => isEscapingIdentifier(node, targetSym, checker))(nodes)
       ? ("escapes" as const)
       : ("contained" as const),
   };
 };
 
+const findModuleExportByName = (exportName: string, env: SymbolResolutionEnv) =>
+  flow(
+    (moduleSym: ts.Symbol) => env.checker.getExportsOfModule(moduleSym),
+    RA.findFirst((e: ts.Symbol) => e.name === exportName),
+    O.flatMap((found) => matchSymbolToExport(found, env)),
+  );
+
 const resolveModuleExportByName = (
   moduleSym: ts.Symbol,
   exportName: string,
   env: SymbolResolutionEnv,
-) =>
-  flow(
-    RA.findFirst((e: ts.Symbol) => e.name === exportName),
-    O.flatMap((found) => matchSymbolToExport(found, env)),
-  )(env.checker.getExportsOfModule(moduleSym));
+) => findModuleExportByName(exportName, env)(moduleSym);
 
 const resolveAllModuleExports = (moduleSym: ts.Symbol, env: SymbolResolutionEnv) =>
   RA.filterMap((sym: ts.Symbol) => matchSymbolToExport(sym, env))(
@@ -910,7 +933,7 @@ const resolveAllModuleExports = (moduleSym: ts.Symbol, env: SymbolResolutionEnv)
   );
 
 const toRawEdge = (consumerFile: string) => (exp: RuntimeExport) =>
-  ({ consumerFile, exportKey: exp.key }) as RawImportEdge;
+  ({ consumerFile, exportKey: exp.key }) satisfies RawImportEdge;
 
 const isUnusedWholeEscape = (state: MemberEscapeState, count: number) =>
   state === "escapes" && count === 0;
@@ -921,10 +944,9 @@ const resolveDefaultBagUsageEdges =
     const usage = collectIdentifierMemberAccesses(fileEnv.sf, rawSym, fileEnv.checker);
     return isUnusedWholeEscape(usage.escapeState, usage.accessedNames.length)
       ? RA.map(toRawEdge(fileEnv.consumerFile))(extractMapValues(bagProps))
-      : flow(
-          RA.filterMap(lookupInStringMap(bagProps)),
-          RA.map(toRawEdge(fileEnv.consumerFile)),
-        )(usage.accessedNames);
+      : RA.map(toRawEdge(fileEnv.consumerFile))(
+          RA.filterMap(lookupInStringMap(bagProps))(usage.accessedNames),
+        );
   };
 
 type DefaultImportRef = Readonly<{
@@ -932,14 +954,17 @@ type DefaultImportRef = Readonly<{
   readonly moduleSpecifier: ts.Expression;
 }>;
 
-const collectDefaultBagEdges = (ref: DefaultImportRef) => (fileEnv: FileImportEnv) =>
+const lookupBagPropsForModule = (ref: DefaultImportRef, fileEnv: FileImportEnv) =>
   flow(
     lookupNodeSymbol(fileEnv.checker),
     O.flatMap(resolveSymbolFilePath),
     O.flatMap(lookupInStringMap(fileEnv.lookup.byFileDefaultProps)),
     O.map((bagProps) => resolveDefaultBagUsageEdges(ref.rawSym, bagProps)(fileEnv)),
     O.getOrElse(() => EMPTY_EDGES),
-  )(ref.moduleSpecifier);
+  );
+
+const collectDefaultBagEdges = (ref: DefaultImportRef) => (fileEnv: FileImportEnv) =>
+  lookupBagPropsForModule(ref, fileEnv)(ref.moduleSpecifier);
 
 const dispatchDefaultSymbolEdges = (ref: DefaultImportRef, fileEnv: FileImportEnv) =>
   O.match(
@@ -950,22 +975,26 @@ const dispatchDefaultSymbolEdges = (ref: DefaultImportRef, fileEnv: FileImportEn
 const resolveDefaultSymbolEdges = (ref: DefaultImportRef) => (fileEnv: FileImportEnv) =>
   dispatchDefaultSymbolEdges(ref, fileEnv);
 
+const collectDefaultEdgesForIdent = (moduleSpecifier: ts.Expression, fileEnv: FileImportEnv) =>
+  flow(
+    lookupNodeSymbol(fileEnv.checker),
+    O.map((rawSym: ts.Symbol) => resolveDefaultSymbolEdges({ rawSym, moduleSpecifier })(fileEnv)),
+    O.getOrElse(() => EMPTY_EDGES),
+  );
+
 const collectDefaultImportEdges =
   (defaultName: ts.Identifier, moduleSpecifier: ts.Expression) => (fileEnv: FileImportEnv) =>
-    flow(
-      lookupNodeSymbol(fileEnv.checker),
-      O.map((rawSym) => resolveDefaultSymbolEdges({ rawSym, moduleSpecifier })(fileEnv)),
-      O.getOrElse(() => EMPTY_EDGES),
-    )(defaultName);
+    collectDefaultEdgesForIdent(moduleSpecifier, fileEnv)(defaultName);
 
 const resolveNamespaceUsageEdges =
   (nsSym: ts.Symbol, modSym: ts.Symbol) => (fileEnv: FileImportEnv) => {
     const env: SymbolResolutionEnv = { checker: fileEnv.checker, lookup: fileEnv.lookup };
     const usage = collectIdentifierMemberAccesses(fileEnv.sf, nsSym, fileEnv.checker);
-    const accessedEdges = flow(
-      RA.filterMap((name: string) => resolveModuleExportByName(modSym, name, env)),
-      RA.map(toRawEdge(fileEnv.consumerFile)),
-    )(usage.accessedNames);
+    const accessedEdges = RA.map(toRawEdge(fileEnv.consumerFile))(
+      RA.filterMap((name: string) => resolveModuleExportByName(modSym, name, env))(
+        usage.accessedNames,
+      ),
+    );
     return isUnusedWholeEscape(usage.escapeState, accessedEdges.length)
       ? RA.map(toRawEdge(fileEnv.consumerFile))(resolveAllModuleExports(modSym, env))
       : accessedEdges;
@@ -978,36 +1007,48 @@ const isProjectModuleDeclaration = (decl: ts.Node) =>
 
 const isProjectModuleSymbol = flow(extractPrimaryDeclaration, O.exists(isProjectModuleDeclaration));
 
+const resolveNamespaceModule = (nsSym: ts.Symbol, fileEnv: FileImportEnv) =>
+  flow(
+    lookupNodeSymbol(fileEnv.checker),
+    O.filter(isProjectModuleSymbol),
+    O.map((modSym: ts.Symbol) => resolveNamespaceUsageEdges(nsSym, modSym)(fileEnv)),
+  );
+
 const resolveModuleNamespaceEdges =
   (nsSym: ts.Symbol, moduleSpecifier: ts.Expression) => (fileEnv: FileImportEnv) =>
-    flow(
-      lookupNodeSymbol(fileEnv.checker),
-      O.filter(isProjectModuleSymbol),
-      O.map((modSym) => resolveNamespaceUsageEdges(nsSym, modSym)(fileEnv)),
-    )(moduleSpecifier);
+    resolveNamespaceModule(nsSym, fileEnv)(moduleSpecifier);
+
+const collectNamespaceEdgesForBinding = (moduleSpecifier: ts.Expression, fileEnv: FileImportEnv) =>
+  flow(
+    lookupNodeSymbol(fileEnv.checker),
+    O.flatMap((nsSym: ts.Symbol) => resolveModuleNamespaceEdges(nsSym, moduleSpecifier)(fileEnv)),
+    O.getOrElse(() => EMPTY_EDGES),
+  );
 
 const collectNamespaceImportEdges =
   (nsBinding: ts.NamespaceImport, moduleSpecifier: ts.Expression) => (fileEnv: FileImportEnv) =>
-    flow(
-      lookupNodeSymbol(fileEnv.checker),
-      O.flatMap((nsSym) => resolveModuleNamespaceEdges(nsSym, moduleSpecifier)(fileEnv)),
-      O.getOrElse(() => EMPTY_EDGES),
-    )(nsBinding.name);
+    collectNamespaceEdgesForBinding(moduleSpecifier, fileEnv)(nsBinding.name);
 
-const resolveNamedImportSpecifierEdge = (spec: ts.ImportSpecifier) => (fileEnv: FileImportEnv) =>
+const resolveNamedEdgeForFile = (fileEnv: FileImportEnv) =>
   flow(
     lookupNodeSymbol(fileEnv.checker),
-    O.flatMap((sym) =>
+    O.flatMap((sym: ts.Symbol) =>
       matchSymbolToExport(sym, { checker: fileEnv.checker, lookup: fileEnv.lookup }),
     ),
     O.map(toRawEdge(fileEnv.consumerFile)),
-  )(spec.name);
+  );
 
-const collectNamedImportEdges = (namedBindings: ts.NamedImports) => (fileEnv: FileImportEnv) =>
+const resolveNamedImportSpecifierEdge = (spec: ts.ImportSpecifier) => (fileEnv: FileImportEnv) =>
+  resolveNamedEdgeForFile(fileEnv)(spec.name);
+
+const collectNamedEdgesForFile = (fileEnv: FileImportEnv) =>
   flow(
     RA.filter((spec: ts.ImportSpecifier) => !spec.isTypeOnly),
     RA.filterMap((spec) => resolveNamedImportSpecifierEdge(spec)(fileEnv)),
-  )(namedBindings.elements);
+  );
+
+const collectNamedImportEdges = (namedBindings: ts.NamedImports) => (fileEnv: FileImportEnv) =>
+  collectNamedEdgesForFile(fileEnv)(namedBindings.elements);
 
 const isValueImportClause = (clause: ts.ImportClause) =>
   clause.phaseModifier !== ts.SyntaxKind.TypeKeyword;
@@ -1031,12 +1072,15 @@ const collectImportDeclEdges = (decl: ts.ImportDeclaration) => (fileEnv: FileImp
     ? collectImportClauseEdges(decl.importClause, decl.moduleSpecifier)(fileEnv)
     : EMPTY_EDGES;
 
+const collectImportEdgesForFile = (fileEnv: FileImportEnv) =>
+  flow(
+    RA.filter(ts.isImportDeclaration),
+    RA.flatMap((decl) => collectImportDeclEdges(decl)(fileEnv)),
+  );
+
 const collectStatementsImportEdges =
   (statements: ReadonlyArray<ts.Statement>) => (fileEnv: FileImportEnv) =>
-    flow(
-      RA.filter(ts.isImportDeclaration),
-      RA.flatMap((decl) => collectImportDeclEdges(decl)(fileEnv)),
-    )(statements);
+    collectImportEdgesForFile(fileEnv)(statements);
 
 const collectFileImportEdges = (sf: ts.SourceFile, resolution: SymbolResolutionEnv) =>
   collectStatementsImportEdges(sf.statements)({
@@ -1055,7 +1099,7 @@ const extractFileCatalogEntry = (sf: ts.SourceFile, checker: ts.TypeChecker) =>
     lineCount: countSourceFileLines(sf),
     role: isBarrelFile(sf) ? ("barrel" as const) : ("module" as const),
     exports: extractFileRuntimeExports(sf, checker),
-  }) as FileCatalogEntry;
+  }) satisfies FileCatalogEntry;
 
 const isCrossFileEdge = (
   edge: RawImportEdge,
@@ -1068,16 +1112,18 @@ const isCrossFileEdge = (
 const isNonBarrelSourceFile = (sf: ts.SourceFile, barrelFiles: ReadonlySet<string>) =>
   !barrelFiles.has(normalizeFilePath(sf.fileName));
 
-const collectCatalogImportsWithEnv = (
-  sourceFiles: ReadonlyArray<ts.SourceFile>,
-  catalogIndex: CatalogIndex,
-  resolution: SymbolResolutionEnv,
-) =>
+const collectCrossFileImports = (catalogIndex: CatalogIndex, resolution: SymbolResolutionEnv) =>
   flow(
     RA.filter((sf: ts.SourceFile) => isNonBarrelSourceFile(sf, catalogIndex.barrelFiles)),
     RA.flatMap((sf) => collectFileImportEdges(sf, resolution)),
     RA.filter((edge) => isCrossFileEdge(edge, catalogIndex.exportByKey)),
-  )(sourceFiles);
+  );
+
+const collectCatalogImportsWithEnv = (
+  sourceFiles: ReadonlyArray<ts.SourceFile>,
+  catalogIndex: CatalogIndex,
+  resolution: SymbolResolutionEnv,
+) => collectCrossFileImports(catalogIndex, resolution)(sourceFiles);
 
 const buildCatalogImports = (
   sourceFiles: ReadonlyArray<ts.SourceFile>,
@@ -1128,7 +1174,7 @@ const assembleProgramCatalog = (
     lineCounts: indexCatalogLineCounts(entries),
     exportByKey: catalogIndex.exportByKey,
     importEdges: buildCatalogImports(sourceFiles, catalogIndex, checker),
-  } as ProgramSymbolCatalog;
+  } satisfies ProgramSymbolCatalog;
 };
 
 const computeProgramSymbolCatalog = (program: ts.Program) => {
@@ -1149,17 +1195,25 @@ const resolveModuleExportKeys = (resolution: SymbolResolutionEnv) =>
     extractExportKeys,
   );
 
-const extractModuleExportKeys = (sf: ts.SourceFile, resolution: SymbolResolutionEnv) =>
+const resolveSourceFileExportKeys = (resolution: SymbolResolutionEnv) =>
   flow(
     lookupNodeSymbol(resolution.checker),
     O.map(resolveModuleExportKeys(resolution)),
     O.getOrElse(() => EMPTY_STRINGS),
-  )(sf);
+  );
+
+const extractModuleExportKeys = (sf: ts.SourceFile, resolution: SymbolResolutionEnv) =>
+  resolveSourceFileExportKeys(resolution)(sf);
+
+type EntryPointKeyEnv = Readonly<{
+  catalog: ProgramSymbolCatalog;
+  patterns: ReadonlyArray<string>;
+  resolution: SymbolResolutionEnv;
+}>;
 
 const collectEntryPointFileKeys = (
   sf: ts.SourceFile,
-  catalog: ProgramSymbolCatalog,
-  resolution: SymbolResolutionEnv,
+  { catalog, resolution }: EntryPointKeyEnv,
 ) => [
   ...extractExportKeys(catalog.fileExports[normalizeFilePath(sf.fileName)] ?? []),
   ...extractModuleExportKeys(sf, resolution),
@@ -1168,16 +1222,11 @@ const collectEntryPointFileKeys = (
 const isMatchingEntryPointFile = (sf: ts.SourceFile, patterns: ReadonlyArray<string>) =>
   isMatchingAnyPattern(normalizeFilePath(sf.fileName), patterns);
 
-const collectEntryPointKeysWithEnv = (
-  sourceFiles: ReadonlyArray<ts.SourceFile>,
-  catalog: ProgramSymbolCatalog,
-  patterns: ReadonlyArray<string>,
-  resolution: SymbolResolutionEnv,
-) =>
+const collectMatchedEntryPointKeys = (env: EntryPointKeyEnv) =>
   flow(
-    RA.filter((sf: ts.SourceFile) => isMatchingEntryPointFile(sf, patterns)),
-    RA.flatMap((sf) => collectEntryPointFileKeys(sf, catalog, resolution)),
-  )(sourceFiles);
+    RA.filter((sf: ts.SourceFile) => isMatchingEntryPointFile(sf, env.patterns)),
+    RA.flatMap((sf) => collectEntryPointFileKeys(sf, env)),
+  );
 
 const resolveEntryPointExports = (
   program: ts.Program,
@@ -1187,26 +1236,21 @@ const resolveEntryPointExports = (
   entryPointPatterns.length === 0
     ? new Set<string>()
     : new Set(
-        collectEntryPointKeysWithEnv(
-          collectProjectSourceFiles(program),
+        collectMatchedEntryPointKeys({
           catalog,
-          entryPointPatterns,
-          {
+          patterns: entryPointPatterns,
+          resolution: {
             checker: program.getTypeChecker(),
             lookup: buildSymbolLookup(catalog.exportByKey),
           },
-        ),
+        })(collectProjectSourceFiles(program)),
       );
 
 const groupStringsByKey = <T>(
   items: ReadonlyArray<T>,
   extractKey: (item: T) => string,
   extractVal: (item: T) => string,
-) =>
-  flow(
-    RNEA.groupBy(extractKey),
-    RR.map(RA.map(extractVal)),
-  )(items);
+) => RR.map(RA.map(extractVal))(RNEA.groupBy(extractKey)(items));
 
 const sortUniqueStrings = flow(RA.uniq(S.Eq), RA.sort(S.Ord));
 
@@ -1220,11 +1264,7 @@ const groupAndSortStrings = <T>(
   items: ReadonlyArray<T>,
   extractKey: (item: T) => string,
   extractVal: (item: T) => string,
-) =>
-  flow(
-    (xs: ReadonlyArray<T>) => groupStringsByKey(xs, extractKey, extractVal),
-    sortGroupedValues,
-  )(items);
+) => sortGroupedValues(groupStringsByKey(items, extractKey, extractVal));
 
 const toProdEdgeDetail = (
   edge: RawImportEdge,
@@ -1243,7 +1283,7 @@ const buildFileConsumersByExport = (
   prodByKey: Readonly<Record<string, ReadonlyArray<string>>>,
   testByKey: Readonly<Record<string, ReadonlyArray<string>>>,
 ) =>
-  flow(
+  fromStringEntries(
     RA.map(
       (exp: RuntimeExport) =>
         [
@@ -1254,9 +1294,8 @@ const buildFileConsumersByExport = (
             testConsumers: testByKey[exp.key] ?? [],
           },
         ] as const,
-    ),
-    fromStringEntries,
-  )(runtimeExports);
+    )(runtimeExports),
+  );
 
 const buildFileProdImportsByConsumer = (details: ReadonlyArray<ProdEdgeDetail>) =>
   groupAndSortStrings(
@@ -1293,7 +1332,7 @@ const buildEdgeIndexBundle = (
     prodByTargetFile: groupProdDetailsByTarget(
       RA.filterMap((e: RawImportEdge) => toProdEdgeDetail(e, catalog.exportByKey))(prodEdges),
     ),
-  } as EdgeIndexBundle;
+  } satisfies EdgeIndexBundle;
 };
 
 type FileGraphBuildContext = Readonly<{
@@ -1324,7 +1363,7 @@ const buildFileModuleGraph = (
   };
 };
 
-const buildAllFileGraphs = (ctx: FileGraphBuildContext) =>
+const buildFileGraphsFromCatalog = (ctx: FileGraphBuildContext) =>
   flow(
     extractRecordEntries<ReadonlyArray<RuntimeExport>>,
     RA.map(
@@ -1332,7 +1371,10 @@ const buildAllFileGraphs = (ctx: FileGraphBuildContext) =>
         [filePath, buildFileModuleGraph(filePath, runtimeExports, ctx)] as const,
     ),
     fromStringEntries,
-  )(ctx.catalog.fileExports);
+  );
+
+const buildAllFileGraphs = (ctx: FileGraphBuildContext) =>
+  buildFileGraphsFromCatalog(ctx)(ctx.catalog.fileExports);
 
 const computeProgramSymbolGraph = (program: ts.Program, scope: GraphQueryScope) => {
   const catalog = computeProgramSymbolCatalog(program);
@@ -1344,14 +1386,14 @@ const computeProgramSymbolGraph = (program: ts.Program, scope: GraphQueryScope) 
     }),
     publicEntryPointExports: resolveEntryPointExports(program, catalog, scope.entryPointPatterns),
     exportByKey: catalog.exportByKey,
-  } as ProgramSymbolGraph;
+  } satisfies ProgramSymbolGraph;
 };
 
 export const analyzeModuleSymbolGraph = (
   program: ts.Program,
   entryPointPatterns: ReadonlyArray<string> = [],
   testFilePatterns: ReadonlyArray<string> = DEFAULT_TEST_PATTERNS,
-) =>
+): ProgramSymbolGraph =>
   computeProgramSymbolGraph(program, {
     entryPointPatterns,
     testFilePatterns,

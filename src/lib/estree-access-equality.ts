@@ -8,7 +8,6 @@ const isSameMemberAccess = (l: TSESTree.MemberExpression, r: TSESTree.MemberExpr
   l.property.name === r.property.name &&
   isSameEsTreeAccessExpr(l.object, r.object);
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive ESTree access equality
 export const isSameEsTreeAccessExpr = (a: TSESTree.Expression, b: TSESTree.Expression): boolean =>
   (a.type === AST_NODE_TYPES.Identifier &&
     b.type === AST_NODE_TYPES.Identifier &&

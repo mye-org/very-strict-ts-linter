@@ -333,7 +333,7 @@ describe("incremental caching, tsbuildinfo reuse, and workspace daemon", () => {
     // 4. Edit fixes TS error but introduces Tier 3 ESLint error -> warm ESLint catches it
     fs.writeFileSync(
       path.join(tmpDir, "sample.ts"),
-      "export const compute = (n: number) => { let count = n; count += 1; return count; };\n",
+      "export const compute = (n: number): number => { let count = n; count += 1; return count; };\n",
     );
     const tier3Fail = await runPhasedLint({
       targets: ["sample.ts"],
@@ -349,7 +349,7 @@ describe("incremental caching, tsbuildinfo reuse, and workspace daemon", () => {
     expect(tier3Fail.summaries[3]?.output).toContain("strict-fp/no-let-or-var");
 
     // 5. Fixing the file passes all tiers on the same warm daemon
-    fs.writeFileSync(path.join(tmpDir, "sample.ts"), "export const compute = (n: number) => n + 1;\n");
+    fs.writeFileSync(path.join(tmpDir, "sample.ts"), "export const compute = (n: number): number => n + 1;\n");
     const recovered = await runPhasedLint({
       targets: ["sample.ts"],
       fix: false,

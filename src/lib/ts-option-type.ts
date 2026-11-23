@@ -25,13 +25,18 @@ const extractOptionTagFromProperty = flow(
   O.flatMap(extractOptionTagFromDecl),
 );
 
+const resolveSymbolOptionTag = flow(
+  (t: ts.Type) => t.getSymbol()?.name,
+  O.fromNullable,
+  O.filter((name) => OPTION_MEMBER_TAGS.has(name)),
+);
+
+const optionTagResolvers = [resolveSymbolOptionTag, extractOptionTagFromProperty] as const;
+
 const resolveOptionMemberTag = (t: ts.Type) =>
-  flow(
-    (ty: ts.Type) => ty.getSymbol()?.name,
-    O.fromNullable,
-    O.filter((name) => OPTION_MEMBER_TAGS.has(name)),
-    O.alt(() => extractOptionTagFromProperty(t)),
-  )(t);
+  RA.findFirstMap((resolve: (type: ts.Type) => O.Option<string>) => resolve(t))(
+    optionTagResolvers,
+  );
 
 const hasOptionTypeName = (type: ts.Type) =>
   OPTION_TYPE_NAMES.has(type.aliasSymbol?.name ?? "") ||
@@ -42,6 +47,6 @@ const hasBothOptionTags = (types: ReadonlyArray<ts.Type>) => {
   return tags.length === 2 && new Set(tags).size === 2;
 };
 
-export const isOptionTsType = (type: ts.Type) =>
+export const isOptionTsType = (type: ts.Type): boolean =>
   hasOptionTypeName(type) ||
   (type.isUnion() && type.types.length === 2 && hasBothOptionTags(type.types));

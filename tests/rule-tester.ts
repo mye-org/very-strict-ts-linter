@@ -7,10 +7,10 @@ RuleTester.describe = vitest.describe;
 RuleTester.it = vitest.it;
 RuleTester.itOnly = vitest.it.only;
 
-export const createRuleTester = () =>
+export const createRuleTester = (): RuleTester =>
   new RuleTester();
 
-export const createTypeAwareRuleTester = () =>
+export const createTypeAwareRuleTester = (): RuleTester =>
   new RuleTester({
     languageOptions: {
       parserOptions: {
@@ -20,7 +20,7 @@ export const createTypeAwareRuleTester = () =>
     },
   });
 
-export const createDddSampleRuleTester = () =>
+export const createDddSampleRuleTester = (): RuleTester =>
   new RuleTester({
     languageOptions: {
       parserOptions: {
@@ -30,7 +30,7 @@ export const createDddSampleRuleTester = () =>
     },
   });
 
-export const createTsUnitSampleRuleTester = () =>
+export const createTsUnitSampleRuleTester = (): RuleTester =>
   new RuleTester({
     languageOptions: {
       parserOptions: {
@@ -40,7 +40,7 @@ export const createTsUnitSampleRuleTester = () =>
     },
   });
 
-export const createTestScopeSampleRuleTester = () =>
+export const createTestScopeSampleRuleTester = (): RuleTester =>
   new RuleTester({
     languageOptions: {
       parserOptions: {

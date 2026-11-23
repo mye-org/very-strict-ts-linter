@@ -16,6 +16,7 @@ import { analyzeSkeletonDuplications } from "../analyzers/skeleton-duplication-a
 import { analyzeStringlyTypedDiscriminants } from "../analyzers/stringly-typed-analyzer.js";
 import {
   computeProjectFingerprint,
+  isRecord,
   loadParsedTsConfig,
   readCachedArtifact,
   resolveCacheDir,
@@ -24,7 +25,7 @@ import {
   writeCachedArtifact,
 } from "./incremental-cache.js";
 
-export const buildDiscoveryRadarReport = (program: ts.Program) => ({
+export const buildDiscoveryRadarReport = (program: ts.Program): DiscoveryRadarReport => ({
   dataClumps: analyzeDataClumps(program).findings,
   polysemyModels: analyzePolysemy(program).findings,
   repeatedGuards: analyzeGuardClauses(program).clusters,
@@ -84,7 +85,18 @@ const parseRadarArgs = (args: ReadonlyArray<string>) => {
   } satisfies RadarRunOptions;
 };
 
-export const runDiscoveryRadar = (options: RadarRunOptions = {}) => {
+const isDiscoveryRadarReport = (value: unknown): value is DiscoveryRadarReport =>
+  isRecord(value) &&
+  Array.isArray(value["dataClumps"]) &&
+  Array.isArray(value["polysemyModels"]) &&
+  Array.isArray(value["repeatedGuards"]) &&
+  Array.isArray(value["stringlyTypedDiscriminants"]) &&
+  Array.isArray(value["aggregateChildren"]) &&
+  Array.isArray(value["contextDrillingChains"]) &&
+  Array.isArray(value["skeletonDuplications"]) &&
+  Array.isArray(value["catamorphismCandidates"]);
+
+export const runDiscoveryRadar = (options: RadarRunOptions = {}): RadarRunResult => {
   const cwd = options.cwd ?? process.cwd();
   const format = options.format ?? "markdown";
   const useCache = options.cache !== false;
@@ -113,6 +125,7 @@ export const runDiscoveryRadar = (options: RadarRunOptions = {}) => {
       "radar",
       scopeKey,
       fingerprint,
+      isDiscoveryRadarReport,
     );
     if (cachedReport) {
       const cachedResult: RadarRunResult = {

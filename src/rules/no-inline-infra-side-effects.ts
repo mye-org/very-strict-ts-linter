@@ -1,7 +1,6 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { collectEstreeChildNodes } from "../lib/estree-children.js";
 import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
@@ -16,6 +15,9 @@ type FunctionNode =
   | TSESTree.FunctionDeclaration
   | TSESTree.FunctionExpression
   | TSESTree.ArrowFunctionExpression;
+
+const NONE_STRING: O.Option<string> = O.none;
+const EMPTY_NODES: ReadonlyArray<TSESTree.Node> = [];
 
 const DEFAULT_INFRA_TARGETS = [
   "mailer",
@@ -83,7 +85,7 @@ const resolveCallTargetName = (expr: TSESTree.Expression): O.Option<string> =>
       (m) => O.some(m.property.name),
     )
     .with({ type: AST_NODE_TYPES.MemberExpression }, (m) => resolveCallTargetName(m.object))
-    .with(P._, () => O.none as O.Option<string>)
+    .with(P._, () => NONE_STRING)
     .exhaustive();
 
 const normalizeTargetName = (name: string) => name.toLowerCase();
@@ -91,29 +93,30 @@ const normalizeTargetName = (name: string) => name.toLowerCase();
 const isInfraCallName = (name: string, infraSet: ReadonlySet<string>) =>
   infraSet.has(normalizeTargetName(name));
 
+const findMatchingInfraName = (
+  callee: TSESTree.Expression,
+  infraSet: ReadonlySet<string>,
+) => O.filter((name: string) => isInfraCallName(name, infraSet))(resolveCallTargetName(callee));
+
+const matchInfraTarget = (
+  node: TSESTree.CallExpression,
+  infraSet: ReadonlySet<string>,
+) => O.map((target: string) => ({ node, target }))(findMatchingInfraName(node.callee, infraSet));
+
 const findInfraCallTarget = (
   node: TSESTree.Node,
   infraSet: ReadonlySet<string>,
-) =>
-  node.type === AST_NODE_TYPES.CallExpression
-    ? flow(
-        resolveCallTargetName,
-        O.filter((name) => isInfraCallName(name, infraSet)),
-        O.map((target) => ({ node, target })),
-      )(node.callee)
-    : O.none;
+) => (node.type === AST_NODE_TYPES.CallExpression ? matchInfraTarget(node, infraSet) : O.none);
 
 const reportInfraTargets = (
   nodes: ReadonlyArray<TSESTree.Node>,
   infraSet: ReadonlySet<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    RA.filterMap((n: TSESTree.Node) => findInfraCallTarget(n, infraSet)),
-    RA.map(({ node, target }) => {
-      report({ node, messageId: "inlineInfraSideEffect", data: { target } });
-    }),
-  )(nodes);
+  const targets = RA.filterMap((n: TSESTree.Node) => findInfraCallTarget(n, infraSet))(nodes);
+  RA.map(({ node, target }: (typeof targets)[number]) => {
+    report({ node, messageId: "inlineInfraSideEffect", data: { target } });
+  })(targets);
 };
 
 const collectBodyNodes = (
@@ -122,7 +125,7 @@ const collectBodyNodes = (
 ) =>
   fn.body.type === AST_NODE_TYPES.BlockStatement
     ? RA.flatMap((s: TSESTree.Statement) => collectNodesInFunction(s, visitorKeys))(fn.body.body)
-    : ([] as ReadonlyArray<TSESTree.Node>);
+    : EMPTY_NODES;
 
 const checkFunctionSideEffects = (
   fn: FunctionNode,

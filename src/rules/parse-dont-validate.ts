@@ -73,16 +73,24 @@ const isTypePredicateAnnotation = O.exists(
 const isInvalidValidateSignature = (sig: ts.Signature, checker: ts.TypeChecker) =>
   isBooleanVoidOrOption(checker.getReturnTypeOfSignature(sig));
 
+const resolveSignatureOption = (checker: ts.TypeChecker) =>
+  flow(
+    (decl: ts.SignatureDeclaration) => checker.getSignatureFromDeclaration(decl),
+    O.fromNullable,
+  );
+
 const resolveFunctionSignature = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  O.fromNullable(
-    checker.getSignatureFromDeclaration(
-      services.esTreeNodeToTSNodeMap.get(node) as ts.SignatureDeclaration,
-    ),
+) => {
+  const resolve = flow(
+    (n: FunctionNode) => services.esTreeNodeToTSNodeMap.get(n),
+    O.fromPredicate(ts.isFunctionLike),
+    O.flatMap(resolveSignatureOption(checker)),
   );
+  return resolve(node);
+};
 
 const isInvalidValidateReturn = (
   node: FunctionNode,
@@ -124,6 +132,15 @@ const isShotgunEligibleContext = (node: TSESTree.Node) =>
     (name) => isUnsafeOrMustName(name) || isExemptDomainFnName(name),
   );
 
+const isTsParamNode = (n: ts.Node, checker: ts.TypeChecker) => {
+  const check = flow(
+    (node: ts.Node) => checker.getSymbolAtLocation(node),
+    O.fromNullable,
+    O.exists(isTsParameterSymbol),
+  );
+  return check(n);
+};
+
 const isRawPrimitiveParamId = (
   expr: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
@@ -132,11 +149,7 @@ const isRawPrimitiveParamId = (
   const tsNode = services.esTreeNodeToTSNodeMap.get(expr);
   return (
     expr.type === AST_NODE_TYPES.Identifier &&
-    flow(
-      (n: ts.Node) => checker.getSymbolAtLocation(n),
-      O.fromNullable,
-      O.exists(isTsParameterSymbol),
-    )(tsNode) &&
+    isTsParamNode(tsNode, checker) &&
     isStringOrNumberFlag(checker.getTypeAtLocation(tsNode).flags)
   );
 };

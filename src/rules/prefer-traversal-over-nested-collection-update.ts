@@ -17,14 +17,14 @@ type TargetProp = Readonly<
 const COLLECTION_NAMESPACES: ReadonlySet<string> = new Set(["RA", "A", "RNEA", "RR", "R"]);
 const MAP_METHODS: ReadonlySet<string> = new Set(["map"]);
 
-const extractSpreadTarget = (node: TSESTree.ObjectExpression) =>
-  flow(
-    RA.findFirst(
-      (p: TSESTree.ObjectLiteralElement): p is TSESTree.SpreadElement =>
-        p.type === AST_NODE_TYPES.SpreadElement,
-    ),
-    O.map((spread) => spread.argument),
-  )(node.properties);
+const extractSpreadTarget = flow(
+  (node: TSESTree.ObjectExpression) => node.properties,
+  RA.findFirst(
+    (p: TSESTree.ObjectLiteralElement): p is TSESTree.SpreadElement =>
+      p.type === AST_NODE_TYPES.SpreadElement,
+  ),
+  O.map((spread) => spread.argument),
+);
 
 const isTargetPropAccess = (
   expr: O.Option<TSESTree.CallExpressionArgument>,
@@ -55,11 +55,13 @@ const isSpreadObjectUpdate = (body: TSESTree.Node, paramName: string) =>
   body.properties.length >= 2 &&
   RA.some((p: TSESTree.ObjectLiteralElement) => isSpreadOfParam(p, paramName))(body.properties);
 
-const isSpreadUpdateArrow = (fn: TSESTree.ArrowFunctionExpression) =>
-  flow(
+const isSpreadUpdateArrow = (fn: TSESTree.ArrowFunctionExpression) => {
+  const check = flow(
     resolveFirstParamName,
     O.exists((paramName) => isSpreadObjectUpdate(fn.body, paramName)),
-  )(fn.params);
+  );
+  return check(fn.params);
+};
 
 const isSpreadUpdateMapper = flow(
   O.filter(
@@ -85,11 +87,13 @@ const isCollectionMapStep = (step: TSESTree.CallExpressionArgument) =>
 const dropFirstArg = (args: ReadonlyArray<TSESTree.CallExpressionArgument>) =>
   RA.dropLeft(1)(args);
 
+const everyRestArgIsMapStep = flow(dropFirstArg, RA.every(isCollectionMapStep));
+
 const isPipeCollectionUpdate = (call: TSESTree.CallExpression, target: TargetProp) =>
   isPipeCallExpression(call) &&
   call.arguments.length >= 2 &&
   isTargetPropAccess(O.fromNullable(call.arguments[0]), target) &&
-  flow(dropFirstArg, RA.every(isCollectionMapStep))(call.arguments);
+  everyRestArgIsMapStep(call.arguments);
 
 const isFlowMapCallee = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.CallExpression &&
@@ -150,13 +154,14 @@ export const preferTraversalOverNestedCollectionUpdate = createRule<[], MessageI
   },
   create: (context) => ({
     ObjectExpression: (node) => {
-      flow(
+      const check = flow(
         extractSpreadTarget,
         O.filter((outerTarget) => hasNestedCollectionUpdate(node.properties, outerTarget)),
         O.map(() => {
           context.report({ node, messageId: "preferTraversal" });
         }),
-      )(node);
+      );
+      check(node);
     },
   }),
 });

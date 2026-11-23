@@ -91,27 +91,34 @@ const isCollectionCallbackFn = ({ parent }: TSESTree.Node) =>
 
 const isExemptPrefixName = (name: string) => EXEMPT_FN_PREFIX_RE.test(name);
 
+const isInsideCollectionCallback = flow(
+  resolveEnclosingEsTreeFunction,
+  O.exists(isCollectionCallbackFn),
+);
+
 const isExemptEnclosingFunction = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
   hasMatchingEnclosingFunctionName(
     node,
     (name) => isUnsafeOrMustName(name) || isExemptPrefixName(name),
   ) ||
-  flow(resolveEnclosingEsTreeFunction, O.exists(isCollectionCallbackFn))(node);
+  isInsideCollectionCallback(node);
 
 const isStringTsType = (type: ts.Type) => (type.flags & ts.TypeFlags.String) !== 0;
 
 const isStringTypedParamTsNode = (
   tsNode: ts.Node,
   checker: ts.TypeChecker,
-) =>
-  flow(
+) => {
+  const check = flow(
     (n: ts.Node) => checker.getSymbolAtLocation(n),
     O.fromNullable,
     O.exists(
       (sym) => isTsParameterSymbol(sym) && isStringTsType(checker.getTypeAtLocation(tsNode)),
     ),
-  )(tsNode);
+  );
+  return check(tsNode);
+};
 
 const isPlainStringParamIdentifier = (
   target: TSESTree.Node,

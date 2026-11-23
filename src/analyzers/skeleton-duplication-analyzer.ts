@@ -92,15 +92,10 @@ const dropFirstArg = (args: ReadonlyArray<ts.Expression>) => args.slice(1);
 
 const readFirstArg = (args: ReadonlyArray<ts.Expression>) => O.fromNullable(args[0]);
 
+const hasWorkflowSeedFirstArg = flow(readFirstArg, O.exists(isWorkflowSeedCall));
+
 const extractPipeArgs = (args: ReadonlyArray<ts.Expression>) =>
-  flow(
-    readFirstArg,
-    O.filter(isWorkflowSeedCall),
-    O.match(
-      () => dropFirstArg(args),
-      () => args,
-    ),
-  )(args);
+  hasWorkflowSeedFirstArg(args) ? args : dropFirstArg(args);
 
 const toExprArray = (nodes: ts.NodeArray<ts.Expression>) => Array.from(nodes);
 
@@ -115,18 +110,15 @@ const matchEnclosingDeclName = (node: ts.Node) =>
     .when(ts.isVariableDeclaration, (v) => (ts.isIdentifier(v.name) ? O.some(v.name.text) : O.none))
     .otherwise(() => O.none);
 
-const lookupParentFunctionName = (node: ts.Node) =>
-  flow(
-    (n: ts.Node) => O.fromNullable(n.parent),
-    O.match(() => "<anonymous>", findEnclosingFunctionName),
-  )(node);
+const findEnclosingFunctionName: (node: ts.Node) => string = flow(
+  (node: ts.Node) => ({ node, declName: matchEnclosingDeclName(node) }),
+  ({ node, declName }) => O.getOrElse(() => lookupParentFunctionName(node))(declName),
+);
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive parent walk
-const findEnclosingFunctionName = (node: ts.Node): string =>
-  flow(
-    matchEnclosingDeclName,
-    O.getOrElse(() => lookupParentFunctionName(node)),
-  )(node);
+const lookupParentFunctionName = flow(
+  (n: ts.Node) => O.fromNullable(n.parent),
+  O.match(() => "<anonymous>", findEnclosingFunctionName),
+);
 
 const parseStepToken = flow(
   resolveMemberCombinatorToken,
@@ -167,12 +159,12 @@ const toPipelineOccurrence = (call: ts.CallExpression, sf: ts.SourceFile) => {
 
 const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
 
-const extractFilePipelines = (sf: ts.SourceFile) =>
-  flow(
-    collectFileNodes,
-    RA.filter(isPipeOrFlowCall),
-    RA.filterMap((call) => toPipelineOccurrence(call, sf)),
-  )(sf);
+const collectPipeOrFlowCalls = flow(collectFileNodes, RA.filter(isPipeOrFlowCall));
+
+const extractFilePipelines = flow(
+  (sf: ts.SourceFile) => ({ sf, calls: collectPipeOrFlowCalls(sf) }),
+  ({ sf, calls }) => RA.filterMap((call: ts.CallExpression) => toPipelineOccurrence(call, sf))(calls),
+);
 
 const collectAllProgramPipelines = flow(collectProjectSourceFiles, RA.flatMap(extractFilePipelines));
 
@@ -200,16 +192,14 @@ const toCluster = (
   minOccurrences: number,
 ) => {
   const uniqueLocations = deduplicateOccurrences(group);
-  return flow(
-    readFirstOccurrence,
-    O.filter(() => uniqueLocations.length >= minOccurrences),
-    O.map((first) => ({
-      signature,
-      preview: first.preview,
-      stepCount: first.stepCount,
-      sites: toSiteList(uniqueLocations),
-    })),
-  )(uniqueLocations);
+  return uniqueLocations.length >= minOccurrences
+    ? O.map((first: PipelineOccurrence) => ({
+        signature,
+        preview: first.preview,
+        stepCount: first.stepCount,
+        sites: toSiteList(uniqueLocations),
+      }))(readFirstOccurrence(uniqueLocations))
+    : O.none;
 };
 
 const expandClusterSites = (cluster: SkeletonCluster) =>
@@ -232,31 +222,18 @@ type SkeletonThresholds = Readonly<
   Record<"minSteps" | "minDistinctCombinators" | "minOccurrences", number>
 >;
 
-const collectEligiblePipelines = (program: ts.Program, thresholds: SkeletonThresholds) =>
+const computeSkeletonDuplicationsForThresholds = (thresholds: SkeletonThresholds) =>
   flow(
     collectProgramPipelines,
     RA.filter(
-      (o) =>
+      (o: PipelineOccurrence) =>
         o.stepCount >= thresholds.minSteps &&
         o.distinctCombinators >= thresholds.minDistinctCombinators,
     ),
     groupBySignature,
-  )(program);
-
-const clusterGroupedPipelines = (
-  grouped: Readonly<Record<string, ReadonlyArray<PipelineOccurrence>>>,
-  minOccurrences: number,
-) =>
-  flow(
     (rec: Readonly<Record<string, ReadonlyArray<PipelineOccurrence>>>) => RR.toEntries(rec),
-    RA.filterMap(([sig, group]) => toCluster(sig, group, minOccurrences)),
+    RA.filterMap(([sig, group]) => toCluster(sig, group, thresholds.minOccurrences)),
     buildSkeletonAnalysis,
-  )(grouped);
-
-const computeSkeletonDuplications = (program: ts.Program, thresholds: SkeletonThresholds) =>
-  clusterGroupedPipelines(
-    collectEligiblePipelines(program, thresholds),
-    thresholds.minOccurrences,
   );
 
 const makeSkeletonCacheKey = (thresholds: SkeletonThresholds) =>
@@ -267,12 +244,12 @@ export const analyzeSkeletonDuplications = (
   minSteps = 4,
   minDistinctCombinators = 3,
   minOccurrences = 2,
-) => {
+): SkeletonDuplicationAnalysis => {
   const thresholds = { minSteps, minDistinctCombinators, minOccurrences };
   return memoizeByProgramAndKey(
     program,
     makeSkeletonCacheKey(thresholds),
     analysisCache,
-    (p) => computeSkeletonDuplications(p, thresholds),
+    computeSkeletonDuplicationsForThresholds(thresholds),
   );
 };

@@ -39,14 +39,16 @@ const MONADIC_TAG_SETS = [
   new Set(["Left", "Right", "Both"]),
 ] as const satisfies ReadonlyArray<ReadonlySet<string>>;
 
-const extractMemberTagLiteral = (member: ts.Type, checker: ts.TypeChecker) =>
-  flow(
+const extractMemberTagLiteral = (member: ts.Type, checker: ts.TypeChecker) => {
+  const extract = flow(
     (m: ts.Type) => m.getProperty("_tag"),
     O.fromNullable,
     O.map((prop) => checker.getTypeOfSymbol(prop)),
     O.filter((t): t is ts.StringLiteralType => t.isStringLiteral()),
     O.map((t) => t.value),
-  )(member);
+  );
+  return extract(member);
+};
 
 const hasAllTagsInSet = (tags: ReadonlyArray<string>, tagSet: ReadonlySet<string>) =>
   RA.every((tag: string) => tagSet.has(tag))(tags);
@@ -157,19 +159,21 @@ const resolveParentMethodCall = (current: TSESTree.Node) =>
 const stepMatchBranchCallbacks = (
   parentCall: TSESTree.CallExpression,
   acc: ReadonlyArray<TSESTree.Expression>,
-) =>
-  flow(
+) => {
+  const step = flow(
     extractWithBranchArg,
     (arg) => appendBranchArg(arg, acc),
     (nextAcc) => collectMatchBranchCallbacks(parentCall, nextAcc),
-  )(parentCall);
+  );
+  return step(parentCall);
+};
 
 const collectMatchBranchCallbacks = (
   current: TSESTree.Node,
   acc: ReadonlyArray<TSESTree.Expression>,
   // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST climb
-): ReadonlyArray<TSESTree.Expression> =>
-  flow(
+): ReadonlyArray<TSESTree.Expression> => {
+  const collect = flow(
     resolveParentMethodCall,
     O.match(
       () => acc,
@@ -181,25 +185,29 @@ const collectMatchBranchCallbacks = (
           )
           .otherwise(() => acc),
     ),
-  )(current);
+  );
+  return collect(current);
+};
+
+const extractFirstReturnArg = flow(
+  RA.head<TSESTree.Statement>,
+  O.filter((s): s is TSESTree.ReturnStatement => s.type === AST_NODE_TYPES.ReturnStatement),
+  O.flatMap((s) => O.fromNullable(s.argument)),
+);
 
 const extractSingleReturnArg = (block: TSESTree.BlockStatement) =>
-  block.body.length === 1
-    ? flow(
-        RA.head<TSESTree.Statement>,
-        O.filter((s): s is TSESTree.ReturnStatement => s.type === AST_NODE_TYPES.ReturnStatement),
-        O.flatMap((s) => O.fromNullable(s.argument)),
-      )(block.body)
-    : O.none;
+  block.body.length === 1 ? extractFirstReturnArg(block.body) : O.none;
 
-const findMatchInBlock = (b: TSESTree.BlockStatement, paramNames: ReadonlySet<string>) =>
-  flow(
+const findMatchInBlock = (b: TSESTree.BlockStatement, paramNames: ReadonlySet<string>) => {
+  const find = flow(
     extractSingleReturnArg,
     O.match(
-      () => [] as ReadonlyArray<ReadonlyArray<TSESTree.Expression>>,
+      () => [] satisfies ReadonlyArray<ReadonlyArray<TSESTree.Expression>>,
       (arg) => findMatchChainInExpr(arg, paramNames),
     ),
-  )(b);
+  );
+  return find(b);
+};
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST search
 const findMatchChainInExpr = (expr: TSESTree.Node, paramNames: ReadonlySet<string>): ReadonlyArray<ReadonlyArray<TSESTree.Expression>> =>
@@ -216,18 +224,22 @@ const findMatchChainInExpr = (expr: TSESTree.Node, paramNames: ReadonlySet<strin
         .with({ type: AST_NODE_TYPES.MemberExpression }, (m) =>
           findMatchChainInExpr(m.object, paramNames),
         )
-        .with(P._, () => [] as ReadonlyArray<ReadonlyArray<TSESTree.Expression>>)
+        .with(P._, () => [] satisfies ReadonlyArray<ReadonlyArray<TSESTree.Expression>>)
         .exhaustive();
 
 const resolveCallbackReturnType = (
   cb: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  flow(
+) => {
+  const resolve = flow(
+    (expr: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(expr),
+    (tsNode) => checker.getTypeAtLocation(tsNode).getCallSignatures(),
     RA.head<ts.Signature>,
     O.map((sig) => checker.getReturnTypeOfSignature(sig)),
-  )(checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(cb)).getCallSignatures());
+  );
+  return resolve(cb);
+};
 
 const hasAtLeastTwo = (xs: ReadonlyArray<ts.Type>) => xs.length >= 2;
 
@@ -284,26 +296,30 @@ const resolveFunctionSignature = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  flow(
+) => {
+  const resolve = flow(
     (n: FunctionNode) => services.esTreeNodeToTSNodeMap.get(n),
     (tsNode) => checker.getSignatureFromDeclaration(tsNode),
     O.fromNullable,
-  )(node);
+  );
+  return resolve(node);
+};
 
 const isDispatchCandidate = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  !hasFunctionTypeParams(node) &&
-  flow(
+) => {
+  const check = flow(
+    (n: FunctionNode) => resolveFunctionSignature(n, services, checker),
     O.filter((sig: ts.Signature) => isWideUnionReturn(sig, checker)),
     O.map((sig) => collectFiniteUnionParamNames(sig, checker)),
     O.filter((names) => names.length > 0),
     O.map((names) => new Set(names)),
     O.exists((nameSet) => hasCorrelatedMatchBranches(node, nameSet, services, checker)),
-  )(resolveFunctionSignature(node, services, checker));
+  );
+  return !hasFunctionTypeParams(node) && check(node);
+};
 
 const isDispatchCandidateNode = (
   node: FunctionNode,

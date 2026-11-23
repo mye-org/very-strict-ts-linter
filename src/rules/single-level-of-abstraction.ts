@@ -1,5 +1,6 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as S from "fp-ts/lib/string.js";
 import { flow } from "fp-ts/lib/function.js";
@@ -184,13 +185,11 @@ const isFunctionNode = (node: TSESTree.Node): node is FunctionNode =>
 const isPipeOrFlowCall = (node: TSESTree.CallExpression) =>
   isPipeCallExpression(node) || isFlowCallExpression(node);
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive parent walk
-const hasEnclosingFunction = (node: TSESTree.Node): boolean =>
-  flow(
-    (n: TSESTree.Node) => n.parent,
-    O.fromNullable,
-    O.exists((parent) => isFunctionNode(parent) || hasEnclosingFunction(parent)),
-  )(node);
+const hasEnclosingFunction: Pred.Predicate<TSESTree.Node> = flow(
+  (n: TSESTree.Node) => n.parent,
+  O.fromNullable,
+  O.exists((parent) => isFunctionNode(parent) || hasEnclosingFunction(parent)),
+);
 
 const resolveCalleeName = (callee: TSESTree.Expression) =>
   match(callee)
@@ -263,24 +262,34 @@ const collectWithinBody = (
         ),
       ];
 
-const toLowCount = (name: string) => ({ high: [] as ReadonlyArray<string>, low: [`${name}()`] });
-const toHighCount = (name: string) => ({ high: [`${name}()`], low: [] as ReadonlyArray<string> });
+const toLowCount = (name: string) => ({ high: [] satisfies ReadonlyArray<string>, low: [`${name}()`] });
+const toHighCount = (name: string) => ({ high: [`${name}()`], low: [] satisfies ReadonlyArray<string> });
+
+const classifyLowCallee = flow(
+  resolveCalleeName,
+  O.map(toLowCount),
+  O.getOrElse(() => emptyCounts),
+);
+
+const classifyHighCallee = flow(
+  resolveCalleeName,
+  O.filter((name) => !neutralCombinators.has(name)),
+  O.map(toHighCount),
+  O.getOrElse(() => emptyCounts),
+);
 
 const classifyCall = (node: TSESTree.CallExpression) =>
   isLowLevelMemberCall(node.callee) || isLowLevelIdentifierCall(node.callee)
-    ? flow(resolveCalleeName, O.map(toLowCount), O.getOrElse(() => emptyCounts))(node.callee)
-    : flow(
-        resolveCalleeName,
-        O.filter((name) => !neutralCombinators.has(name)),
-        O.map(toHighCount),
-        O.getOrElse(() => emptyCounts),
-      )(node.callee);
+    ? classifyLowCallee(node.callee)
+    : classifyHighCallee(node.callee);
 
 const classifyFunctionStep = (
   fn: FunctionNode,
   trivialMode: AnalysisConfig["trivialProjections"],
 ) =>
-  isAcceptableInlineArrow(fn, trivialMode) ? emptyCounts : { high: [] as ReadonlyArray<string>, low: ["inline lambda"] };
+  isAcceptableInlineArrow(fn, trivialMode)
+    ? emptyCounts
+    : { high: [] satisfies ReadonlyArray<string>, low: ["inline lambda"] };
 
 const classifyNonIdStep = (
   arg: TSESTree.CallExpressionArgument,
@@ -292,7 +301,7 @@ const classifyPipeStep = (
   trivialMode: AnalysisConfig["trivialProjections"],
 ) =>
   arg.type === AST_NODE_TYPES.Identifier
-    ? { high: [arg.name], low: [] as ReadonlyArray<string> }
+    ? { high: [arg.name], low: [] satisfies ReadonlyArray<string> }
     : classifyNonIdStep(arg, trivialMode);
 
 const extractPipeSteps = (node: TSESTree.CallExpression) =>
@@ -301,23 +310,24 @@ const extractPipeSteps = (node: TSESTree.CallExpression) =>
 const classifyPipeCall = (
   node: TSESTree.CallExpression,
   trivialMode: AnalysisConfig["trivialProjections"],
-) =>
-  flow(
+) => {
+  const classify = flow(
     extractPipeSteps,
     RA.map((step) => classifyPipeStep(step, trivialMode)),
     RA.reduce(emptyCounts, mergeCounts),
-  )(node);
+  );
+  return classify(node);
+};
 
 const isNonEmptyTemplateLiteral = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.TemplateLiteral && node.expressions.length > 0;
 
-const toLowCounts = (low: ReadonlyArray<string>) => ({ high: [] as ReadonlyArray<string>, low });
+const toLowCounts = (low: ReadonlyArray<string>) => ({ high: [] satisfies ReadonlyArray<string>, low });
+
+const summarizeNonCallFlags = flow(RA.compact<string>, toLowCounts);
 
 const classifyNonCallNode = (node: TSESTree.Node) =>
-  flow(
-    RA.compact<string>,
-    toLowCounts,
-  )([
+  summarizeNonCallFlags([
     isRegexNode(node) ? O.some("RegExp") : O.none,
     isControlFlowStatement(node) ? O.some(node.type) : O.none,
     isNonEmptyTemplateLiteral(node) ? O.some("template literal") : O.none,
@@ -333,14 +343,18 @@ const classifyNode = (node: TSESTree.Node, config: AnalysisConfig) =>
     ? classifyCallNode(node, config)
     : classifyNonCallNode(node);
 
-const analyzeFunctionBody = (fn: FunctionNode, config: AnalysisConfig) =>
-  flow(
+const analyzeFunctionBody = (fn: FunctionNode, config: AnalysisConfig) => {
+  const analyze = flow(
+    (body: TSESTree.Node) => collectWithinBody(body, "root", config.visitorKeys),
     RA.map((n: TSESTree.Node) => classifyNode(n, config)),
     RA.reduce(emptyCounts, mergeCounts),
-  )(collectWithinBody(fn.body, "root", config.visitorKeys));
+  );
+  return analyze(fn.body);
+};
 
-const formatExamples = (items: ReadonlyArray<string>) =>
-  flow(RA.uniq(S.Eq), RA.takeLeft(3))(items).join(", ");
+const takeTopThreeUnique = flow(RA.uniq(S.Eq), RA.takeLeft(3));
+const joinExamples = (items: ReadonlyArray<string>) => items.join(", ");
+const formatExamples = flow(takeTopThreeUnique, joinExamples);
 
 const reportIfMixed = (
   node: TSESTree.Node,

@@ -18,10 +18,12 @@ import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-locati
 type Options = [Readonly<Record<"minWalkers", number>>];
 type MessageIds = "preferCatamorphism";
 
+const resolveTsLocationKey = flow(resolveTsNodeOwnLocation, makeLocationKey);
+
 const resolveNodeLocationKey = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
+) => resolveTsLocationKey(services.esTreeNodeToTSNodeMap.get(node));
 
 const formatWalkerList = (finding: CatamorphismFinding) =>
   RA.map((w: CatamorphismFinding["walkers"][number]) => w.functionName)(finding.walkers).join(", ");
@@ -75,10 +77,9 @@ const buildCatamorphismListeners = (
     checkWalkerNode(node, minWalkers, services, report);
   },
   VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
-    flow(
-      O.fromPredicate(hasFunctionInit),
-      O.map((n) => { checkWalkerNode(n, minWalkers, services, report); }),
-    )(node);
+    O.map((n: TSESTree.VariableDeclarator) => { checkWalkerNode(n, minWalkers, services, report); })(
+      O.fromPredicate(hasFunctionInit)(node),
+    );
   },
 });
 

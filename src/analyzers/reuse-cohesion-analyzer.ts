@@ -160,18 +160,19 @@ const fallbackModulePurity = (filePurity: FilePuritySummary) =>
     .with("pure", "neutral", () => "pure" as const)
     .exhaustive();
 
-const lookupNamedExportPurity = (exp: RuntimeExport, filePurity: FilePuritySummary) =>
+const resolveExportPurityByName = (exp: RuntimeExport, filePurity: FilePuritySummary) =>
   flow(
     (summary: FilePuritySummary) => O.fromNullable(summary.exportPurityByName[exp.exportName]),
     O.alt(() => O.fromNullable(filePurity.exportPurityByName[exp.localName])),
     O.getOrElseW(() => fallbackModulePurity(filePurity)),
-  )(filePurity);
+  );
 
 const resolveExportPurity = (exp: RuntimeExport, filePurity: O.Option<FilePuritySummary>) =>
-  flow(
-    O.map((summary: FilePuritySummary) => lookupNamedExportPurity(exp, summary)),
-    O.getOrElseW(() => "pure" as const),
-  )(filePurity);
+  O.getOrElseW(() => "pure" as const)(
+    O.map((summary: FilePuritySummary) => resolveExportPurityByName(exp, summary)(summary))(
+      filePurity,
+    ),
+  );
 
 const indexSourceFilesByPath = (program: ts.Program) =>
   new Map(
@@ -184,10 +185,9 @@ const lookupConsumerModulePurity = (
   purityAnalysis: ProgramPurityAnalysis,
   consumerFile: string,
 ) =>
-  flow(
-    (files: Readonly<Record<string, FilePuritySummary>>) => O.fromNullable(files[consumerFile]),
-    O.map((summary) => summary.modulePurity),
-  )(purityAnalysis.files);
+  O.map((summary: FilePuritySummary) => summary.modulePurity)(
+    O.fromNullable(purityAnalysis.files[consumerFile]),
+  );
 
 const isImpureStatus = (status: ModulePurityStatus) => status === "impure";
 
@@ -209,12 +209,15 @@ const isBlockedByPurityBoundary = (input: ExportEvaluationInput, soleConsumer: s
   isPurityBoundaryRespected(input.context) &&
   isPureExportConsumedByImpureModule(input, soleConsumer, input.context.getPurityAnalysis());
 
-const lookupConsumerLineCount = (symbolGraph: ProgramSymbolGraph, consumerFile: string) =>
+const readFileLineCount = (consumerFile: string) =>
   flow(
     (files: Readonly<Record<string, FileModuleGraph>>) => O.fromNullable(files[consumerFile]),
-    O.map((fileGraph) => fileGraph.lineCount),
+    O.map((fileGraph: FileModuleGraph) => fileGraph.lineCount),
     O.getOrElse(() => 0),
-  )(symbolGraph.files);
+  );
+
+const lookupConsumerLineCount = (symbolGraph: ProgramSymbolGraph, consumerFile: string) =>
+  readFileLineCount(consumerFile)(symbolGraph.files);
 
 const readMaxMergedFileLines = (context: SingleCallerContext) =>
   context.options.maxMergedFileLines;
@@ -264,10 +267,9 @@ const evaluateSingleProdConsumer = (
   input: ExportEvaluationInput,
   prodConsumers: ReadonlyArray<string>,
 ) =>
-  flow(
-    RA.head<string>,
-    O.flatMap((soleConsumer) => evaluateSoleConsumerCandidate(input, soleConsumer)),
-  )(prodConsumers);
+  O.flatMap((soleConsumer: string) => evaluateSoleConsumerCandidate(input, soleConsumer))(
+    RA.head<string>(prodConsumers),
+  );
 
 const classifyExportConsumers = (
   input: ExportEvaluationInput,
@@ -290,14 +292,12 @@ const classifyExportConsumers = (
 const isPublicEntryPointExport = (symbolGraph: ProgramSymbolGraph, exportKey: string) =>
   symbolGraph.publicEntryPointExports.has(exportKey);
 
-const evaluateRuntimeExport = (input: ExportEvaluationInput) =>
-  isPublicEntryPointExport(input.context.symbolGraph, input.runtimeExport.key)
+const evaluateRuntimeExport = ({ context, fileGraph, runtimeExport }: ExportEvaluationInput) =>
+  isPublicEntryPointExport(context.symbolGraph, runtimeExport.key)
     ? O.none
-    : flow(
-        (consumers: Readonly<Record<string, ModuleConsumerRecord>>) =>
-          O.fromNullable(consumers[input.runtimeExport.exportName]),
-        O.flatMap((consumerRec) => classifyExportConsumers(input, consumerRec)),
-      )(input.fileGraph.consumersByExport);
+    : O.flatMap((consumerRec: ModuleConsumerRecord) =>
+        classifyExportConsumers({ context, fileGraph, runtimeExport }, consumerRec),
+      )(O.fromNullable(fileGraph.consumersByExport[runtimeExport.exportName]));
 
 const isEligibleSingleCallerFile = (fileGraph: FileModuleGraph) =>
   !fileGraph.isBarrel && !fileGraph.isTest && !fileGraph.isEntryPoint;
@@ -317,12 +317,13 @@ const collectFileCandidateFindings = (
 const isFileNonCohesive = (sf: ts.SourceFile, context: SingleCallerContext) =>
   !analyzeFileCohesion(sf, context.checker, context.options.cohesionOptions).isCohesive;
 
-const isConsumerFileCohesive = (context: SingleCallerContext, consumerFile: string) =>
-  !flow(
-    (sourceFiles: ReadonlyMap<string, ts.SourceFile>) => sourceFiles.get(consumerFile),
+const isConsumerFileCohesive = (context: SingleCallerContext) =>
+  flow(
+    (consumerFile: string) => context.sourceFilesByPath.get(consumerFile),
     O.fromNullable,
-    O.exists((sf) => isFileNonCohesive(sf, context)),
-  )(context.sourceFilesByPath);
+    O.filter((sf: ts.SourceFile) => isFileNonCohesive(sf, context)),
+    O.isNone,
+  );
 
 const collectSoleConsumerPaths = flow(
   RA.filterMap((finding: EncapsulationFinding) =>
@@ -339,9 +340,7 @@ const buildCohesiveConsumerSet = (
   candidates: ReadonlyArray<EncapsulationFinding>,
 ) =>
   new Set(
-    RA.filter((consumerFile: string) => isConsumerFileCohesive(context, consumerFile))(
-      collectSoleConsumerPaths(candidates),
-    ),
+    RA.filter(isConsumerFileCohesive(context))(collectSoleConsumerPaths(candidates)),
   );
 
 const isSurvivingFinding = (
@@ -386,12 +385,15 @@ const finalizeSingleCallerAnalysis = (
   };
 };
 
-const collectAllSingleCallerCandidates = (context: SingleCallerContext) =>
+const collectEligibleFileCandidates = (context: SingleCallerContext) =>
   flow(
     readRecordValues<FileModuleGraph>,
     RA.filter(isEligibleSingleCallerFile),
-    RA.flatMap((fileGraph) => collectFileCandidateFindings(context, fileGraph)),
-  )(context.symbolGraph.files);
+    RA.flatMap((fileGraph: FileModuleGraph) => collectFileCandidateFindings(context, fileGraph)),
+  );
+
+const collectAllSingleCallerCandidates = (context: SingleCallerContext) =>
+  collectEligibleFileCandidates(context)(context.symbolGraph.files);
 
 const toPurityGetter = (purityAnalysis: PurityProvider) =>
   typeof purityAnalysis === "function" ? purityAnalysis : () => purityAnalysis;
@@ -412,40 +414,46 @@ export const analyzeSingleCallerExports = (
   program: ts.Program,
   purityAnalysis: PurityProvider,
   options: SingleCallerOptions = DEFAULT_SINGLE_CALLER_OPTIONS,
-) => {
+): SingleCallerAnalysis => {
   const context = buildSingleCallerContext(program, purityAnalysis, options);
   return finalizeSingleCallerAnalysis(context, collectAllSingleCallerCandidates(context));
 };
 
-const lookupProdConsumers = (fileGraph: FileModuleGraph, exportName: string) =>
+const readProdConsumersForExport = (exportName: string) =>
   flow(
     (consumers: Readonly<Record<string, ModuleConsumerRecord>>) =>
       O.fromNullable(consumers[exportName]),
-    O.map((rec) => rec.prodConsumers),
-    O.getOrElse(() => RA.empty as ReadonlyArray<string>),
-  )(fileGraph.consumersByExport);
+    O.map((rec: ModuleConsumerRecord) => rec.prodConsumers),
+    O.getOrElseW(() => []),
+  );
 
-const collectUsedExports = (fileGraph: FileModuleGraph) =>
-  flow(
-    RA.map((exp: RuntimeExport) => exp.exportName),
-    RA.filter((name: string) => lookupProdConsumers(fileGraph, name).length >= 1),
-  )(fileGraph.runtimeExports);
+const lookupProdConsumers = (fileGraph: FileModuleGraph, exportName: string) =>
+  readProdConsumersForExport(exportName)(fileGraph.consumersByExport);
+
+const collectUsedExports = flow(
+  (fileGraph: FileModuleGraph) => ({
+    fileGraph,
+    names: RA.map((exp: RuntimeExport) => exp.exportName)(fileGraph.runtimeExports),
+  }),
+  ({ fileGraph, names }) =>
+    RA.filter((name: string) => lookupProdConsumers(fileGraph, name).length >= 1)(names),
+);
 
 const dropLeadingNames = (count: number) => (names: ReadonlyArray<string>) =>
   RA.dropLeft(count)(names);
 
 const pairWithLaterNames =
   (relevantNames: ReadonlyArray<string>) => (idx: number, left: string) =>
-    flow(
-      dropLeadingNames(idx + 1),
-      RA.flatMap((right: string) => [
-        [left, right] as const,
-        [right, left] as const,
-      ]),
-    )(relevantNames);
+    RA.flatMap((right: string) => [
+      [left, right] as const,
+      [right, left] as const,
+    ])(dropLeadingNames(idx + 1)(relevantNames));
 
-const collectUndirectedCliqueEdges = (relevantNames: ReadonlyArray<string>) =>
-  flow(RA.mapWithIndex(pairWithLaterNames(relevantNames)), RA.flatten)(relevantNames);
+const collectUndirectedCliqueEdges = flow(
+  (relevantNames: ReadonlyArray<string>) =>
+    RA.mapWithIndex(pairWithLaterNames(relevantNames))(relevantNames),
+  RA.flatten,
+);
 
 const readEdgeSource = (edge: readonly [string, string]) => edge[0];
 const readEdgeTarget = (edge: readonly [string, string]) => edge[1];
@@ -455,23 +463,28 @@ const groupAdjacencyEdges = flow(
   RR.map(RA.map(readEdgeTarget)),
 );
 
-const buildReuseAdjacency = (
-  fileGraph: FileModuleGraph,
-  usedSet: ReadonlySet<string>,
-) =>
+const buildAdjacencyFromConsumerImports = (usedSet: ReadonlySet<string>) =>
   flow(
     readRecordValues<ReadonlyArray<string>>,
     RA.map(RA.filter((name: string) => usedSet.has(name))),
     RA.flatMap(collectUndirectedCliqueEdges),
     groupAdjacencyEdges,
-  )(fileGraph.prodImportsByConsumer);
+  );
 
-const collectUnvisitedNeighbors = (state: FrontierWalkState, adjacency: AdjacencyRecord) =>
+const buildReuseAdjacency = (
+  fileGraph: FileModuleGraph,
+  usedSet: ReadonlySet<string>,
+) => buildAdjacencyFromConsumerImports(usedSet)(fileGraph.prodImportsByConsumer);
+
+const collectUnvisitedFromPending = (seenExports: ReadonlySet<string>, adjacency: AdjacencyRecord) =>
   flow(
     RA.flatMap((node: string) => adjacency[node] ?? []),
-    RA.filter((neighbor: string) => !state.seenExports.has(neighbor)),
+    RA.filter((neighbor: string) => !seenExports.has(neighbor)),
     RA.uniq(S.Eq),
-  )(state.pendingExports);
+  );
+
+const collectUnvisitedNeighbors = (state: FrontierWalkState, adjacency: AdjacencyRecord) =>
+  collectUnvisitedFromPending(state.seenExports, adjacency)(state.pendingExports);
 
 const expandComponentFrontier = (
   state: FrontierWalkState,
@@ -500,16 +513,19 @@ const stepComponentFrontier = (
     adjacency,
   );
 
+const collectSortedProdConsumers = (fileGraph: FileModuleGraph) =>
+  flow(
+    RA.flatMap((name: string) => lookupProdConsumers(fileGraph, name)),
+    RA.uniq(S.Eq),
+    RA.sort(S.Ord),
+  );
+
 const buildConsumerExportGroup = (
   members: ReadonlyArray<string>,
   fileGraph: FileModuleGraph,
 ) => ({
   exports: RA.sort(S.Ord)(members),
-  consumers: flow(
-    RA.flatMap((name: string) => lookupProdConsumers(fileGraph, name)),
-    RA.uniq(S.Eq),
-    RA.sort(S.Ord),
-  )(members),
+  consumers: collectSortedProdConsumers(fileGraph)(members),
 });
 
 const appendSeededComponent = (
@@ -541,37 +557,36 @@ const compareGroupByFirstExport = Ord.contramap(
 
 const partitionUsedExports =
   (fileGraph: FileModuleGraph) => (usedExports: ReadonlyArray<string>) =>
-    flow(
+    RA.sort(compareGroupByFirstExport)(
       RA.reduce<string, PartitionAccumulator>(
         { visited: new Set<string>(), groups: [] },
         stepComponentPartition({
           fileGraph,
           adjacency: buildReuseAdjacency(fileGraph, new Set(usedExports)),
         }),
-      ),
-      (result) => RA.sort(compareGroupByFirstExport)(result.groups),
-    )(usedExports);
+      )(usedExports).groups,
+    );
 
 const evaluateFileCommonReuse = (fileGraph: FileModuleGraph, minExports: number) =>
   fileGraph.isBarrel || fileGraph.isTest || fileGraph.runtimeExports.length <= minExports
     ? O.none
     : evaluateUsedExportGroups(fileGraph, collectUsedExports(fileGraph));
 
+const buildCommonReuseFinding = (fileGraph: FileModuleGraph) =>
+  flow(
+    partitionUsedExports(fileGraph),
+    O.fromPredicate((groups: ReadonlyArray<ConsumerExportGroup>) => groups.length > 1),
+    O.map((groups: ReadonlyArray<ConsumerExportGroup>) => ({
+      fileName: fileGraph.fileName,
+      exportCount: fileGraph.runtimeExports.length,
+      groups,
+    })),
+  );
+
 const evaluateUsedExportGroups = (
   fileGraph: FileModuleGraph,
   usedExports: ReadonlyArray<string>,
-) =>
-  RA.size(usedExports) <= 1
-    ? O.none
-    : flow(
-        partitionUsedExports(fileGraph),
-        O.fromPredicate((groups) => groups.length > 1),
-        O.map((groups) => ({
-          fileName: fileGraph.fileName,
-          exportCount: fileGraph.runtimeExports.length,
-          groups,
-        })),
-      )(usedExports);
+) => (RA.size(usedExports) <= 1 ? O.none : buildCommonReuseFinding(fileGraph)(usedExports));
 
 const indexCommonReuseByFile = RA.reduce<
   CommonReuseFinding,
@@ -587,11 +602,10 @@ export const analyzeCommonReuseCohesion = (
     minExports: 5,
     testPatterns: DEFAULT_TEST_PATTERNS,
   },
-) => {
-  const findings = flow(
-    (graph: ProgramSymbolGraph) => readRecordValues(graph.files),
-    RA.filterMap((fileGraph) => evaluateFileCommonReuse(fileGraph, options.minExports)),
-  )(analyzeModuleSymbolGraph(program, [], options.testPatterns));
+): CommonReuseAnalysis => {
+  const findings = RA.filterMap((fileGraph: FileModuleGraph) =>
+    evaluateFileCommonReuse(fileGraph, options.minExports),
+  )(readRecordValues(analyzeModuleSymbolGraph(program, [], options.testPatterns).files));
   return {
     findings,
     byFile: indexCommonReuseByFile(findings),

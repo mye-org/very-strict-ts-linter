@@ -41,8 +41,14 @@ const isObjectMethodOrAccessor = (node: FunctionNode) =>
     node.parent.type === AST_NODE_TYPES.MethodDefinition);
 
 const isPlainParam = (param: TSESTree.Parameter) =>
-  (param.type === AST_NODE_TYPES.Identifier && !THIS_IDENTIFIERS.has(param.name)) ||
-  (param.type === AST_NODE_TYPES.RestElement && param.argument.type === AST_NODE_TYPES.Identifier);
+  match(param)
+    .with({ type: AST_NODE_TYPES.Identifier }, (p) => !THIS_IDENTIFIERS.has(p.name))
+    .with(
+      { type: AST_NODE_TYPES.RestElement, argument: { type: AST_NODE_TYPES.Identifier } },
+      () => true,
+    )
+    .with(P._, () => false)
+    .exhaustive();
 
 const hasFunctionBody = (node: FunctionNode) => Boolean(node.body);
 
@@ -64,13 +70,13 @@ const matchSingleStatement = (stmt: TSESTree.Statement) =>
       { type: AST_NODE_TYPES.ExpressionStatement, expression: { type: AST_NODE_TYPES.CallExpression } },
       (s) => O.some<ForwardedCall>({ call: s.expression, kind: "void" }),
     )
-    .with(P._, () => O.none as O.Option<ForwardedCall>)
+    .with(P._, () => O.none satisfies O.Option<ForwardedCall>)
     .exhaustive();
 
 const extractBlockForwardedCall = (body: TSESTree.BlockStatement) =>
   body.body.length === 1
     ? O.flatMap(matchSingleStatement)(O.fromNullable(body.body[0]))
-    : (O.none as O.Option<ForwardedCall>);
+    : (O.none satisfies O.Option<ForwardedCall>);
 
 const extractForwardedCall = (node: FunctionNode) =>
   match(node.body)
@@ -78,7 +84,7 @@ const extractForwardedCall = (node: FunctionNode) =>
       O.some<ForwardedCall>({ call, kind: "return" }),
     )
     .with({ type: AST_NODE_TYPES.BlockStatement }, extractBlockForwardedCall)
-    .with(P._, () => O.none as O.Option<ForwardedCall>)
+    .with(P._, () => O.none satisfies O.Option<ForwardedCall>)
     .exhaustive();
 
 const isPipeCall = isPipeCallExpression;
@@ -145,12 +151,14 @@ const resolveCalleeSymbol = (
   callee: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  flow(
+) => {
+  const resolve = flow(
     (c: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(c),
     (tsNode) => checker.getSymbolAtLocation(tsNode),
     O.fromNullable,
-  )(callee);
+  );
+  return resolve(callee);
+};
 
 const hasNoUnsafeDeclaration = (decls: ReadonlyArray<ts.Declaration>) =>
   !RA.some(isUnsafeMethodDeclaration)(decls);
@@ -162,16 +170,16 @@ const isSafeMemberCallee = (
   callee: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  callee.type !== AST_NODE_TYPES.MemberExpression
+) => {
+  const check = flow(
+    (c: TSESTree.Expression) => resolveCalleeSymbol(c, services, checker),
+    O.map(resolveSymbolDeclarations(checker)),
+    O.exists(hasNoUnsafeDeclaration),
+  );
+  return callee.type !== AST_NODE_TYPES.MemberExpression
     ? true
-    : !callee.optional &&
-      !callee.computed &&
-      flow(
-        resolveCalleeSymbol,
-        O.map(resolveSymbolDeclarations(checker)),
-        O.exists(hasNoUnsafeDeclaration),
-      )(callee, services, checker);
+    : !callee.optional && !callee.computed && check(callee);
+};
 
 const isRestParamSymbol = (sym: ts.Symbol) =>
   sym.valueDeclaration !== undefined &&
@@ -318,16 +326,13 @@ const isPointFreeCandidate = (
   services: ParserServicesWithTypeInformation,
 ) =>
   isEligibleFunction(node) &&
-  flow(
-    extractForwardedCall,
-    O.exists(
-      (forwarded) =>
-        isValidCallTarget(forwarded.call) &&
-        hasMatchingArgsAndParams(node.params, forwarded.call.arguments) &&
-        !hasVarRefInCallee(collectRelevantDeclaredVars(node, sourceCode), forwarded.call.callee) &&
-        isTypeSafeEtaReduction(node, forwarded, services, services.program.getTypeChecker()),
-    ),
-  )(node);
+  O.exists(
+    (forwarded: ForwardedCall) =>
+      isValidCallTarget(forwarded.call) &&
+      hasMatchingArgsAndParams(node.params, forwarded.call.arguments) &&
+      !hasVarRefInCallee(collectRelevantDeclaredVars(node, sourceCode), forwarded.call.callee) &&
+      isTypeSafeEtaReduction(node, forwarded, services, services.program.getTypeChecker()),
+  )(extractForwardedCall(node));
 
 const checkFunction = (
   node: FunctionNode,

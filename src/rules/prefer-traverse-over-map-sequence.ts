@@ -54,21 +54,25 @@ const resolveCollectionMapStep = flow(
   O.filter(({ namespace, method }) => COLLECTION_NAMESPACES.has(namespace) && MAP_METHODS.has(method)),
 );
 
-const isSequenceStepFor = (arg: TSESTree.CallExpressionArgument, collectionNs: string) =>
-  flow(
+const isSequenceStepFor = (arg: TSESTree.CallExpressionArgument, collectionNs: string) => {
+  const check = flow(
     resolveMemberCallee,
     O.exists(
       ({ namespace, method }) =>
         (SEQUENCE_ARRAY_NAMESPACES.has(namespace) && SEQUENCE_ARRAY_METHODS.has(method)) ||
         (namespace === collectionNs && SEQUENCE_METHODS.has(method)),
     ),
-  )(arg);
+  );
+  return check(arg);
+};
 
-const isMapThenSequencePair = ({ first, second }: StepPair) =>
-  flow(
+const isMapThenSequencePair = ({ first, second }: StepPair) => {
+  const check = flow(
     resolveCollectionMapStep,
     O.exists(({ namespace }) => isSequenceStepFor(second, namespace)),
-  )(first);
+  );
+  return check(first);
+};
 
 const matchNextMapSequence = (
   step: TSESTree.CallExpressionArgument,
@@ -94,16 +98,18 @@ const hasEmptyArrayFirstArg = flow(
   O.exists(isEmptyArrayExpr),
 );
 
+const isMonadicEmptyArrayMember = flow(
+  resolveMemberCallee,
+  O.exists(
+    ({ namespace, method }) =>
+      SEQUENCE_ARRAY_NAMESPACES.has(namespace) && MONAD_EMPTY_ARRAY_CONSTRUCTORS.has(method),
+  ),
+);
+
 const isMonadicEmptyArraySeed = (arg: TSESTree.CallExpressionArgument) =>
   arg.type === AST_NODE_TYPES.CallExpression &&
   hasEmptyArrayFirstArg(arg) &&
-  flow(
-    resolveMemberCallee,
-    O.exists(
-      ({ namespace, method }) =>
-        SEQUENCE_ARRAY_NAMESPACES.has(namespace) && MONAD_EMPTY_ARRAY_CONSTRUCTORS.has(method),
-    ),
-  )(arg);
+  isMonadicEmptyArrayMember(arg);
 
 const hasMonadicSeedFirstArg = flow(
   (call: TSESTree.CallExpression) => call.arguments[0],
@@ -111,12 +117,13 @@ const hasMonadicSeedFirstArg = flow(
   O.exists(isMonadicEmptyArraySeed),
 );
 
+const isCollectionReduceMember = flow(
+  resolveMemberCallee,
+  O.exists(({ namespace, method }) => COLLECTION_NAMESPACES.has(namespace) && REDUCE_METHODS.has(method)),
+);
+
 const isManualMonadicReduceCall = (node: TSESTree.CallExpression) =>
-  hasMonadicSeedFirstArg(node) &&
-  flow(
-    resolveMemberCallee,
-    O.exists(({ namespace, method }) => COLLECTION_NAMESPACES.has(namespace) && REDUCE_METHODS.has(method)),
-  )(node);
+  hasMonadicSeedFirstArg(node) && isCollectionReduceMember(node);
 
 const extractPipelineSteps = (node: TSESTree.CallExpression) =>
   match([isPipeCallExpression(node), isFlowCallExpression(node)] as const)
@@ -128,31 +135,33 @@ const reportManualReduce = (
   node: TSESTree.CallExpression,
   report: (target: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  flow(
+  const check = flow(
     O.fromPredicate(isManualMonadicReduceCall),
     O.map((n) => {
       report(n, "manualMonadicReduce");
     }),
-  )(node);
+  );
+  check(node);
 };
 
 const reportMapSequenceTargets = (
   steps: ReadonlyArray<TSESTree.CallExpressionArgument>,
   report: (target: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  flow(
+  const run = flow(
     findMapThenSequenceTargets,
     RA.map((target) => {
       report(target, "mapThenSequence");
     }),
-  )(steps);
+  );
+  run(steps);
 };
 
 const checkCallExpression = (
   node: TSESTree.CallExpression,
   report: (target: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  flow(
+  const check = flow(
     extractPipelineSteps,
     O.match(
       () => {
@@ -162,7 +171,8 @@ const checkCallExpression = (
         reportMapSequenceTargets(steps, report);
       },
     ),
-  )(node);
+  );
+  check(node);
 };
 
 export const preferTraverseOverMapSequence = createRule<[], MessageIds>({

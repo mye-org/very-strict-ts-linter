@@ -1,12 +1,11 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 
 const UNSAFE_SUFFIX_RE = /[a-z0-9]Unsafe$/;
 const MUST_PREFIX_RE = /^must[A-Z]/;
 
-export const isUnsafeOrMustName = (name: string) =>
+export const isUnsafeOrMustName = (name: string): boolean =>
   UNSAFE_SUFFIX_RE.test(name) || MUST_PREFIX_RE.test(name);
 
 const resolveNamedParentKey = (gp: TSESTree.Node) =>
@@ -18,7 +17,7 @@ const resolveNamedParentKey = (gp: TSESTree.Node) =>
     .with(P._, () => O.none)
     .exhaustive();
 
-export const resolveDirectFunctionName = (node: TSESTree.Node) =>
+export const resolveDirectFunctionName = (node: TSESTree.Node): O.Option<string> =>
   match(node)
     .with({ type: AST_NODE_TYPES.FunctionDeclaration }, (fn) => (fn.id ? O.some(fn.id.name) : O.none))
     .with({ type: AST_NODE_TYPES.FunctionExpression }, (fn) =>
@@ -38,13 +37,10 @@ const isMatchingDirectOrAncestor = (
   O.exists(predicate)(resolveDirectFunctionName(parent)) ||
   hasMatchingEnclosingFunctionName(parent, predicate);
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive ancestor search
 export const hasMatchingEnclosingFunctionName = (node: TSESTree.Node, predicate: (name: string) => boolean): boolean =>
-  flow(
-    (n: TSESTree.Node) => n.parent,
-    O.fromNullable,
-    O.exists((parent) => isMatchingDirectOrAncestor(parent, predicate)),
-  )(node);
+  O.exists((parent: TSESTree.Node) => isMatchingDirectOrAncestor(parent, predicate))(
+    O.fromNullable(node.parent),
+  );
 
-export const isInsideUnsafeOrMustFunction = (node: TSESTree.Node) =>
+export const isInsideUnsafeOrMustFunction = (node: TSESTree.Node): boolean =>
   hasMatchingEnclosingFunctionName(node, isUnsafeOrMustName);

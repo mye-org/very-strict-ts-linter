@@ -48,11 +48,13 @@ const toDecimalText = (value: number) => String(value);
 const formatGroupSummary = (label: string, exportsText: string, consumersText: string) =>
   `Group ${label} [${exportsText}] -> ${consumersText}`;
 
-const formatConsumers = (consumers: ReadonlyArray<string>, cwd: string) =>
-  flow(
+const formatConsumers = (consumers: ReadonlyArray<string>, cwd: string) => {
+  const format = flow(
     RA.map((c: string) => formatRelativePath(cwd, c)),
     joinWithComma,
-  )(consumers);
+  );
+  return format(consumers);
+};
 
 const formatGroup = (group: ConsumerExportGroup, index: number, cwd: string) =>
   formatGroupSummary(
@@ -61,11 +63,13 @@ const formatGroup = (group: ConsumerExportGroup, index: number, cwd: string) =>
     formatConsumers(group.consumers, cwd),
   );
 
-const formatAllGroups = (groups: ReadonlyArray<ConsumerExportGroup>, cwd: string) =>
-  flow(
+const formatAllGroups = (groups: ReadonlyArray<ConsumerExportGroup>, cwd: string) => {
+  const format = flow(
     RA.mapWithIndex((idx: number, g: ConsumerExportGroup) => formatGroup(g, idx, cwd)),
     joinWithPipe,
-  )(groups);
+  );
+  return format(groups);
+};
 
 const toDisjointGroupDescriptor = (
   node: TSESTree.Program,
@@ -117,12 +121,14 @@ const lookupCohesionFinding = (
   programNode: TSESTree.Program,
   services: ParserServicesWithTypeInformation,
   options: Options[0],
-) =>
-  flow(
+) => {
+  const lookup = flow(
     resolveCohesionOptions,
     analyzeByFile(services.program),
     lookupByFileName(resolveProgramFileName(programNode, services)),
-  )(options);
+  );
+  return lookup(options);
+};
 
 const inspectProgramCohesion = (
   programNode: TSESTree.Program,

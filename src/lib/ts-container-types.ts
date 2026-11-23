@@ -26,11 +26,17 @@ const WRAPPER_CONTAINER_NAMES = new Set([
 const IGNORED_UNION_FLAGS =
   ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Never;
 
+const isTypeReference = (type: ts.Type): type is ts.TypeReference =>
+  (type.flags & ts.TypeFlags.Object) !== 0 && "target" in type;
+
 const resolveContainerTypeArgs = (type: ts.Type, checker: ts.TypeChecker) => {
   const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
   return name && WRAPPER_CONTAINER_NAMES.has(name)
-    ? type.aliasTypeArguments ?? checker.getTypeArguments(type as ts.TypeReference)
-    : ([] as ReadonlyArray<ts.Type>);
+    ? type.aliasTypeArguments ??
+        (isTypeReference(type)
+          ? checker.getTypeArguments(type)
+          : ([] satisfies ReadonlyArray<ts.Type>))
+    : ([] satisfies ReadonlyArray<ts.Type>);
 };
 
 const unwrapArgList = (
@@ -44,14 +50,13 @@ const unwrapArgList = (
 
 const isMeaningfulUnionMember = (m: ts.Type) => (m.flags & IGNORED_UNION_FLAGS) === 0;
 
-const unwrapUnionMembers = (members: ReadonlyArray<ts.Type>, checker: ts.TypeChecker) =>
+const unwrapMeaningfulUnionMembers = (checker: ts.TypeChecker) =>
   flow(
     RA.filter(isMeaningfulUnionMember),
     RA.flatMap((m: ts.Type) => unwrapContainerTsTypes(m, checker)),
-  )(members);
+  );
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive type unwrapping
 export const unwrapContainerTsTypes = (type: ts.Type, checker: ts.TypeChecker): ReadonlyArray<ts.Type> =>
   type.isUnion()
-    ? unwrapUnionMembers(type.types, checker)
+    ? unwrapMeaningfulUnionMembers(checker)(type.types)
     : unwrapArgList(resolveContainerTypeArgs(type, checker), type, checker);

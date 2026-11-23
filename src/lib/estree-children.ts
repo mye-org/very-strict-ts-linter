@@ -1,6 +1,7 @@
 import { TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { flow } from "fp-ts/lib/function.js";
 
 const isEstreeNodeObj = (val: object): val is TSESTree.Node =>
@@ -9,7 +10,7 @@ const isEstreeNodeObj = (val: object): val is TSESTree.Node =>
 const extractSingleNode = flow(
   O.fromPredicate(isEstreeNodeObj),
   O.match(
-    () => [] as ReadonlyArray<TSESTree.Node>,
+    () => [] satisfies ReadonlyArray<TSESTree.Node>,
     (childNode) => [childNode],
   ),
 );
@@ -21,20 +22,25 @@ const extractNodeArray = RA.filter(isEstreeNodeObj);
 const extractChildValue = (val: object) =>
   isObjectArray(val) ? extractNodeArray(val) : extractSingleNode(val);
 
-const readNodeProperty = (node: TSESTree.Node, key: string) =>
-  (node as object as Readonly<Record<string, object>>)[key];
+const isNodeRecord = (node: TSESTree.Node): node is TSESTree.Node & Readonly<Record<string, object>> =>
+  typeof node === "object";
+
+const lookupKeyChildren = (key: string) =>
+  flow(
+    (record: Readonly<Record<string, object>>) => RR.lookup(key, record),
+    O.flatMap(O.fromNullable),
+    O.match(() => [] satisfies ReadonlyArray<TSESTree.Node>, extractChildValue),
+  );
 
 const extractKeyChildren = (node: TSESTree.Node, key: string) =>
-  flow(
-    (k: string) => readNodeProperty(node, k),
-    O.fromNullable,
-    O.match(() => [] as ReadonlyArray<TSESTree.Node>, extractChildValue),
-  )(key);
+  isNodeRecord(node)
+    ? lookupKeyChildren(key)(node)
+    : ([] satisfies ReadonlyArray<TSESTree.Node>);
 
 export const collectEstreeChildNodes = (
   node: TSESTree.Node,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
-) =>
+): ReadonlyArray<TSESTree.Node> =>
   RA.flatMap((key: string) => extractKeyChildren(node, key))(
     visitorKeys[node.type] ?? [],
   );

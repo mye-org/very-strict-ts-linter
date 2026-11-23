@@ -32,12 +32,18 @@ const resolveFirstTypeArg = flow(
 );
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive unwrap
-const unwrapReadonlyType = (node: TSESTree.TypeNode): TSESTree.TypeNode =>
-  node.type === AST_NODE_TYPES.TSTypeReference &&
-  node.typeName.type === AST_NODE_TYPES.Identifier &&
-  READONLY_TYPE_NAMES.has(node.typeName.name)
-    ? flow(resolveSingleTypeArg, O.map(unwrapReadonlyType), O.getOrElseW(() => node))(node)
+const unwrapReadonlyType = (node: TSESTree.TypeNode): TSESTree.TypeNode => {
+  const unwrapInner = flow(
+    resolveSingleTypeArg,
+    O.map(unwrapReadonlyType),
+    O.getOrElseW(() => node),
+  );
+  return node.type === AST_NODE_TYPES.TSTypeReference &&
+    node.typeName.type === AST_NODE_TYPES.Identifier &&
+    READONLY_TYPE_NAMES.has(node.typeName.name)
+    ? unwrapInner(node)
     : node;
+};
 
 const isRecordWithWideningKey = flow(resolveFirstTypeArg, O.exists(isWideningKeyNode));
 

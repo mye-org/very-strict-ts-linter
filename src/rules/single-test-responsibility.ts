@@ -32,6 +32,7 @@ type Reporter = (d: TSESLint.ReportDescriptor<MessageIds>) => void;
 const formatBracketedGroup = (group: ReadonlyArray<string>) => `[${group.join(", ")}]`;
 const joinGroups = (groups: ReadonlyArray<string>) => groups.join(" | ");
 const toDecimalText = (value: number) => String(value);
+const formatAllGroups = flow(RA.map(formatBracketedGroup), joinGroups);
 
 const toResponsibilityDescriptor = (finding: SingleResponsibilityFinding) => ({
   loc: {
@@ -42,7 +43,7 @@ const toResponsibilityDescriptor = (finding: SingleResponsibilityFinding) => ({
   data: {
     testName: finding.testName,
     groupCount: toDecimalText(finding.groups.length),
-    groups: flow(RA.map(formatBracketedGroup), joinGroups)(finding.groups),
+    groups: formatAllGroups(finding.groups),
   },
 });
 

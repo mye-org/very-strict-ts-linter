@@ -1,7 +1,6 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as Pred from "fp-ts/lib/Predicate.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
@@ -102,7 +101,7 @@ const reportWhen = <N extends TSESTree.Node>(
   predicate: Pred.Predicate<N>,
   onMatch: (n: N) => void,
 ) => {
-  flow(O.fromPredicate(predicate), O.map(onMatch))(node);
+  O.map(onMatch)(O.fromPredicate(predicate)(node));
 };
 
 const buildErrorHandlingListeners = (

@@ -7,7 +7,7 @@ import { resolveDirectFunctionName } from "./unsafe-function-scope.js";
 const isUpperChar = (ch: string) => ch >= "A" && ch <= "Z";
 const isDigitChar = (ch: string) => ch >= "0" && ch <= "9";
 
-export const isHookName = (name: string) =>
+export const isHookName = (name: string): boolean =>
   name.startsWith("use") &&
   O.exists((ch: string) => isUpperChar(ch) || isDigitChar(ch))(O.fromNullable(name[3]));
 

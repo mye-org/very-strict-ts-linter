@@ -29,8 +29,10 @@ type HktImportIndex = Readonly<{
 
 type HktCheckContext = Readonly<{
   checkerCtx: O.Option<CheckerContext>;
-  imports: HktImportIndex;
+  hktImports: HktImportIndex;
 }>;
+
+const EMPTY_STRINGS: ReadonlyArray<string> = [];
 
 const FP_TS_HKT_SOURCE_RE = /^fp-ts\/(?:(?:lib|es6)\/)?HKT(?:\/index)?(?:\.js)?$/;
 const FP_TS_ROOT_SOURCE_RE = /^fp-ts(?:\/(?:lib|es6)(?:\/index(?:\.js)?)?)?$/;
@@ -78,6 +80,11 @@ const isNamedHktImportSpecifier = (spec: TSESTree.ImportClause): spec is TSESTre
 const isNamedHktExportSpecifier = (spec: TSESTree.ExportSpecifier) =>
   spec.local.type === AST_NODE_TYPES.Identifier && spec.local.name === "hkt";
 
+const extractNamedHktLocals = flow(
+  RA.filter(isNamedHktImportSpecifier),
+  RA.map((spec: TSESTree.ImportSpecifier) => spec.local.name),
+);
+
 const extractDirectHktLocalNames = (decl: TSESTree.ImportDeclaration) =>
   match({
     isHktModule: isFpTsHktSource(decl.source.value),
@@ -86,13 +93,8 @@ const extractDirectHktLocalNames = (decl: TSESTree.ImportDeclaration) =>
     .with({ isHktModule: true }, () =>
       RA.map((spec: TSESTree.ImportClause) => spec.local.name)(decl.specifiers),
     )
-    .with({ isRootModule: true }, () =>
-      flow(
-        RA.filter(isNamedHktImportSpecifier),
-        RA.map((spec: TSESTree.ImportSpecifier) => spec.local.name),
-      )(decl.specifiers),
-    )
-    .with(P._, () => [] as ReadonlyArray<string>)
+    .with({ isRootModule: true }, () => extractNamedHktLocals(decl.specifiers))
+    .with(P._, () => EMPTY_STRINGS)
     .exhaustive();
 
 const extractFpTsRootNamespaces = (decl: TSESTree.ImportDeclaration) =>
@@ -100,7 +102,7 @@ const extractFpTsRootNamespaces = (decl: TSESTree.ImportDeclaration) =>
     ? RA.filterMap((spec: TSESTree.ImportClause) =>
         spec.type === AST_NODE_TYPES.ImportNamespaceSpecifier ? O.some(spec.local.name) : O.none,
       )(decl.specifiers)
-    : ([] as ReadonlyArray<string>);
+    : EMPTY_STRINGS;
 
 const collectHktImports = (body: ReadonlyArray<TSESTree.ProgramStatement>) => {
   const imports = RA.filter(isImportDeclaration)(body);
@@ -114,7 +116,7 @@ const collectHktImports = (body: ReadonlyArray<TSESTree.ProgramStatement>) => {
 const collectEntityNameParts = (entity: TSESTree.EntityName): ReadonlyArray<string> =>
   match(entity)
     .with({ type: AST_NODE_TYPES.Identifier }, (id) => [id.name])
-    .with({ type: AST_NODE_TYPES.ThisExpression }, () => [] as ReadonlyArray<string>)
+    .with({ type: AST_NODE_TYPES.ThisExpression }, () => EMPTY_STRINGS)
     .with({ type: AST_NODE_TYPES.TSQualifiedName }, (q) => [
       ...collectEntityNameParts(q.left),
       q.right.name,
@@ -168,11 +170,13 @@ const lookupTsNode = (node: TSESTree.Node, ctx: CheckerContext) =>
 const lookupSymbolAtTsNode = (ctx: CheckerContext) =>
   flow((tsNode: ts.Node) => ctx.checker.getSymbolAtLocation(tsNode), O.fromNullable);
 
+const lookupNodeTsSymbol = (node: TSESTree.Node, ctx: CheckerContext) =>
+  O.flatMap(lookupSymbolAtTsNode(ctx))(lookupTsNode(node, ctx));
+
 const resolveTsSymbol = (node: TSESTree.Node, ctx: CheckerContext) =>
-  flow(
-    O.flatMap(lookupSymbolAtTsNode(ctx)),
-    O.map((symbol: ts.Symbol) => resolveAliasedSymbol(symbol, ctx.checker)),
-  )(lookupTsNode(node, ctx));
+  O.map((symbol: ts.Symbol) => resolveAliasedSymbol(symbol, ctx.checker))(
+    lookupNodeTsSymbol(node, ctx),
+  );
 
 const isFpTsHktTypeSymbol = (symbol: ts.Symbol) =>
   FP_TS_HKT_SYMBOLS.has(symbol.name) && hasFpTsHktDeclaration(symbol);
@@ -181,11 +185,11 @@ const isTypeRefFpTsHktByType = (entity: TSESTree.EntityName, ctx: CheckerContext
   O.exists(isFpTsHktTypeSymbol)(resolveTsSymbol(entity, ctx));
 
 const isTypeRefFpTsHkt = (node: TSESTree.TSTypeReference, ctx: HktCheckContext) =>
-  !O.exists((rootName: string) => ctx.imports.directHktLocals.has(rootName))(
+  !O.exists((rootName: string) => ctx.hktImports.directHktLocals.has(rootName))(
     resolveLeftmostName(node.typeName),
   ) &&
   ((O.isNone(ctx.checkerCtx) &&
-    isRootNamespaceHktType(node.typeName, ctx.imports.fpTsRootNamespaces)) ||
+    isRootNamespaceHktType(node.typeName, ctx.hktImports.fpTsRootNamespaces)) ||
     O.exists((c: CheckerContext) => isTypeRefFpTsHktByType(node.typeName, c))(ctx.checkerCtx));
 
 const isStaticHktMember = (node: TSESTree.MemberExpression) =>
@@ -205,7 +209,7 @@ const isFpTsHktMemberExpression = (node: TSESTree.MemberExpression, ctx: HktChec
   isStaticHktMember(node) &&
   ((O.isNone(ctx.checkerCtx) &&
     node.object.type === AST_NODE_TYPES.Identifier &&
-    ctx.imports.fpTsRootNamespaces.has(node.object.name)) ||
+    ctx.hktImports.fpTsRootNamespaces.has(node.object.name)) ||
     O.exists((c: CheckerContext) => isFpTsHktMemberByType(node, c))(ctx.checkerCtx));
 
 const isFpTsHktModuleAugmentation = (node: TSESTree.TSModuleDeclaration) =>
@@ -222,7 +226,7 @@ const reportWhen = <N extends TSESTree.Node>(
   predicate: Pred.Predicate<N>,
   report: (n: TSESTree.Node) => void,
 ) => {
-  flow(O.some<N>, O.filter(predicate), O.map(report))(node);
+  O.map(report)(O.fromPredicate(predicate)(node));
 };
 
 const checkImportDeclaration = (
@@ -235,7 +239,7 @@ const checkImportDeclaration = (
   })
     .with({ isHktModule: true }, () => { report(node); })
     .with({ isRootModule: true }, () => {
-      flow(RA.filter(isNamedHktImportSpecifier), RA.map(report))(node.specifiers);
+      RA.map(report)(RA.filter(isNamedHktImportSpecifier)(node.specifiers));
     })
     .with(P._, () => {})
     .exhaustive();
@@ -252,7 +256,7 @@ const checkExportNamedDeclaration = (
     })
       .with({ isHktModule: true }, () => { report(node); })
       .with({ isRootModule: true }, () => {
-        flow(RA.filter(isNamedHktExportSpecifier), RA.map(report))(node.specifiers);
+        RA.map(report)(RA.filter(isNamedHktExportSpecifier)(node.specifiers));
       })
       .with(P._, () => {})
       .exhaustive();
@@ -295,7 +299,7 @@ export const noFpTsHkt = createRule<[], MessageIds>({
     buildHktListeners(
       {
         checkerCtx: toCheckerContext(ESLintUtils.getParserServices(context, true)),
-        imports: collectHktImports(extractProgramStatements(context.sourceCode)),
+        hktImports: collectHktImports(extractProgramStatements(context.sourceCode)),
       },
       (node) => { context.report({ node, messageId: "noFpTsHkt" }); },
     ),

@@ -4,7 +4,6 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { collectEstreeChildNodes } from "../lib/estree-children.js";
-import { isEsTreeAnonymousFunctionNode } from "../lib/estree-function-nodes.js";
 import { isFlowCallExpression } from "../lib/flow-call.js";
 import { isPipeCallExpression } from "../lib/pipe-call.js";
 import { createRule } from "../lib/rule-factory.js";
@@ -34,17 +33,11 @@ const collectObjectPatternNames = (obj: TSESTree.ObjectPattern) =>
   RA.flatMap((prop: TSESTree.Property | TSESTree.RestElement) =>
     prop.type === AST_NODE_TYPES.RestElement
       ? collectPatternNames(prop)
-      : collectPatternNames(prop.value as TSESTree.BindingName),
+      : collectPatternNames(prop.value),
   )(obj.properties);
 
-const collectArrayPatternNames = (arr: TSESTree.ArrayPattern) =>
-  flow(
-    RA.filterMap((el: TSESTree.ArrayPattern["elements"][number]) => O.fromNullable(el)),
-    RA.flatMap((el) => collectPatternNames(el as TSESTree.BindingName)),
-  )(arr.elements);
-
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive pattern extraction
-const collectPatternNames = (param: TSESTree.Parameter | TSESTree.BindingName): ReadonlyArray<string> =>
+const collectPatternNames = (param: TSESTree.Node): ReadonlyArray<string> =>
   match(param)
     .with({ type: AST_NODE_TYPES.Identifier }, (id) => [id.name])
     .with({ type: AST_NODE_TYPES.AssignmentPattern }, (a) => collectPatternNames(a.left))
@@ -52,9 +45,15 @@ const collectPatternNames = (param: TSESTree.Parameter | TSESTree.BindingName): 
       r.argument.type === AST_NODE_TYPES.Identifier ? [r.argument.name] : [],
     )
     .with({ type: AST_NODE_TYPES.ObjectPattern }, collectObjectPatternNames)
-    .with({ type: AST_NODE_TYPES.ArrayPattern }, collectArrayPatternNames)
-    .with(P._, () => [] as ReadonlyArray<string>)
+    .with({ type: AST_NODE_TYPES.ArrayPattern }, (arr) => collectArrayPatternNames(arr))
+    .with(P._, () => [] satisfies ReadonlyArray<string>)
     .exhaustive();
+
+const collectArrayPatternNames = flow(
+  (arr: TSESTree.ArrayPattern) => arr.elements,
+  RA.filterMap((el: TSESTree.ArrayPattern["elements"][number]) => O.fromNullable(el)),
+  RA.flatMap(collectPatternNames),
+);
 
 const isNonReferenceIdentifier = (id: TSESTree.Identifier) =>
   (id.parent.type === AST_NODE_TYPES.MemberExpression &&
@@ -91,10 +90,17 @@ const isIndependentCallback = (
   arg: TSESTree.CallExpressionArgument,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) =>
-  isEsTreeAnonymousFunctionNode(arg) &&
-  !O.exists((firstParam: TSESTree.Parameter) => isParamUsedInFn(firstParam, arg.body, visitorKeys))(
-    O.fromNullable(arg.params[0]),
-  );
+  match(arg)
+    .with(
+      { type: AST_NODE_TYPES.ArrowFunctionExpression },
+      { type: AST_NODE_TYPES.FunctionExpression },
+      (fn) =>
+        !O.exists((firstParam: TSESTree.Parameter) =>
+          isParamUsedInFn(firstParam, fn.body, visitorKeys),
+        )(O.fromNullable(fn.params[0])),
+    )
+    .with(P._, () => false)
+    .exhaustive();
 
 const checkIndependentCallbackArg = (
   arg: O.Option<TSESTree.CallExpressionArgument>,
@@ -102,10 +108,9 @@ const checkIndependentCallbackArg = (
   target: MemberTarget,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) =>
-  flow(
-    O.filter((cb: TSESTree.CallExpressionArgument) => isIndependentCallback(cb, visitorKeys)),
-    O.as({ messageId, ...target }),
-  )(arg);
+  O.as({ messageId, ...target })(
+    O.filter((cb: TSESTree.CallExpressionArgument) => isIndependentCallback(cb, visitorKeys))(arg),
+  );
 
 const classifyBindStep = (
   step: TSESTree.CallExpression,
@@ -128,12 +133,14 @@ const classifyBindStep = (
 const inspectCallStep = (
   call: TSESTree.CallExpression,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
-) =>
-  flow(
+) => {
+  const inspect = flow(
     resolveMemberCallTarget,
     O.flatMap((target) => classifyBindStep(call, target, visitorKeys)),
     O.map((finding) => ({ call, finding })),
-  )(call);
+  );
+  return inspect(call);
+};
 
 const isCallExpressionArg = (
   arg: TSESTree.CallExpressionArgument,
@@ -144,13 +151,14 @@ const checkStepArg = (
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
   report: (node: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
 ) => {
-  flow(
+  const check = flow(
     O.fromPredicate(isCallExpressionArg),
     O.flatMap((call) => inspectCallStep(call, visitorKeys)),
     O.map(({ call, finding }) => {
       report(call, finding.messageId, { namespace: finding.namespace, method: finding.method });
     }),
-  )(arg);
+  );
+  check(arg);
 };
 
 const resolvePipelineSteps = (node: TSESTree.CallExpression) =>
@@ -178,16 +186,13 @@ export const preferApplicativeOverIndependentBind = createRule<[], MessageIds>({
   },
   create: (context) => ({
     CallExpression: (node) => {
-      flow(
-        resolvePipelineSteps,
-        O.map(
-          RA.map((step) => {
-            checkStepArg(step, context.sourceCode.visitorKeys, (n, messageId, data) => {
-              context.report({ node: n, messageId, data });
-            });
-          }),
-        ),
-      )(node);
+      O.map(
+        RA.map((step: TSESTree.CallExpressionArgument) => {
+          checkStepArg(step, context.sourceCode.visitorKeys, (n, messageId, data) => {
+            context.report({ node: n, messageId, data });
+          });
+        }),
+      )(resolvePipelineSteps(node));
     },
   }),
 });

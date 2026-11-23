@@ -22,19 +22,20 @@ const isLocalHelperFunction = (declarator: TSESTree.VariableDeclarator) =>
     isFlowCallExpression(declarator.init));
 
 const hasSingleReadRef = (v: TSESLint.Scope.Variable) =>
-  flow(
-    RA.filter((ref: TSESLint.Scope.Reference) => ref.isRead()),
-    RA.size,
-  )(v.references) === 1;
+  RA.size(RA.filter((ref: TSESLint.Scope.Reference) => ref.isRead())(v.references)) === 1;
 
 const hasSingleRead = (
   declarator: TSESTree.VariableDeclarator,
   sourceCode: Readonly<TSESLint.SourceCode>,
-) =>
-  flow(
+) => {
+  const find = flow(
+    (d: TSESTree.VariableDeclarator) => sourceCode.getDeclaredVariables(d)[0],
+    O.fromNullable,
     O.filter(hasSingleReadRef),
-    O.map((v: TSESLint.Scope.Variable) => ({ declarator, name: v.name })),
-  )(O.fromNullable(sourceCode.getDeclaredVariables(declarator)[0]));
+    O.map((v) => ({ declarator, name: v.name })),
+  );
+  return find(declarator);
+};
 
 const isSingleUseDeclarator = (
   declarator: TSESTree.VariableDeclarator,
@@ -55,12 +56,13 @@ const reportSingleUseDeclarators = (
   sourceCode: Readonly<TSESLint.SourceCode>,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
-  flow(
+  const run = flow(
     RA.filterMap((d: TSESTree.VariableDeclarator) => isSingleUseDeclarator(d, sourceCode)),
     RA.map(({ declarator, name }) => {
       report({ node: declarator, messageId: "unnecessaryLocalConst", data: { name } });
     }),
-  )(node.declarations);
+  );
+  run(node.declarations);
 };
 
 export const noUnnecessaryLocalConst = createRule<[], MessageIds>({

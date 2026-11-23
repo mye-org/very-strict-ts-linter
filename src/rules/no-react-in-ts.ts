@@ -1,7 +1,6 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { createRule } from "../lib/rule-factory.js";
 
@@ -50,12 +49,9 @@ const checkDynamicImport = (
   bannedSources: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    O.fromPredicate(isStringLiteral),
-    O.map((s) => {
-      reportIfBanned(s, s.value, bannedSources, report);
-    }),
-  )(node.source);
+  O.map((s: TSESTree.StringLiteral) => {
+    reportIfBanned(s, s.value, bannedSources, report);
+  })(O.fromPredicate(isStringLiteral)(node.source));
 };
 
 const checkExportNamed = (

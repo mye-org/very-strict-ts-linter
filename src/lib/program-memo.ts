@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import * as S from "fp-ts/lib/string.js";
 import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
@@ -18,24 +19,24 @@ const fallbackKeyedCache = new WeakMap<object, StoredEntry<Readonly<Record<strin
 const stripLeadingShebang = (text: string) => text.replace(LEADING_SHEBANG_RE, "");
 const hashSha256 = (content: string) => crypto.hash("sha256", content);
 const joinLines = (lines: ReadonlyArray<string>) => lines.join("\n");
+const digestSourceText = flow(stripLeadingShebang, hashSha256);
 
 const computeSourceFileDigest = (sf: ts.SourceFile) => {
-  const digest = flow(stripLeadingShebang, hashSha256)(sf.text);
+  const digest = digestSourceText(sf.text);
   sourceFileDigestCache.set(sf, digest);
   return digest;
 };
 
 const resolveSourceFileDigest = (sf: ts.SourceFile) =>
-  flow(
-    (file: ts.SourceFile) => sourceFileDigestCache.get(file),
-    O.fromNullable,
-    O.getOrElse(() => computeSourceFileDigest(sf)),
-  )(sf);
+  sourceFileDigestCache.get(sf) ?? computeSourceFileDigest(sf);
 
-const formatStampForPath = (filePath: string) => (digest: string) => `${filePath}:${digest}`;
+const extractStampPair = (sf: ts.SourceFile) =>
+  [normalizeFilePath(sf.fileName), resolveSourceFileDigest(sf)] as const;
 
-const formatSourceFileStamp = (sf: ts.SourceFile) =>
-  flow(resolveSourceFileDigest, formatStampForPath(normalizeFilePath(sf.fileName)))(sf);
+const formatStampPair = ([filePath, digest]: readonly [string, string]) =>
+  `${filePath}:${digest}`;
+
+const formatSourceFileStamp = flow(extractStampPair, formatStampPair);
 
 const collectSortedStamps = flow(
   collectProjectSourceFiles,
@@ -44,29 +45,28 @@ const collectSortedStamps = flow(
   joinLines,
 );
 
+const hashProgramStamps = flow(collectSortedStamps, hashSha256);
+
 const computeProgramFingerprint = (program: ts.Program) => {
-  const fp = flow(collectSortedStamps, hashSha256)(program);
+  const fp = hashProgramStamps(program);
   programFingerprintCache.set(program, fp);
   return fp;
 };
 
 const resolveProgramFingerprint = (program: ts.Program) =>
-  flow(
-    (p: ts.Program) => programFingerprintCache.get(p),
-    O.fromNullable,
-    O.getOrElse(() => computeProgramFingerprint(program)),
-  )(program);
+  programFingerprintCache.get(program) ?? computeProgramFingerprint(program);
+
+const matchEntryFingerprint = <V>(fp: string) =>
+  O.flatMap(([storedFp, val]: StoredEntry<V>) => (storedFp === fp ? O.some(val) : O.none));
+
+const lookupCachedEntry = <V>(cache: WeakMap<object, StoredEntry<V>>, keyObj: object) =>
+  O.fromNullable(cache.get(keyObj));
 
 const matchFallbackByFingerprint = <V>(
   cache: WeakMap<object, StoredEntry<V>>,
   keyObj: object,
   fp: string,
-) =>
-  flow(
-    (k: object) => cache.get(k),
-    O.fromNullable,
-    O.flatMap(([storedFp, val]) => (storedFp === fp ? O.some(val) : O.none)),
-  )(keyObj);
+) => matchEntryFingerprint<V>(fp)(lookupCachedEntry(cache, keyObj));
 
 const storeSingleValue = <A>(
   program: ts.Program,
@@ -75,6 +75,7 @@ const storeSingleValue = <A>(
   value: A,
 ) => {
   cache.set(program, value);
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value erasure without unknown
   fallbackSingleCache.set(cache, [fingerprint, value as never]);
   return value;
 };
@@ -87,6 +88,7 @@ const lookupSingleByFingerprint = <A>(
   const fp = resolveProgramFingerprint(program);
   return O.match(
     () => storeSingleValue(program, fp, cache, compute(program)),
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value recovery without unknown
     (cached: never) => storeSingleValue(program, fp, cache, cached as A),
   )(matchFallbackByFingerprint(fallbackSingleCache, cache, fp));
 };
@@ -95,12 +97,7 @@ export const memoizeByProgram = <A>(
   program: ts.Program,
   cache: WeakMap<ts.Program, A>,
   compute: (p: ts.Program) => A,
-) =>
-  flow(
-    (p: ts.Program) => cache.get(p),
-    O.fromNullable,
-    O.getOrElse(() => lookupSingleByFingerprint(program, cache, compute)),
-  )(program);
+): A => cache.get(program) ?? lookupSingleByFingerprint(program, cache, compute);
 
 const computeAndStoreKeyed = <A>(
   program: ts.Program,
@@ -114,6 +111,7 @@ const computeAndStoreKeyed = <A>(
   cache.set(program, nextEntries);
   fallbackKeyedCache.set(cache, [
     resolveProgramFingerprint(program),
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value erasure without unknown
     nextEntries as Readonly<Record<string, never>>,
   ]);
   return value;
@@ -128,18 +126,24 @@ const attachHydratedEntries = <A>(
   return entries;
 };
 
-const emptyKeyedRecord = <A>() => ({}) as Readonly<Record<string, A>>;
+const emptyKeyedRecord = <A>() => ({}) satisfies Readonly<Record<string, A>>;
 
-const hydrateKeyedFromFingerprint = <A>(
+const hydrateKeyedEntries = <A>(
   program: ts.Program,
   cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
 ) =>
   flow(
     resolveProgramFingerprint,
     (fp) => matchFallbackByFingerprint(fallbackKeyedCache, cache, fp),
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value recovery without unknown
     O.map((entries) => attachHydratedEntries(program, cache, entries as Readonly<Record<string, A>>)),
     O.getOrElse(emptyKeyedRecord<A>),
-  )(program);
+  );
+
+const hydrateKeyedFromFingerprint = <A>(
+  program: ts.Program,
+  cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
+) => hydrateKeyedEntries(program, cache)(program);
 
 const lookupOrStoreKeyed = <A>(
   program: ts.Program,
@@ -148,18 +152,16 @@ const lookupOrStoreKeyed = <A>(
   existing: Readonly<Record<string, A>>,
   compute: (p: ts.Program) => A,
 ) =>
-  flow(
-    (rec: Readonly<Record<string, A>>) => rec[key],
-    O.fromNullable,
-    O.getOrElse(() => computeAndStoreKeyed(program, key, cache, existing, compute)),
-  )(existing);
+  O.getOrElse(() => computeAndStoreKeyed(program, key, cache, existing, compute))(
+    RR.lookup(key)(existing),
+  );
 
 export const memoizeByProgramAndKey = <A>(
   program: ts.Program,
   key: string,
   cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
   compute: (p: ts.Program) => A,
-) =>
+): A =>
   lookupOrStoreKeyed(
     program,
     key,

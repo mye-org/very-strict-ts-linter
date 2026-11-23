@@ -2,7 +2,6 @@ import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { createRule } from "../lib/rule-factory.js";
 import { shouldLintDomainFile } from "../lib/source-paths.js";
@@ -80,10 +79,9 @@ const isForbiddenImportSource = (
 const isImpureConsoleCall = (objName: string) => objName === "console";
 
 const hasImpureMemberMethod = (objName: string, propName: string) =>
-  flow(
-    (name: string) => RR.lookup(name, IMPURE_MEMBER_METHODS),
-    O.exists((methods) => methods.has(propName)),
-  )(objName);
+  O.exists((methods: ReadonlySet<string>) => methods.has(propName))(
+    RR.lookup(objName, IMPURE_MEMBER_METHODS),
+  );
 
 const isImpureMemberCall = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.MemberExpression &&

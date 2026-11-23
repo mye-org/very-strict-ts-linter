@@ -23,14 +23,15 @@ const CASE_METHOD_NAMES: ReadonlySet<string> = new Set(["toLowerCase", "toUpperC
 
 const regexCountCache = new WeakMap<ts.Program, ReadonlyArray<Readonly<Record<"text" | "file", string>>>>();
 
-const toRegexEntry = (file: string) => (node: ts.Node) =>
-  ts.isRegularExpressionLiteral(node) ? O.some({ text: node.text, file }) : O.none;
+const toRegexEntry = (node: ts.Node) =>
+  ts.isRegularExpressionLiteral(node)
+    ? O.some({ text: node.text, file: node.getSourceFile().fileName })
+    : O.none;
 
-const collectFileRegexes = (sf: ts.SourceFile) =>
-  flow(
-    (file: ts.SourceFile) => collectTsNodes(file, file),
-    RA.filterMap(toRegexEntry(sf.fileName)),
-  )(sf);
+const collectFileRegexes = flow(
+  (sf: ts.SourceFile) => collectTsNodes(sf, sf),
+  RA.filterMap(toRegexEntry),
+);
 
 const resolveProgramRegexes = (program: ts.Program) =>
   memoizeByProgram(
@@ -39,20 +40,24 @@ const resolveProgramRegexes = (program: ts.Program) =>
     flow(collectProjectSourceFiles, RA.flatMap(collectFileRegexes)),
   );
 
-const isDuplicatedNonVoRegex = (
+const countUniqueFiles = flow(RA.uniq(S.Eq), RA.size);
+
+const collectMatchingRegexFiles = (
   pattern: string,
   program: ts.Program,
   voPatterns: ReadonlyArray<string>,
 ) =>
-  flow(
-    RA.filterMap((entry: Readonly<Record<"text" | "file", string>>) =>
-      entry.text === pattern && !isMatchingAnyPattern(entry.file, voPatterns)
-        ? O.some(entry.file)
-        : O.none,
-    ),
-    RA.uniq(S.Eq),
-    RA.size,
-  )(resolveProgramRegexes(program)) >= 2;
+  RA.filterMap((entry: Readonly<Record<"text" | "file", string>>) =>
+    entry.text === pattern && !isMatchingAnyPattern(entry.file, voPatterns)
+      ? O.some(entry.file)
+      : O.none,
+  )(resolveProgramRegexes(program));
+
+const isDuplicatedNonVoRegex = (
+  pattern: string,
+  program: ts.Program,
+  voPatterns: ReadonlyArray<string>,
+) => countUniqueFiles(collectMatchingRegexFiles(pattern, program, voPatterns)) >= 2;
 
 const isFunctionLikeAstNode = (p: TSESTree.Node) =>
   p.type === AST_NODE_TYPES.FunctionDeclaration ||
@@ -60,12 +65,12 @@ const isFunctionLikeAstNode = (p: TSESTree.Node) =>
   p.type === AST_NODE_TYPES.ArrowFunctionExpression ||
   p.type === AST_NODE_TYPES.MethodDefinition;
 
+const isFunctionLikeOrAncestor = (p: TSESTree.Node) =>
+  isFunctionLikeAstNode(p) || isInsideFunctionLike(p);
+
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
 const isInsideFunctionLike = (node: TSESTree.Node): boolean =>
-  flow(
-    (n: TSESTree.Node) => O.fromNullable(n.parent),
-    O.exists((p) => isFunctionLikeAstNode(p) || isInsideFunctionLike(p)),
-  )(node);
+  node.parent ? isFunctionLikeOrAncestor(node.parent) : false;
 
 const isConstructorMethod = (fn: TSESTree.Node) =>
   (fn.type === AST_NODE_TYPES.MethodDefinition && fn.kind === "constructor") ||
@@ -78,16 +83,22 @@ const isBrandedOrContainsBranded = (retType: ts.Type, checker: ts.TypeChecker) =
 const isBrandedSignature = (sig: ts.Signature, checker: ts.TypeChecker) =>
   isBrandedOrContainsBranded(checker.getReturnTypeOfSignature(sig), checker);
 
+const lookupSignature = (checker: ts.TypeChecker) =>
+  flow(
+    (sigDecl: ts.SignatureDeclaration) => checker.getSignatureFromDeclaration(sigDecl),
+    O.fromNullable,
+  );
+
+const resolveFunctionLikeTsNode = (
+  fn: TSESTree.Node,
+  services: ParserServicesWithTypeInformation,
+) => O.fromPredicate(ts.isFunctionLike)(services.esTreeNodeToTSNodeMap.get(fn));
+
 const resolveFunctionSignature = (
   fn: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  O.fromNullable(
-    checker.getSignatureFromDeclaration(
-      services.esTreeNodeToTSNodeMap.get(fn) as ts.SignatureDeclaration,
-    ),
-  );
+) => O.flatMap(lookupSignature(checker))(resolveFunctionLikeTsNode(fn, services));
 
 const hasBrandedReturnType = (
   fn: TSESTree.Node,
@@ -150,15 +161,18 @@ const resolveArgPrimitiveKind = (services: ParserServicesWithTypeInformation) =>
 
 const isValidationFnName = (name: string) => VALIDATION_FN_RE.test(name);
 
+const resolveFirstArgKind = (
+  node: TSESTree.CallExpression,
+  services: ParserServicesWithTypeInformation,
+) => O.flatMap(resolveArgPrimitiveKind(services))(O.fromNullable(node.arguments[0]));
+
 const isValidationHelperCall = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
 ) =>
   node.callee.type === AST_NODE_TYPES.Identifier &&
   isValidationFnName(node.callee.name) &&
-  flow(O.flatMap(resolveArgPrimitiveKind(services)), O.isSome)(
-    O.fromNullable(node.arguments[0]),
-  );
+  O.isSome(resolveFirstArgKind(node, services));
 
 const isRegexLiteral = (node: TSESTree.Literal) => "regex" in node && Boolean(node.regex);
 

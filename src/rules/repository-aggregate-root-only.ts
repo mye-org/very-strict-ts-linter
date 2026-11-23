@@ -23,11 +23,17 @@ type AggregateGraph = ReturnType<typeof analyzeAggregateGraph>;
 const hasRepoSuffix = (name: string) =>
   name.endsWith("Repository") || name.endsWith("Repo");
 
-const resolvePropCallSigs = (prop: ts.Symbol, checker: ts.TypeChecker) =>
-  flow(
+const extractSymbolDeclaration = (sym: ts.Symbol) =>
+  O.fromNullable(sym.valueDeclaration ?? sym.declarations?.[0]);
+
+const resolvePropCallSigs = (prop: ts.Symbol, checker: ts.TypeChecker) => {
+  const resolve = flow(
+    extractSymbolDeclaration,
     O.map((d: ts.Declaration) => checker.getTypeOfSymbolAtLocation(prop, d).getCallSignatures()),
-    O.getOrElse(() => [] as ReadonlyArray<ts.Signature>),
-  )(O.fromNullable(prop.valueDeclaration ?? prop.declarations?.[0]));
+    O.getOrElse<ReadonlyArray<ts.Signature>>(() => []),
+  );
+  return resolve(prop);
+};
 
 const resolveDeclTypes = (param: ts.Symbol, checker: ts.TypeChecker) =>
   flow(
@@ -35,15 +41,14 @@ const resolveDeclTypes = (param: ts.Symbol, checker: ts.TypeChecker) =>
     (t) => unwrapContainerTsTypes(t, checker),
   );
 
-const extractSymbolDeclaration = (sym: ts.Symbol) =>
-  O.fromNullable(sym.valueDeclaration ?? sym.declarations?.[0]);
-
-const resolveSingleParamTypes = (checker: ts.TypeChecker) => (p: ts.Symbol) =>
-  flow(
+const resolveSingleParamTypes = (checker: ts.TypeChecker) => (p: ts.Symbol) => {
+  const resolve = flow(
     extractSymbolDeclaration,
     O.map(resolveDeclTypes(p, checker)),
-    O.getOrElse(() => [] as ReadonlyArray<ts.Type>),
-  )(p);
+    O.getOrElse<ReadonlyArray<ts.Type>>(() => []),
+  );
+  return resolve(p);
+};
 
 const extractParamTypesFromSig = (sig: ts.Signature, checker: ts.TypeChecker) =>
   RA.flatMap(resolveSingleParamTypes(checker))(sig.getParameters());
@@ -53,7 +58,8 @@ const extractEntityNamesFromDecl = (
   services: ParserServicesWithTypeInformation,
 ) => {
   const checker = services.program.getTypeChecker();
-  return flow(
+  const extract = flow(
+    (n: TSESTree.Node) => services.esTreeNodeToTSNodeMap.get(n),
     (tsNode: ts.Node) => checker.getTypeAtLocation(tsNode).getProperties(),
     RA.flatMap((prop) => resolvePropCallSigs(prop, checker)),
     RA.flatMap((sig) => [
@@ -62,7 +68,8 @@ const extractEntityNamesFromDecl = (
     ]),
     RA.filterMap(resolveTsTypeName),
     RA.uniq(S.Eq),
-  )(services.esTreeNodeToTSNodeMap.get(node));
+  );
+  return extract(node);
 };
 
 const resolveManagedEntities = (
@@ -70,12 +77,14 @@ const resolveManagedEntities = (
   repoName: string,
   graph: AggregateGraph,
   services: ParserServicesWithTypeInformation,
-) =>
-  flow(
+) => {
+  const resolve = flow(
     RA.findFirst((r: AggregateGraph["repos"][number]) => r.repoName === repoName),
     O.map((r) => r.entityTypes),
     O.getOrElse(() => extractEntityNamesFromDecl(reportNode, services)),
-  )(graph.repos);
+  );
+  return resolve(graph.repos);
+};
 
 const joinParentNames = (parents: ReadonlyArray<string>) => parents.join(", ");
 
@@ -94,12 +103,14 @@ const findNonAggregateTarget = (
   managedEntities: ReadonlyArray<string>,
   options: Options[0],
   graph: AggregateGraph,
-) =>
-  flow(
+) => {
+  const find = flow(
     excludeExplicitAggregates(new Set(options.aggregateRoots)),
     RA.filterMap(resolveChildOwnership(new Set(options.childEntities), graph)),
     RA.head,
-  )(managedEntities);
+  );
+  return find(managedEntities);
+};
 
 const checkRepoDeclaration = (
   reportNode: TSESTree.Node,
@@ -112,13 +123,14 @@ const checkRepoDeclaration = (
   match(hasRepoSuffix(repoName))
     .with(false, () => {})
     .with(true, () => {
-      flow(
+      const check = flow(
         (n: TSESTree.Node) => resolveManagedEntities(n, repoName, graph, services),
         (entities) => findNonAggregateTarget(entities, options, graph),
         O.map(({ entity, parent }) => {
           report({ node: reportNode, messageId: "nonAggregateRepository", data: { repo: repoName, entity, parent } });
         }),
-      )(reportNode);
+      );
+      check(reportNode);
     })
     .exhaustive();
 };
@@ -147,10 +159,11 @@ const makeRepoNodeChecker =
     report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
   ) =>
   (node: TSESTree.Node, name: O.Option<string>) => {
-    flow(
+    const check = flow(
       O.filter(hasRepoSuffix),
-      O.map((n) => { inspectNamedRepo(node, n, options, services, report); }),
-    )(name);
+      O.map((n: string) => { inspectNamedRepo(node, n, options, services, report); }),
+    );
+    check(name);
   };
 
 const buildRepoListeners = (

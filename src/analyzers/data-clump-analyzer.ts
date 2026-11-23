@@ -182,11 +182,10 @@ const extractNodeBag = (node: ts.Node, sf: ts.SourceFile) =>
 
 const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
 
-const extractFileBags = (sf: ts.SourceFile) =>
-  flow(
-    collectFileNodes,
-    RA.filterMap((node) => extractNodeBag(node, sf)),
-  )(sf);
+const extractFileBags = flow(
+  (sf: ts.SourceFile) => ({ sf, nodes: collectFileNodes(sf) }),
+  ({ sf, nodes }) => RA.filterMap((node: ts.Node) => extractNodeBag(node, sf))(nodes),
+);
 
 const collectAllProgramBags = flow(collectProjectSourceFiles, RA.flatMap(extractFileBags));
 
@@ -204,7 +203,7 @@ const combinePrefixed = (head: string, items: ReadonlyArray<string>, size: numbe
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive combinations
 const combineWithHead = ({ items, size }: CombineInput): ReadonlyArray<ReadonlyArray<string>> =>
   O.match(
-    () => [] as ReadonlyArray<ReadonlyArray<string>>,
+    () => [] satisfies ReadonlyArray<ReadonlyArray<string>>,
     (head: string) => [
       ...combinePrefixed(head, items, size),
       ...combinations({ items: tailItems(items), size }),
@@ -230,15 +229,17 @@ const countRangeSteps = (length: number, { minSize, maxSize }: SizeRange) =>
 const makeBagSizeRange = (length: number, range: SizeRange) =>
   RA.makeBy(countRangeSteps(length, range), (i) => i + range.minSize);
 
+const expandSubsetsForLocation = (bounded: ReadonlyArray<string>, location: TsLocation) =>
+  flow(
+    RA.flatMap(combinationsFor(bounded)),
+    RA.map((fields: ReadonlyArray<string>) => ({ key: joinComma(fields), fields, location })),
+  );
+
 const expandBoundedSubsets = (
   bounded: ReadonlyArray<string>,
   location: TsLocation,
   range: SizeRange,
-) =>
-  flow(
-    RA.flatMap(combinationsFor(bounded)),
-    RA.map((fields) => ({ key: joinComma(fields), fields, location })),
-  )(makeBagSizeRange(bounded.length, range));
+) => expandSubsetsForLocation(bounded, location)(makeBagSizeRange(bounded.length, range));
 
 const capFieldList = (fields: ReadonlyArray<string>) => fields.slice(0, 12);
 
@@ -302,14 +303,14 @@ const resolveMaxClumpSize = (minSize: number) => Math.max(3, minSize);
 const collectBagSubsetsForMinSize = (bag: FieldBag, minSize: number) =>
   collectBagSubsets(bag, minSize, resolveMaxClumpSize(minSize));
 
-const collectRawFindings = (program: ts.Program, thresholds: ClumpThresholds) =>
+const collectRawFindingsForThresholds = (thresholds: ClumpThresholds) =>
   flow(
     collectProgramFieldBags,
-    RA.flatMap((bag) => collectBagSubsetsForMinSize(bag, thresholds.minSize)),
+    RA.flatMap((bag: FieldBag) => collectBagSubsetsForMinSize(bag, thresholds.minSize)),
     groupSubsetsByKey,
     RR.toEntries,
     RA.filterMap((entry) => toClumpFinding(entry, thresholds.minOccurrences)),
-  )(program);
+  );
 
 const filterSubsumed = (rawFindings: ReadonlyArray<ClumpFinding>) =>
   RA.filter((f: ClumpFinding) => !isSubsumedByLargerFinding(f, rawFindings))(rawFindings);
@@ -332,12 +333,8 @@ const buildClumpIndex = (findings: ReadonlyArray<ClumpFinding>) => ({
   byLocation: indexFindingsByLocation(findings),
 });
 
-const computeClumpIndex = (program: ts.Program, thresholds: ClumpThresholds) =>
-  flow(
-    (p: ts.Program) => collectRawFindings(p, thresholds),
-    filterSubsumed,
-    buildClumpIndex,
-  )(program);
+const computeClumpIndexForThresholds = (thresholds: ClumpThresholds) =>
+  flow(collectRawFindingsForThresholds(thresholds), filterSubsumed, buildClumpIndex);
 
 const makeClumpCacheKey = (thresholds: ClumpThresholds) =>
   `${String(thresholds.minSize)}:${String(thresholds.minOccurrences)}`;
@@ -346,12 +343,12 @@ export const analyzeDataClumps = (
   program: ts.Program,
   minSize = 2,
   minOccurrences = 3,
-) => {
+): ClumpIndex => {
   const thresholds = { minSize, minOccurrences };
   return memoizeByProgramAndKey(
     program,
     makeClumpCacheKey(thresholds),
     clumpIndexCache,
-    (p) => computeClumpIndex(p, thresholds),
+    computeClumpIndexForThresholds(thresholds),
   );
 };

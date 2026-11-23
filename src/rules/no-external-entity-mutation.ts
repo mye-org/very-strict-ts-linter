@@ -26,12 +26,15 @@ type TargetAssignment = Readonly<{
   readonly member: TSESTree.MemberExpression;
 }>;
 
+const NONE_IDENTIFIER: O.Option<TSESTree.Identifier> = O.none;
+const EMPTY_MEMBER_EXPRS: ReadonlyArray<TSESTree.MemberExpression> = [];
+
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive root unwrap
 const resolveRootTarget = (node: TSESTree.Expression): O.Option<TSESTree.Identifier> =>
   match(node)
     .with({ type: AST_NODE_TYPES.Identifier }, O.some)
     .with({ type: AST_NODE_TYPES.MemberExpression }, (m) => resolveRootTarget(m.object))
-    .with(P._, () => O.none as O.Option<TSESTree.Identifier>)
+    .with(P._, () => NONE_IDENTIFIER)
     .exhaustive();
 
 const isProjectSourcePath = (norm: string) =>
@@ -44,10 +47,9 @@ const isExternalProjectFile = (declFile: string, currentFile: string) => {
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive intersection check
 const isExternalProjectTsType = (type: ts.Type, currentFile: string): boolean =>
-  flow(
-    resolveTsTypeDeclarationFile,
-    O.exists((declFile) => isExternalProjectFile(declFile, currentFile)),
-  )(type) ||
+  O.exists((declFile: string) => isExternalProjectFile(declFile, currentFile))(
+    resolveTsTypeDeclarationFile(type),
+  ) ||
   (type.isIntersection() &&
     RA.some((member: ts.Type) => isExternalProjectTsType(member, currentFile))(type.types));
 
@@ -55,10 +57,7 @@ const resolveExpressionTsType = (
   target: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
 ) =>
-  flow(
-    (expr: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(expr),
-    (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
-  )(target);
+  services.program.getTypeChecker().getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(target));
 
 const isExternalProjectEntityType = (
   target: TSESTree.Expression,
@@ -69,7 +68,7 @@ const isExternalProjectEntityType = (
 const extractMemberUpdate = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.UpdateExpression && node.argument.type === AST_NODE_TYPES.MemberExpression
     ? [node.argument]
-    : ([] as ReadonlyArray<TSESTree.MemberExpression>);
+    : EMPTY_MEMBER_EXPRS;
 
 const extractDirectMemberAssignment = (node: TSESTree.Node) =>
   isMemberAssignment(node) ? [node.left] : extractMemberUpdate(node);
@@ -89,10 +88,12 @@ const collectAssignmentsInBlock = (
       ];
 
 const toTargetAssignment = (m: TSESTree.MemberExpression) =>
-  flow(
-    resolveRootTarget,
-    O.map((id) => ({ targetName: id.name, targetNode: id, member: m })),
-  )(m.object);
+  match(resolveRootTarget(m.object))
+    .with({ _tag: "Some" }, ({ value }) =>
+      O.some({ targetName: value.name, targetNode: value, member: m }),
+    )
+    .with({ _tag: "None" }, () => O.none)
+    .exhaustive();
 
 const groupMutationsByTarget = flow(
   RA.filterMap(toTargetAssignment),
@@ -102,10 +103,24 @@ const groupMutationsByTarget = flow(
   })),
 );
 
+const groupMutationEntries = flow(groupMutationsByTarget, R.toEntries);
+
 const formatExternalMutationPayload = (target: string, count: number) => ({
   target,
   count: String(count),
 });
+
+const filterExternalTarget = (
+  items: ReadonlyArray<TargetAssignment>,
+  minMutations: number,
+  currentFile: string,
+  services: ParserServicesWithTypeInformation,
+) =>
+  O.filter(
+    (first: TargetAssignment) =>
+      items.length >= minMutations &&
+      isExternalProjectEntityType(first.targetNode, currentFile, services),
+  )(RA.head<TargetAssignment>(items));
 
 const reportTargetMutations = (
   targetName: string,
@@ -115,13 +130,13 @@ const reportTargetMutations = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    RA.head<TargetAssignment>,
-    O.filter((first) => items.length >= minMutations && isExternalProjectEntityType(first.targetNode, currentFile, services)),
-    O.map((first) => {
-      report({ node: first.member, messageId: "externalMutation", data: formatExternalMutationPayload(targetName, items.length) });
-    }),
-  )(items);
+  O.map((first: TargetAssignment) => {
+    report({
+      node: first.member,
+      messageId: "externalMutation",
+      data: formatExternalMutationPayload(targetName, items.length),
+    });
+  })(filterExternalTarget(items, minMutations, currentFile, services));
 };
 
 const collectBodyAssignments = (
@@ -130,24 +145,24 @@ const collectBodyAssignments = (
 ) =>
   body.type === AST_NODE_TYPES.BlockStatement
     ? RA.flatMap((s: TSESTree.Statement) => collectAssignmentsInBlock(s, visitorKeys))(body.body)
-    : ([] as ReadonlyArray<TSESTree.MemberExpression>);
+    : EMPTY_MEMBER_EXPRS;
+
+const collectBodyMutationEntries = (
+  body: FunctionBodyNode["body"],
+  visitorKeys: TSESLint.SourceCode["visitorKeys"],
+) => groupMutationEntries(collectBodyAssignments(body, visitorKeys));
 
 const checkFunctionMutations = (
   fn: FunctionBodyNode,
-  minMutations: number,
+  options: Options[0],
   currentFile: string,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    (body: FunctionBodyNode["body"]) => collectBodyAssignments(body, visitorKeys),
-    groupMutationsByTarget,
-    R.toEntries,
-    RA.map(([targetName, items]) => {
-      reportTargetMutations(targetName, items, minMutations, currentFile, services, report);
-    }),
-  )(fn.body);
+  RA.map(([targetName, items]: readonly [string, ReadonlyArray<TargetAssignment>]) => {
+    reportTargetMutations(targetName, items, options.minMutations, currentFile, services, report);
+  })(collectBodyMutationEntries(fn.body, visitorKeys));
 };
 
 const isExternalSetterMember = (
@@ -164,18 +179,24 @@ const isExternalSetterMember = (
 const extractSetterMethodName = (member: TSESTree.MemberExpression) =>
   member.property.type === AST_NODE_TYPES.Identifier ? O.some(member.property.name) : O.none;
 
+const extractMemberCallee = O.fromPredicate(
+  (c: TSESTree.Expression): c is TSESTree.MemberExpression => c.type === AST_NODE_TYPES.MemberExpression,
+);
+
 const checkSetterCall = (
   node: TSESTree.CallExpression,
   currentFile: string,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    O.fromPredicate((c: TSESTree.Expression): c is TSESTree.MemberExpression => c.type === AST_NODE_TYPES.MemberExpression),
-    O.filter((m) => isExternalSetterMember(m, currentFile, services)),
+  const resolveSetterName = flow(
+    extractMemberCallee,
+    O.filter((m: TSESTree.MemberExpression) => isExternalSetterMember(m, currentFile, services)),
     O.flatMap(extractSetterMethodName),
-    O.map((method) => { report({ node, messageId: "setterAbuse", data: { method } }); }),
-  )(node.callee);
+  );
+  O.map((method: string) => { report({ node, messageId: "setterAbuse", data: { method } }); })(
+    resolveSetterName(node.callee),
+  );
 };
 
 export const noExternalEntityMutation = createRule<Options, MessageIds>({
@@ -205,7 +226,7 @@ export const noExternalEntityMutation = createRule<Options, MessageIds>({
     const services = ESLintUtils.getParserServices(context);
     const report = (d: TSESLint.ReportDescriptor<MessageIds>) => { context.report(d); };
     const checkFn = (fn: FunctionBodyNode) => {
-      checkFunctionMutations(fn, options.minMutations, context.filename, context.sourceCode.visitorKeys, services, report);
+      checkFunctionMutations(fn, options, context.filename, context.sourceCode.visitorKeys, services, report);
     };
     return {
       FunctionDeclaration: checkFn,

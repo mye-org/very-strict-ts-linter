@@ -10,10 +10,12 @@ type MessageIds = "stringlyTypedDiscriminant";
 
 const WITH_METHOD_NAMES: ReadonlySet<string> = new Set(["with"]);
 
+const resolveTsLocationKey = flow(resolveTsNodeOwnLocation, makeLocationKey);
+
 const resolveNodeLocationKey = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
+) => resolveTsLocationKey(services.esTreeNodeToTSNodeMap.get(node));
 
 const formatDiscriminantFields = (cluster: DiscriminantCluster) => ({
   target: cluster.targetKey,
@@ -42,17 +44,20 @@ const isWithProperty = (member: TSESTree.MemberExpression) =>
 const isWithMemberCall = (c: TSESTree.CallExpression) =>
   c.callee.type === AST_NODE_TYPES.MemberExpression && isWithProperty(c.callee);
 
+const extractFirstArgOfWithCall = flow(
+  O.fromPredicate(isWithMemberCall),
+  O.flatMap((c) => O.fromNullable(c.arguments[0])),
+);
+
 const checkWithCall = (
   node: TSESTree.CallExpression,
   byLocation: Readonly<Record<string, DiscriminantCluster>>,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    O.fromPredicate(isWithMemberCall),
-    O.flatMap((c) => O.fromNullable(c.arguments[0])),
-    O.map((arg0) => { reportDiscriminant(arg0, byLocation, services, report); }),
-  )(node);
+  O.map((arg0: TSESTree.CallExpressionArgument) => {
+    reportDiscriminant(arg0, byLocation, services, report);
+  })(extractFirstArgOfWithCall(node));
 };
 
 export const noStringlyTypedDiscriminants = createRule<Options, MessageIds>({

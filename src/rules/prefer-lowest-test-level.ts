@@ -52,18 +52,13 @@ const resolveScopeOptions = (options: Options[0], testPatterns: ReadonlyArray<st
 
 const reportLowestLevelFindings = (
   fileName: string,
-  options: Options[0],
-  testPatterns: ReadonlyArray<string>,
+  scopeOptions: ReturnType<typeof resolveScopeOptions>,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   RA.map((finding: LowestLevelFinding) => {
     report(toFindingDescriptor(finding));
-  })(
-    analyzeTestScope(services.program, resolveScopeOptions(options, testPatterns)).lowestLevelByFile[
-      fileName
-    ] ?? [],
-  );
+  })(analyzeTestScope(services.program, scopeOptions).lowestLevelByFile[fileName] ?? []);
 };
 
 const resolveProgramFileName = (
@@ -73,17 +68,17 @@ const resolveProgramFileName = (
 
 const checkProgram = (
   programNode: TSESTree.Program,
-  options: Options[0],
-  testPatterns: ReadonlyArray<string>,
+  scopeOptions: ReturnType<typeof resolveScopeOptions>,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  flow(
-    O.fromPredicate((fileName: string) => isMatchingAnyPattern(fileName, testPatterns)),
+  const check = flow(
+    O.fromPredicate((fileName: string) => isMatchingAnyPattern(fileName, scopeOptions.testPatterns)),
     O.map((fileName) => {
-      reportLowestLevelFindings(fileName, options, testPatterns, services, report);
+      reportLowestLevelFindings(fileName, scopeOptions, services, report);
     }),
-  )(resolveProgramFileName(programNode, services));
+  );
+  check(resolveProgramFileName(programNode, services));
 };
 
 const buildLowestLevelListeners = (
@@ -94,8 +89,7 @@ const buildLowestLevelListeners = (
   Program: (programNode: TSESTree.Program) => {
     checkProgram(
       programNode,
-      options,
-      options.testPatterns ?? DEFAULT_TEST_PATTERNS,
+      resolveScopeOptions(options, options.testPatterns ?? DEFAULT_TEST_PATTERNS),
       services,
       report,
     );

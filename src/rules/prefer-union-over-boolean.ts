@@ -1,5 +1,6 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
@@ -72,25 +73,27 @@ const extractFunctionParams = (node: TSESTree.Node) =>
 const hasParamNode = (node: TSESTree.Node, params: ReadonlyArray<TSESTree.Parameter>) =>
   RA.some((p: TSESTree.Parameter) => p === node)(params);
 
+const extractParentParams = flow(
+  (n: TSESTree.Node) => O.fromNullable(n.parent),
+  O.flatMap(extractFunctionParams),
+);
+
 const isParameterHolder = (node: TSESTree.Node) =>
   node.parent?.type === AST_NODE_TYPES.AssignmentPattern
     ? node.parent.left === node && isFunctionLikeType(node.parent.parent)
-    : flow(
-        O.flatMap(extractFunctionParams),
-        O.exists((params) => hasParamNode(node, params)),
-      )(O.fromNullable(node.parent));
+    : O.exists((params: ReadonlyArray<TSESTree.Parameter>) => hasParamNode(node, params))(
+        extractParentParams(node),
+      );
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
-const isInsideParameterAnnotation = (node: TSESTree.Node): boolean =>
-  flow(
-    (n: TSESTree.Node) => n.parent,
-    O.fromNullable,
-    O.exists((parent) =>
-      parent.type === AST_NODE_TYPES.TSTypeAnnotation
-        ? isParameterHolder(parent.parent) || isInsideParameterAnnotation(parent)
-        : isInsideParameterAnnotation(parent),
-    ),
-  )(node);
+const isInsideParameterAnnotation: Pred.Predicate<TSESTree.Node> = flow(
+  (n: TSESTree.Node) => n.parent,
+  O.fromNullable,
+  O.exists((parent) =>
+    parent.type === AST_NODE_TYPES.TSTypeAnnotation
+      ? isParameterHolder(parent.parent) || isInsideParameterAnnotation(parent)
+      : isInsideParameterAnnotation(parent),
+  ),
+);
 
 const isPredicateRefName = (typeNode: TSESTree.TypeNode) =>
   typeNode.type === AST_NODE_TYPES.TSTypeReference &&
@@ -142,18 +145,20 @@ const resolveCalleeName = (callee: TSESTree.Expression) =>
     .with(P._, () => O.none)
     .exhaustive();
 
+const isFirstArgNode = (call: TSESTree.CallExpression, argNode: TSESTree.Node) =>
+  O.exists((first: TSESTree.Node) => first === argNode)(
+    RA.head<TSESTree.CallExpressionArgument>(call.arguments),
+  );
+
+const isPredicateMethodCallee = flow(
+  resolveCalleeName,
+  O.exists((name) => PREDICATE_METHOD_NAMES.has(name)),
+);
+
 const isKnownPredicateMethodCall = (
   call: TSESTree.CallExpression,
   argNode: TSESTree.Node,
-) =>
-  flow(
-    RA.head<TSESTree.CallExpressionArgument>,
-    O.exists((first) => (first as TSESTree.Node) === argNode),
-  )(call.arguments) &&
-  flow(
-    resolveCalleeName,
-    O.exists((name) => PREDICATE_METHOD_NAMES.has(name)),
-  )(call.callee);
+) => isFirstArgNode(call, argNode) && isPredicateMethodCallee(call.callee);
 
 const isPredicateContextualSig = (sig: ts.Signature, checker: ts.TypeChecker) =>
   checker.getTypePredicateOfSignature(sig) !== undefined ||
@@ -188,15 +193,17 @@ const isCallPredicateArg = (
   argNode: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  flow(
-    RA.findIndex((arg: TSESTree.CallExpressionArgument) => (arg as TSESTree.Node) === argNode),
+) => {
+  const check = flow(
+    RA.findIndex((arg: TSESTree.Node) => arg === argNode),
     O.exists(
       (argIndex) =>
         isKnownPredicateMethodCall(call, argNode) ||
         hasCalleePredicateParam(call, argIndex, services, checker),
     ),
-  )(call.arguments);
+  );
+  return check(call.arguments);
+};
 
 const isMatchBranchCallee = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.MemberExpression &&
@@ -204,25 +211,22 @@ const isMatchBranchCallee = (callee: TSESTree.Expression) =>
   MATCH_BRANCH_METHODS.has(callee.property.name);
 
 const isLastCallArg = (call: TSESTree.CallExpression, node: TSESTree.Node) =>
-  flow(
-    RA.last<TSESTree.CallExpressionArgument>,
-    O.exists((last) => (last as TSESTree.Node) === node),
-  )(call.arguments);
+  O.exists((last: TSESTree.Node) => last === node)(
+    RA.last<TSESTree.CallExpressionArgument>(call.arguments),
+  );
 
 const isMatchBranchCall = (node: FunctionNode) =>
   node.parent.type === AST_NODE_TYPES.CallExpression &&
   isMatchBranchCallee(node.parent.callee) &&
   isLastCallArg(node.parent, node);
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
-const resolveEnclosingFunctionNode = (node: TSESTree.Node): O.Option<FunctionNode> =>
-  flow(
-    (n: TSESTree.Node) => n.parent,
-    O.fromNullable,
-    O.flatMap((parent) =>
-      isEsTreeFunctionNode(parent) ? O.some(parent) : resolveEnclosingFunctionNode(parent),
-    ),
-  )(node);
+const resolveEnclosingFunctionNode: (node: TSESTree.Node) => O.Option<FunctionNode> = flow(
+  (n: TSESTree.Node) => n.parent,
+  O.fromNullable,
+  O.flatMap((parent) =>
+    isEsTreeFunctionNode(parent) ? O.some(parent) : resolveEnclosingFunctionNode(parent),
+  ),
+);
 
 const isPipelineCall = (call: TSESTree.CallExpression) =>
   call.callee.type === AST_NODE_TYPES.Identifier && PIPELINE_CALLEES.has(call.callee.name);
@@ -238,6 +242,18 @@ const isPredicateDeclarator = (decl: TSESTree.VariableDeclarator) =>
   decl.id.type === AST_NODE_TYPES.Identifier &&
   (isPredicateName(decl.id.name) || hasPredicateTypeAnnotation(decl.id));
 
+const isInsideExemptedFunction = (
+  node: TSESTree.Node,
+  services: ParserServicesWithTypeInformation,
+  checker: ts.TypeChecker,
+) => {
+  const check = flow(
+    resolveEnclosingFunctionNode,
+    O.exists((fn) => isExemptedFunction(fn, services, checker)),
+  );
+  return check(node);
+};
+
 const isCallBoundAsPredicate = (
   call: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
@@ -249,10 +265,19 @@ const isCallBoundAsPredicate = (
     isCallPredicateArg(call.parent, call, services, checker)) ||
   (call.callee.type === AST_NODE_TYPES.Identifier &&
     PIPE_CALLEES.has(call.callee.name) &&
-    flow(
-      resolveEnclosingFunctionNode,
-      O.exists((fn) => isExemptedFunction(fn, services, checker)),
-    )(call));
+    isInsideExemptedFunction(call, services, checker));
+
+const isBoundAsPredicateCallback = (
+  node: FunctionNode,
+  services: ParserServicesWithTypeInformation,
+  checker: ts.TypeChecker,
+) => {
+  const check = flow(
+    resolvePipeOrFlowParentCall,
+    O.exists((call) => isCallBoundAsPredicate(call, services, checker)),
+  );
+  return check(node);
+};
 
 const isInlinePredicateCallback = (
   node: FunctionNode,
@@ -265,13 +290,12 @@ const isInlinePredicateCallback = (
     )
     .with(P._, () => false)
     .exhaustive() ||
-  flow(
-    resolvePipeOrFlowParentCall,
-    O.exists((call) => isCallBoundAsPredicate(call, services, checker)),
-  )(node);
+  isBoundAsPredicateCallback(node, services, checker);
 
 const isTypePredicateAnnotation = (ret?: TSESTree.TSTypeAnnotation) =>
   ret?.typeAnnotation.type === AST_NODE_TYPES.TSTypePredicate;
+
+const hasPredicateBindingName = flow(resolveEnclosingBindingName, O.exists(isPredicateName));
 
 const isExemptedFunction = (
   node: FunctionNode,
@@ -280,27 +304,25 @@ const isExemptedFunction = (
   // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive check
 ): boolean =>
   isTypePredicateAnnotation(node.returnType) ||
-  flow(resolveEnclosingBindingName, O.exists(isPredicateName))(node) ||
+  hasPredicateBindingName(node) ||
   hasPredicateBindingAnnotation(node) ||
   isInlinePredicateCallback(node, services, checker) ||
-  (isMatchBranchCall(node) &&
-    flow(
-      resolveEnclosingFunctionNode,
-      O.exists((fn) => isExemptedFunction(fn, services, checker)),
-    )(node));
+  (isMatchBranchCall(node) && isInsideExemptedFunction(node, services, checker));
 
 const hasBooleanReturnType = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) =>
-  flow(
+) => {
+  const check = flow(
     (n: FunctionNode) => services.esTreeNodeToTSNodeMap.get(n),
     (tsNode) => checker.getSignatureFromDeclaration(tsNode),
     O.fromNullable,
     O.map((sig) => checker.getReturnTypeOfSignature(sig)),
     O.exists(isBooleanTsType),
-  )(node);
+  );
+  return check(node);
+};
 
 const isPredicateProperty = (prop: TSESTree.TSPropertySignature) =>
   prop.key.type === AST_NODE_TYPES.Identifier && isPredicateName(prop.key.name);
@@ -364,12 +386,14 @@ const classifyBooleanKeyword = (node: TSESTree.TSBooleanKeyword) =>
 const isBooleanNodeType = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) =>
-  flow(
+) => {
+  const check = flow(
     (n: TSESTree.Node) => services.esTreeNodeToTSNodeMap.get(n),
     (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
     isBooleanTsType,
-  )(node);
+  );
+  return check(node);
+};
 
 const checkFunctionNode = (
   node: FunctionNode,

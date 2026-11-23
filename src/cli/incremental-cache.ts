@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript";
+import type { ESLint } from "eslint";
 
 const CACHE_SCHEMA_VERSION = 1;
 
@@ -48,7 +49,10 @@ type CacheEnvelope<T> = {
   readonly value: T;
 };
 
-export const hashShort = (value: string) =>
+export const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+export const hashShort = (value: string): string =>
   crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
 
 const safeRealpath = (targetPath: string) => {
@@ -62,7 +66,7 @@ const safeRealpath = (targetPath: string) => {
 const isNonEmptyString = (value: string | undefined): value is string =>
   value !== undefined && value.trim().length > 0;
 
-export const resolveCacheDir = (cwd: string, customLocation?: string) => {
+export const resolveCacheDir = (cwd: string, customLocation?: string): string => {
   if (isNonEmptyString(customLocation)) {
     return path.resolve(cwd, customLocation);
   }
@@ -76,23 +80,26 @@ export const resolveCacheDir = (cwd: string, customLocation?: string) => {
 export const buildEslintCacheOptions = (
   enabled: boolean | undefined,
   cacheDir: string | undefined,
-) =>
+): ESLint.Options =>
   enabled === true && isNonEmptyString(cacheDir)
     ? {
         cache: true,
-        cacheStrategy: "content" as const,
+        cacheStrategy: "content",
         cacheLocation: path.join(cacheDir, "eslint-cache.json"),
       }
     : {};
 
-export const resolveTsConfigPath = (workspaceDir: string, configPath?: string) => {
+export const resolveTsConfigPath = (
+  workspaceDir: string,
+  configPath?: string,
+): string | undefined => {
   if (isNonEmptyString(configPath)) {
     return path.resolve(workspaceDir, configPath);
   }
   return ts.findConfigFile(workspaceDir, (filePath) => ts.sys.fileExists(filePath), "tsconfig.json");
 };
 
-export const loadParsedTsConfig = (tsconfigPath: string) => {
+export const loadParsedTsConfig = (tsconfigPath: string): ts.ParsedCommandLine | undefined => {
   const configFile = ts.readConfigFile(tsconfigPath, (filePath) => ts.sys.readFile(filePath));
   if (configFile.error) {
     return undefined;
@@ -110,7 +117,7 @@ export const resolveTsBuildInfoPath = (
   cacheDir: string,
   kind: "tsc" | "radar",
   tsconfigPath: string,
-) => {
+): string => {
   fs.mkdirSync(cacheDir, { recursive: true });
   return path.join(cacheDir, `${kind}-${hashShort(safeRealpath(tsconfigPath))}.tsbuildinfo`);
 };
@@ -165,11 +172,10 @@ const hashTsConfigChain = (hash: crypto.Hash, entryTsconfigPath: string) => {
     visited.add(resolved);
     hashFileIfExists(hash, `tsconfig:${resolved}`, resolved);
     const configFile = ts.readConfigFile(resolved, (filePath) => ts.sys.readFile(filePath));
-    if (configFile.error) {
+    if (configFile.error || !isRecord(configFile.config)) {
       continue;
     }
-    const configObj = configFile.config as Readonly<Record<string, unknown>>;
-    const rawExtends = configObj["extends"];
+    const rawExtends = configFile.config["extends"];
     const extendsList =
       typeof rawExtends === "string"
         ? [rawExtends]
@@ -186,7 +192,10 @@ const hashTsConfigChain = (hash: crypto.Hash, entryTsconfigPath: string) => {
   }
 };
 
-export const computeConfigFingerprint = (cwd: string, tsconfigPath: string | undefined) => {
+export const computeConfigFingerprint = (
+  cwd: string,
+  tsconfigPath: string | undefined,
+): string => {
   const hash = crypto.createHash("sha256");
   hash.update(`schema:${String(CACHE_SCHEMA_VERSION)}\0`);
   hash.update(`ts:${ts.version}\0`);
@@ -263,7 +272,7 @@ const collectTargetSourceFiles = (
   return [...collected];
 };
 
-export const computeProjectFingerprint = (input: ProjectFingerprintInput) => {
+export const computeProjectFingerprint = (input: ProjectFingerprintInput): string => {
   const hash = crypto.createHash("sha256");
   hash.update(`kind:${input.kind}\0`);
   hash.update(`scope:${input.scopeKey}\0`);
@@ -302,15 +311,21 @@ export const readCachedArtifact = <T>(
   namespace: string,
   cacheKey: string,
   fingerprint: string,
-) => {
+  isValue: (value: unknown) => value is T,
+): T | undefined => {
   const filePath = resolveArtifactPath(cacheDir, namespace, cacheKey);
   try {
     const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw) as CacheEnvelope<T>;
-    if (parsed.version !== CACHE_SCHEMA_VERSION || parsed.fingerprint !== fingerprint) {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !isRecord(parsed) ||
+      parsed["version"] !== CACHE_SCHEMA_VERSION ||
+      parsed["fingerprint"] !== fingerprint ||
+      !isValue(parsed["value"])
+    ) {
       return undefined;
     }
-    return parsed.value;
+    return parsed["value"];
   } catch {
     return undefined;
   }
@@ -322,7 +337,7 @@ export const writeCachedArtifact = <T>(
   cacheKey: string,
   fingerprint: string,
   value: T,
-) => {
+): void => {
   try {
     fs.mkdirSync(cacheDir, { recursive: true });
     const filePath = resolveArtifactPath(cacheDir, namespace, cacheKey);

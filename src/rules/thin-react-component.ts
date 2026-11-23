@@ -1,5 +1,6 @@
 import { AST_NODE_TYPES, ESLintUtils, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
@@ -95,14 +96,12 @@ const isAnonFn = (node: TSESTree.Node): node is AnonFunctionNode =>
   ANON_FN_TYPES.has(node.type);
 
 const extractMemberPropName = (expr: TSESTree.Expression) =>
-  match(expr.type === AST_NODE_TYPES.MemberExpression)
-    .with(true, () => {
-      const member = expr as TSESTree.MemberExpression;
-      return member.property.type === AST_NODE_TYPES.Identifier
-        ? O.some(member.property.name)
-        : O.none;
-    })
-    .with(false, () => O.none)
+  match(expr)
+    .with(
+      { type: AST_NODE_TYPES.MemberExpression, property: { type: AST_NODE_TYPES.Identifier } },
+      (member) => O.some(member.property.name),
+    )
+    .with(P._, () => O.none)
     .exhaustive();
 
 const FP_TS_NAMESPACE_NAMES: ReadonlySet<string> = new Set([
@@ -167,13 +166,11 @@ const isJsxReturningFn = (node: FunctionNode) =>
     ? isJsxReturningBlock(node.body)
     : isJsxExpr(O.some(node.body));
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST predicate
-const isInsideJsxExpr = (node: TSESTree.Node): boolean =>
-  flow(
-    (n: TSESTree.Node) => n.parent,
-    O.fromNullable,
-    O.exists((p) => (p.type === AST_NODE_TYPES.JSXExpressionContainer ? true : isInsideJsxExpr(p))),
-  )(node);
+const isInsideJsxExpr: Pred.Predicate<TSESTree.Node> = flow(
+  (n: TSESTree.Node) => n.parent,
+  O.fromNullable,
+  O.exists((p) => (p.type === AST_NODE_TYPES.JSXExpressionContainer ? true : isInsideJsxExpr(p))),
+);
 
 const isJsxAttrContainer = (parent: TSESTree.Node) =>
   parent.type === AST_NODE_TYPES.JSXExpressionContainer &&
@@ -181,9 +178,10 @@ const isJsxAttrContainer = (parent: TSESTree.Node) =>
 
 const isJsxAttrCallback = ({ parent }: FunctionNode) => isJsxAttrContainer(parent);
 
+const isHookCallee = flow(resolveCalleeName, O.exists(isHookName));
+
 const isHookCallbackArg = (node: FunctionNode) =>
-  node.parent.type === AST_NODE_TYPES.CallExpression &&
-  flow(resolveCalleeName, O.exists(isHookName))(node.parent.callee);
+  node.parent.type === AST_NODE_TYPES.CallExpression && isHookCallee(node.parent.callee);
 
 const isMatchBranchCallee = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.MemberExpression &&
@@ -206,7 +204,7 @@ const checkPreReturnLineCount = (
   maxLines: number,
   report: Reporter,
 ) => {
-  flow(
+  const check = flow(
     O.apS("first", RA.head(stmts)),
     O.apS("last", RA.last(stmts)),
     O.map(({ first, last }) => measureStatementSpan(first, last)),
@@ -218,7 +216,8 @@ const checkPreReturnLineCount = (
         data: { actual: toDecimalText(lines), max: toDecimalText(maxLines) },
       });
     }),
-  )(O.Do);
+  );
+  check(O.Do);
 };
 
 const toLogicBudgetDescriptor = (
@@ -268,7 +267,7 @@ const extractFirstIdentifierArg = flow(
   O.fromNullable,
   O.filter((arg): arg is TSESTree.Identifier => arg.type === AST_NODE_TYPES.Identifier),
   O.match(
-    () => [] as ReadonlyArray<string>,
+    () => [] satisfies ReadonlyArray<string>,
     (id) => [id.name],
   ),
 );
@@ -276,7 +275,7 @@ const extractFirstIdentifierArg = flow(
 const extractBridgeTargetName = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.CallExpression && isJsBridgeCall(node)
     ? extractFirstIdentifierArg(node.arguments)
-    : ([] as ReadonlyArray<string>);
+    : ([] satisfies ReadonlyArray<string>);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
 const collectBridgeTargetList = (node: TSESTree.Node, visitorKeys: TSESLint.SourceCode["visitorKeys"]): ReadonlyArray<string> => [
@@ -344,23 +343,23 @@ const extractObjectPropNode = (prop: TSESTree.Property | TSESTree.RestElement) =
 const extractArrayPatternEl = flow(
   O.fromNullable<TSESTree.ArrayPattern["elements"][number]>,
   O.match(
-    () => [] as ReadonlyArray<TSESTree.Node>,
-    (el) => [el] as ReadonlyArray<TSESTree.Node>,
+    () => [] satisfies ReadonlyArray<TSESTree.Node>,
+    (el) => [el] satisfies ReadonlyArray<TSESTree.Node>,
   ),
 );
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive pattern walk
 const extractBoundNames = (pattern: TSESTree.Node): ReadonlyArray<string> =>
-  match(pattern.type)
-    .with(AST_NODE_TYPES.Identifier, () => [(pattern as TSESTree.Identifier).name])
-    .with(AST_NODE_TYPES.ObjectPattern, () =>
-      RA.flatMap(flow(extractObjectPropNode, extractBoundNames))((pattern as TSESTree.ObjectPattern).properties),
+  match(pattern)
+    .with({ type: AST_NODE_TYPES.Identifier }, (id) => [id.name])
+    .with({ type: AST_NODE_TYPES.ObjectPattern }, (obj) =>
+      RA.flatMap(flow(extractObjectPropNode, extractBoundNames))(obj.properties),
     )
-    .with(AST_NODE_TYPES.ArrayPattern, () =>
-      RA.flatMap(flow(extractArrayPatternEl, RA.flatMap(extractBoundNames)))((pattern as TSESTree.ArrayPattern).elements),
+    .with({ type: AST_NODE_TYPES.ArrayPattern }, (arr) =>
+      RA.flatMap(flow(extractArrayPatternEl, RA.flatMap(extractBoundNames)))(arr.elements),
     )
-    .with(AST_NODE_TYPES.AssignmentPattern, () => extractBoundNames((pattern as TSESTree.AssignmentPattern).left))
-    .with(P._, () => [] as ReadonlyArray<string>)
+    .with({ type: AST_NODE_TYPES.AssignmentPattern }, (a) => extractBoundNames(a.left))
+    .with(P._, () => [] satisfies ReadonlyArray<string>)
     .exhaustive();
 
 const isClosureExtractionExpr = (idType: AST_NODE_TYPES, init: TSESTree.Expression) =>
@@ -368,11 +367,13 @@ const isClosureExtractionExpr = (idType: AST_NODE_TYPES, init: TSESTree.Expressi
   init.type === AST_NODE_TYPES.ChainExpression ||
   (init.type === AST_NODE_TYPES.Identifier && idType !== AST_NODE_TYPES.Identifier);
 
-const isClosureExtractionInit = (d: TSESTree.VariableDeclarator) =>
-  flow(
+const isClosureExtractionInit = (d: TSESTree.VariableDeclarator) => {
+  const check = flow(
     O.fromNullable<TSESTree.VariableDeclarator["init"]>,
     O.exists((init) => isClosureExtractionExpr(d.id.type, init)),
-  )(d.init);
+  );
+  return check(d.init);
+};
 
 const hasAllNamesCaptured = (captured: ReadonlySet<string>, names: ReadonlyArray<string>) =>
   names.length > 0 && RA.every((name: string) => captured.has(name))(names);
@@ -405,7 +406,7 @@ const extractPropTargetIdentifier = (val: TSESTree.Property["value"]) =>
   match(val)
     .with({ type: AST_NODE_TYPES.Identifier }, O.some)
     .with({ type: AST_NODE_TYPES.AssignmentPattern, left: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.left))
-    .with(P._, () => O.none as O.Option<TSESTree.Identifier>)
+    .with(P._, () => O.none satisfies O.Option<TSESTree.Identifier>)
     .exhaustive();
 
 const extractShallowPropIdentifier = (prop: TSESTree.Property | TSESTree.RestElement) =>
@@ -462,7 +463,7 @@ const collectSingleViewName = (
       ? O.some(d.id.name)
       : O.none,
   )(declarators);
-  return viewIds.length === 1 ? viewIds : ([] as ReadonlyArray<string>);
+  return viewIds.length === 1 ? viewIds : ([] satisfies ReadonlyArray<string>);
 };
 
 const isPrimitiveViewDestructuring = (
@@ -577,29 +578,43 @@ const checkNonComponentFn = (node: FunctionNode, env: TsxCheckEnv) => {
 const checkComponentFunction = (node: FunctionNode, env: TsxCheckEnv) => {
   match(isJsxReturningFn(node))
     .with(true, () => {
-      match(node.body.type === AST_NODE_TYPES.BlockStatement)
-        .with(true, () => { checkComponentBlock(node.body as TSESTree.BlockStatement, env); })
-        .with(false, () => {})
+      match(node.body)
+        .with({ type: AST_NODE_TYPES.BlockStatement }, (body) => {
+          checkComponentBlock(body, env);
+        })
+        .with(P._, () => {})
         .exhaustive();
     })
     .with(false, () => { checkNonComponentFn(node, env); })
     .exhaustive();
 };
 
-const extractHookCallback = (node: TSESTree.CallExpression) => (name: string) =>
-  flow(
-    (call: TSESTree.CallExpression) => call.arguments[0],
-    O.fromNullable,
-    O.filter(isAnonFn),
-    O.map((fn) => ({ name, fn, lines: measureLineSpan(fn.body) })),
-  )(node);
+const extractFirstAnonFnArg = flow(
+  (call: TSESTree.CallExpression) => call.arguments[0],
+  O.fromNullable,
+  O.filter(isAnonFn),
+);
+
+const toHookCallbackSpan = (name: string) => (fn: AnonFunctionNode) => ({
+  name,
+  fn,
+  lines: measureLineSpan(fn.body),
+});
+
+const extractHookCallback = (node: TSESTree.CallExpression) => (name: string) => {
+  const extract = flow(
+    extractFirstAnonFnArg,
+    O.map(toHookCallbackSpan(name)),
+  );
+  return extract(node);
+};
 
 const checkSizedHookCall = (
   node: TSESTree.CallExpression,
   maxHookBodyLines: number,
   report: Reporter,
 ) => {
-  flow(
+  const check = flow(
     resolveCalleeName,
     O.filter((name) => SIZED_HOOKS.has(name)),
     O.flatMap(extractHookCallback(node)),
@@ -611,7 +626,8 @@ const checkSizedHookCall = (
         data: { hook: name, actual: toDecimalText(lines), max: toDecimalText(maxHookBodyLines) },
       });
     }),
-  )(node.callee);
+  );
+  check(node.callee);
 };
 
 const isFpTsNamespaceReceiver = (callee: TSESTree.Expression) =>
@@ -620,14 +636,15 @@ const isFpTsNamespaceReceiver = (callee: TSESTree.Expression) =>
   FP_TS_NAMESPACE_NAMES.has(callee.object.name);
 
 const reportNonJsxArrayTransform = (node: TSESTree.CallExpression, report: Reporter) => {
-  flow(
+  const check = flow(
     extractMemberPropName,
     O.filter((method) => ARRAY_TRANSFORM_METHODS.has(method)),
     O.filter((method) => !(MAP_METHODS.has(method) && isInsideJsxExpr(node))),
     O.map((method) => {
       report({ node, messageId: "nonJsxArrayTransform", data: { method } });
     }),
-  )(node.callee);
+  );
+  check(node.callee);
 };
 
 const checkArrayTransformCall = (node: TSESTree.CallExpression, report: Reporter) => {
@@ -659,13 +676,14 @@ const checkJsxHandlerAttr = (
   maxHandlerLines: number,
   report: Reporter,
 ) => {
-  flow(
+  const check = flow(
     extractJsxAttrCallback,
     O.filter(({ lines }) => lines > maxHandlerLines),
     O.map(({ fn, lines }) => {
       report(toFatJsxHandlerDescriptor(fn, lines, maxHandlerLines));
     }),
-  )(node);
+  );
+  check(node);
 };
 
 const buildControlFlowListeners = (report: Reporter) => ({

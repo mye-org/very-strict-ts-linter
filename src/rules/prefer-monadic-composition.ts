@@ -53,6 +53,7 @@ const resolvePipeStepTarget = (arg: TSESTree.CallExpressionArgument) =>
 
 const isChainCallbackParent = (node: TSESTree.Node) =>
   isEsTreeAnonymousFunctionNode(node) &&
+  node.parent !== undefined &&
   node.parent.type === AST_NODE_TYPES.CallExpression &&
   O.exists((target: MemberCallTarget) => CHAIN_METHOD_NAMES.has(target.method))(
     resolveMemberCall(node.parent),
@@ -189,11 +190,12 @@ const reportMemberCall = (
   node: TSESTree.CallExpression,
   report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
 ) => {
-  flow(
+  const check = flow(
     resolveMemberCall,
     O.flatMap((target) => classifyMemberCall(node, target)),
     O.map(([messageId, data]) => { report(node, messageId, data); }),
-  )(node);
+  );
+  check(node);
 };
 
 const reportPipelineCall = (

@@ -100,7 +100,6 @@ npx strict-fp-radar [--tsconfig tsconfig.json] [--format markdown|json] [--no-ca
 - `domainFiles` — Domain layer globs for `domain-layer-purity` and `ubiquitous-language`
 - `applicationFiles` — Application layer globs for `ubiquitous-language`
 - `entryPoints` — Public API entry point globs forwarded to `no-single-caller-export` so transitively re-exported symbols are exempt from single-caller checks
-- `maxFunctionLines` — Maximum lines per function for `max-function-lines` (default: `15`)
 - `maxTier` — `0 | 1 | 2 | 3` (default: `3`)
 
 By default, `**/*.tsx` and `**/*.config.ts` are excluded from strict `.ts` type-safety/domain/FP rules, while Tier 2 enforces `no-react-in-ts` on `.ts` files and `no-sequences` + `thin-react-component` + `no-unsafe-react-hooks` + `require-js-thread-schedule-on-rn` on `.tsx` files (excluding `*.test.tsx`, `*.spec.tsx`, and `*.stories.tsx`).

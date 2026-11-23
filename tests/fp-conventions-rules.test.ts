@@ -1,5 +1,4 @@
 import { fpTsImportConvention } from "../src/rules/fp-ts-import-convention.js";
-import { maxFunctionLines } from "../src/rules/max-function-lines.js";
 import { noClasses } from "../src/rules/no-classes.js";
 import { noNestedTernary } from "../src/rules/no-nested-ternary.js";
 import { noUnnecessaryLocalConst } from "../src/rules/no-unnecessary-local-const.js";
@@ -35,23 +34,6 @@ typeAwareRuleTester.run("prefer-fp-ts-array-methods", preferFpTsArrayMethods, {
         const ys = xs.filter((x) => x > 1);
       `,
       errors: [{ messageId: "preferFpTsArray" }],
-    },
-  ],
-});
-
-ruleTester.run("max-function-lines", maxFunctionLines, {
-  valid: [
-    `const add = (a: number, b: number): number => a + b;`,
-    {
-      code: `const f = (): number => {\n  const a = 1;\n  return a;\n};`,
-      options: [{ maxLines: 5 }],
-    },
-  ],
-  invalid: [
-    {
-      code: `const f = (): number => {\n  const a = 1;\n  const b = 2;\n  return a + b;\n};`,
-      options: [{ maxLines: 3 }],
-      errors: [{ messageId: "tooManyLines" }],
     },
   ],
 });

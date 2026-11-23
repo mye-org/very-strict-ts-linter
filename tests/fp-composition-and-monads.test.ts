@@ -569,7 +569,7 @@ ruleTester.run("no-fp-ts-chain (ast fallback)", noFpTsChain, {
 
 typeAwareRuleTester.run("no-fp-ts-pipe", noFpTsPipe, {
   valid: [
-    // Idiomatic flow composition
+    // Idiomatic flow composition (not immediately invoked)
     `
       import * as O from "fp-ts/lib/Option.js";
       import { flow } from "fp-ts/lib/function.js";
@@ -579,16 +579,20 @@ typeAwareRuleTester.run("no-fp-ts-pipe", noFpTsPipe, {
       import * as F from "fp-ts/lib/function.js";
       const fn = F.flow((x: number) => x + 1, (x: number) => x * 2);
     `,
-    // Non-fp-ts pipe functions or methods are allowed
+    // Non-fp-ts pipe/flow functions or methods are allowed
     `
       const pipe = (x: number) => x + 1;
       const res = pipe(1);
     `,
     `
+      const flow = (f: (n: number) => number) => f;
+      const res = flow((n) => n + 1)(1);
+    `,
+    `
       const stream = { pipe: (x: number) => x + 1 };
       const res = stream.pipe(1);
     `,
-    // Shadowed parameter named F with non-fp-ts pipe
+    // Shadowed parameter named F with non-fp-ts pipe/flow
     `
       import * as F from "fp-ts/lib/function.js";
       const shadowed = (F: { pipe: (x: number) => number }) => F.pipe(1);
@@ -652,6 +656,32 @@ typeAwareRuleTester.run("no-fp-ts-pipe", noFpTsPipe, {
       code: `import { pipe } from "fp-ts/lib/function.js";`,
       errors: [{ messageId: "noFpTsPipe" }],
     },
+    {
+      code: `
+        import { flow } from "fp-ts/lib/function.js";
+        const f = (x: number) => x + 1;
+        const g = (x: number) => x * 2;
+        const res = flow(f, g)(1);
+      `,
+      errors: [{ messageId: "immediatelyInvokedFlow" }],
+    },
+    {
+      code: `
+        import * as F from "fp-ts/lib/function.js";
+        const f = (x: number) => x + 1;
+        const g = (x: number) => x * 2;
+        const res = F.flow(f, g)(1);
+      `,
+      errors: [{ messageId: "immediatelyInvokedFlow" }],
+    },
+    {
+      code: `
+        import { flow as fl } from "fp-ts/function";
+        const f = (x: number) => x + 1;
+        const res = fl(f)(1);
+      `,
+      errors: [{ messageId: "immediatelyInvokedFlow" }],
+    },
   ],
 });
 
@@ -688,6 +718,20 @@ ruleTester.run("no-fp-ts-pipe (ast fallback)", noFpTsPipe, {
         const res = p(1, (x) => x + 1);
       `,
       errors: [{ messageId: "noFpTsPipe" }],
+    },
+    {
+      code: `
+        import { flow } from "fp-ts/lib/function.js";
+        const res = flow(f, g)(1);
+      `,
+      errors: [{ messageId: "immediatelyInvokedFlow" }],
+    },
+    {
+      code: `
+        import * as F from "fp-ts/function";
+        const res = F.flow(f, g)(1);
+      `,
+      errors: [{ messageId: "immediatelyInvokedFlow" }],
     },
   ],
 });
