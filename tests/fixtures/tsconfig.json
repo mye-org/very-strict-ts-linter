@@ -6,7 +6,8 @@
     "lib": ["ES2022"],
     "types": [],
     "strict": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "jsx": "preserve"
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts", "./**/*.tsx"]
 }

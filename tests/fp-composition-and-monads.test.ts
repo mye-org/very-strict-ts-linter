@@ -260,6 +260,24 @@ typeAwareRuleTester.run("prefer-point-free", preferPointFree, {
       declare function getVal(): number;
       const obj = { get x() { return getVal(); } };
     `,
+    // Exempt React custom hook wrappers (should not be rewritten with .bind(null, ...) or aliased)
+    `
+      declare const MyContext: { readonly _tag: "MyContext" };
+      declare function useContext<T>(ctx: T): T;
+      export const useMyContext = () => useContext(MyContext);
+    `,
+    `
+      declare function useStore(): { readonly count: number };
+      export const useMyStore = () => useStore();
+    `,
+    `
+      declare function useUserQuery(id: string): { readonly name: string };
+      export const useUser = (id: string) => useUserQuery(id);
+    `,
+    `
+      declare function useAuthState(): boolean;
+      export function useAuth() { return useAuthState(); }
+    `,
   ],
   invalid: [
     {

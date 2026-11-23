@@ -36,3 +36,21 @@ export const resolveBarePrimitiveOrLiteralKind = (type: ts.Type) =>
     .with({ branded: false, isString: true }, () => O.some("string" as const))
     .with({ branded: false, isNumber: true }, () => O.some("number" as const))
     .otherwise(() => O.none as O.Option<"string" | "number">);
+
+const PRIMITIVE_TYPE_FLAGS =
+  ts.TypeFlags.StringLike |
+  ts.TypeFlags.NumberLike |
+  ts.TypeFlags.BooleanLike |
+  ts.TypeFlags.BigIntLike |
+  ts.TypeFlags.ESSymbolLike |
+  ts.TypeFlags.VoidLike |
+  ts.TypeFlags.Null |
+  ts.TypeFlags.Never;
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive type predicate
+export const isPrimitiveTsType = (type: ts.Type): boolean =>
+  (type.flags & PRIMITIVE_TYPE_FLAGS) !== 0 ||
+  (type.isUnion() && type.types.length > 0 && RA.every(isPrimitiveTsType)(type.types)) ||
+  (type.isIntersection() &&
+    isBrandedOrNewtypeTsType(type) &&
+    RA.some(isPrimitiveTsType)(type.types));

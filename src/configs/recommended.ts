@@ -52,6 +52,7 @@ export const ruleTiers = {
   "no-react-in-ts": 2,
   "no-single-caller-export": 2,
   "no-unit-suffixed-primitives": 2,
+  "no-unsafe-react-hooks": 2,
   "repository-aggregate-root-only": 2,
   "require-js-thread-schedule-on-rn": 2,
   "thin-react-component": 2,
@@ -151,6 +152,7 @@ export const testScopeRules = {
 
 export const tier1Rules: TSESLint.FlatConfig.Rules = {
   ...buildRulesForTier(1),
+  "no-sequences": "error",
   "@typescript-eslint/no-explicit-any": "off",
   "@typescript-eslint/use-unknown-in-catch-callback-variable": "off",
   "@typescript-eslint/no-unnecessary-type-parameters": "off",
@@ -439,6 +441,8 @@ export const reactTsRules = {
 } as const satisfies TSESLint.FlatConfig.Rules;
 
 export const reactTsxRules = {
+  "no-sequences": "error",
+  "strict-fp/no-unsafe-react-hooks": "error",
   "strict-fp/require-js-thread-schedule-on-rn": "error",
   "strict-fp/thin-react-component": "error",
 } as const satisfies TSESLint.FlatConfig.Rules;

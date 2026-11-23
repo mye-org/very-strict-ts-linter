@@ -11,6 +11,8 @@ import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
 import { isPipeCallExpression } from "../lib/pipe-call.js";
+import { isCustomHookFn, isHookName } from "../lib/react-hooks.js";
+import { resolveCalleeName } from "../lib/reanimated-worklet.js";
 import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "preferPointFree";
@@ -49,6 +51,7 @@ const isEligibleFunction = (node: FunctionNode) =>
   !node.generator &&
   hasFunctionBody(node) &&
   !isObjectMethodOrAccessor(node) &&
+  !isCustomHookFn(node) &&
   RA.every(isPlainParam)(node.params);
 
 const matchSingleStatement = (stmt: TSESTree.Statement) =>
@@ -271,11 +274,14 @@ const hasTypeArguments = flow(
   O.exists((typeArgs) => typeArgs.params.length > 0),
 );
 
+const isHookCallee = flow(resolveCalleeName, O.exists(isHookName));
+
 const isValidCallTarget = (call: TSESTree.CallExpression) =>
   !call.optional &&
   !hasTypeArguments(call) &&
   call.callee.type !== AST_NODE_TYPES.Super &&
-  !isPipeCall(call);
+  !isPipeCall(call) &&
+  !isHookCallee(call.callee);
 
 const isSafeCalleeSig = (
   node: FunctionNode,

@@ -1,7 +1,9 @@
+import path from "node:path";
 import { RuleTester } from "@typescript-eslint/rule-tester";
 import * as vitest from "vitest";
 import plugin from "../src/index.js";
 import { noReactInTs } from "../src/rules/no-react-in-ts.js";
+import { noUnsafeReactHooks } from "../src/rules/no-unsafe-react-hooks.js";
 import { requireJsThreadScheduleOnRn } from "../src/rules/require-js-thread-schedule-on-rn.js";
 import { thinReactComponent } from "../src/rules/thin-react-component.js";
 
@@ -14,6 +16,19 @@ const jsxRuleTester = new RuleTester({
   languageOptions: {
     parserOptions: {
       ecmaFeatures: { jsx: true },
+    },
+  },
+});
+
+const typeAwareJsxRuleTester = new RuleTester({
+  languageOptions: {
+    parserOptions: {
+      ecmaFeatures: { jsx: true },
+      projectService: {
+        allowDefaultProject: ["file.tsx"],
+        defaultProject: "tsconfig.json",
+      },
+      tsconfigRootDir: path.resolve(import.meta.dirname, "fixtures"),
     },
   },
 });
@@ -471,6 +486,283 @@ jsxRuleTester.run("require-js-thread-schedule-on-rn", requireJsThreadScheduleOnR
   ],
 });
 
+typeAwareJsxRuleTester.run("thin-react-component (type-aware primitive destructuring)", thinReactComponent, {
+  valid: [
+    // Primitive destructuring from a single view object does not penalize maxDerivedConsts / noViewDestructuring
+    {
+      filename: "file.tsx",
+      code: `
+        declare namespace JSX { interface IntrinsicElements { readonly div: unknown; readonly span: unknown; } }
+        type Props = { readonly id: string };
+        type CardView = { readonly title: string; readonly count: number; readonly isReady: boolean; readonly items: ReadonlyArray<string> };
+        declare function toCardView(props: Props): CardView;
+        export const Card = (props: Props) => {
+          const view = toCardView(props);
+          const { title, count, isReady } = view;
+          return <div><span>{title}</span><span>{count}</span><span>{isReady}</span></div>;
+        };
+      `,
+    },
+    // Primitive destructuring from a useMemo wrapper
+    {
+      filename: "file.tsx",
+      code: `
+        declare namespace JSX { interface IntrinsicElements { readonly div: unknown; } }
+        declare function useMemo<T>(factory: () => T, deps: ReadonlyArray<unknown>): T;
+        type Props = { readonly id: string };
+        type CardView = { readonly title: string; readonly count: number };
+        declare function toCardView(props: Props): CardView;
+        export const Card = (props: Props) => {
+          const view = useMemo(() => toCardView(props), [props.id]);
+          const { title, count } = view;
+          return <div>{title}{count}</div>;
+        };
+      `,
+    },
+    // Direct primitive destructuring from a single view call
+    {
+      filename: "file.tsx",
+      code: `
+        declare namespace JSX { interface IntrinsicElements { readonly div: unknown; } }
+        type Props = { readonly id: string };
+        type CardView = { readonly title: string; readonly count: number };
+        declare function toCardView(props: Props): CardView;
+        export const Card = (props: Props) => {
+          const { title, count } = toCardView(props);
+          return <div>{title}{count}</div>;
+        };
+      `,
+    },
+  ],
+  invalid: [
+    // Destructuring non-primitive properties (e.g. arrays/objects) from view still fails
+    {
+      filename: "file.tsx",
+      code: `
+        declare namespace JSX { interface IntrinsicElements { readonly div: unknown; } }
+        type Props = { readonly id: string };
+        type CardView = { readonly title: string; readonly items: ReadonlyArray<string> };
+        declare function toCardView(props: Props): CardView;
+        export const Card = (props: Props) => {
+          const view = toCardView(props);
+          const { title, items } = view;
+          return <div>{title}{items.length}</div>;
+        };
+      `,
+      errors: [{ messageId: "tooManyDerivedConsts" }, { messageId: "noViewDestructuring" }],
+    },
+    // Rest destructuring creates a new object and still fails
+    {
+      filename: "file.tsx",
+      code: `
+        declare namespace JSX { interface IntrinsicElements { readonly div: unknown; } }
+        type Props = { readonly id: string };
+        type CardView = { readonly title: string; readonly count: number };
+        declare function toCardView(props: Props): CardView;
+        export const Card = (props: Props) => {
+          const view = toCardView(props);
+          const { title, ...rest } = view;
+          return <div>{title}{rest.count}</div>;
+        };
+      `,
+      errors: [{ messageId: "tooManyDerivedConsts" }, { messageId: "noViewDestructuring" }],
+    },
+    // Multiple derived view objects still fail maxDerivedConsts
+    {
+      filename: "file.tsx",
+      code: `
+        declare namespace JSX { interface IntrinsicElements { readonly div: unknown; } }
+        type Props = { readonly id: string };
+        declare function toViewA(props: Props): { readonly title: string };
+        declare function toViewB(props: Props): { readonly subtitle: string };
+        export const Card = (props: Props) => {
+          const viewA = toViewA(props);
+          const viewB = toViewB(props);
+          const { title } = viewA;
+          return <div>{title}{viewB.subtitle}</div>;
+        };
+      `,
+      errors: [{ messageId: "tooManyDerivedConsts" }],
+    },
+  ],
+});
+
+typeAwareJsxRuleTester.run("no-unsafe-react-hooks", noUnsafeReactHooks, {
+  valid: [
+    // Expression-bodied effect returning void
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => void | (() => void), deps?: ReadonlyArray<unknown>): void;
+        declare function track(id: string): void;
+        export const Comp = (props: { readonly id: string }) => {
+          useEffect(() => track(props.id), [props.id]);
+          return null;
+        };
+      `,
+    },
+    // Expression-bodied effect returning cleanup function () => void
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => void | (() => void), deps?: ReadonlyArray<unknown>): void;
+        declare function useLayoutEffect(cb: () => void | (() => void), deps?: ReadonlyArray<unknown>): void;
+        declare function subscribe(id: string): () => void;
+        declare function maybeSubscribe(id: string): (() => void) | undefined;
+        export const Comp = (props: { readonly id: string }) => {
+          useEffect(() => subscribe(props.id), [props.id]);
+          useLayoutEffect(() => maybeSubscribe(props.id), [props.id]);
+          return null;
+        };
+      `,
+    },
+    // Block-bodied effect for side-effect-only async or non-void calls
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => void | (() => void), deps?: ReadonlyArray<unknown>): void;
+        declare function loadAsync(id: string): Promise<void>;
+        declare function computeCount(): number;
+        export const Comp = (props: { readonly id: string }) => {
+          useEffect(() => { void loadAsync(props.id); }, [props.id]);
+          useEffect(() => { computeCount(); }, []);
+          return null;
+        };
+      `,
+    },
+    // Memoized object, primitive call result, primitive member access, and module-level object in deps
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => void | (() => void), deps?: ReadonlyArray<unknown>): void;
+        declare function useMemo<T>(factory: () => T, deps: ReadonlyArray<unknown>): T;
+        declare function useCallback<T extends (...args: ReadonlyArray<never>) => unknown>(fn: T, deps: ReadonlyArray<unknown>): T;
+        declare function computePlan(id: string): { readonly stepId: string };
+        declare function formatLabel(id: string): string;
+        declare function run(v: unknown): void;
+        const MODULE_CONFIG = { retries: 3 };
+        export const Comp = (props: { readonly id: string }) => {
+          const plan = useMemo(() => computePlan(props.id), [props.id]);
+          const label = formatLabel(props.id);
+          const rawPlan = computePlan(props.id);
+          useEffect(() => { run(plan); }, [plan, label, rawPlan.stepId, MODULE_CONFIG]);
+          const onClick = useCallback(() => { run(plan); }, [plan, label]);
+          return onClick;
+        };
+      `,
+    },
+  ],
+  invalid: [
+    // Expression-bodied useEffect returning Promise
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => unknown, deps?: ReadonlyArray<unknown>): void;
+        declare function fetchData(id: string): Promise<void>;
+        export const Comp = (props: { readonly id: string }) => {
+          useEffect(() => fetchData(props.id), [props.id]);
+          return null;
+        };
+      `,
+      errors: [{ messageId: "expressionEffectReturnsPromise" }],
+    },
+    // Expression-bodied useLayoutEffect returning custom thenable
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useLayoutEffect(cb: () => unknown, deps?: ReadonlyArray<unknown>): void;
+        declare function makeThenable(): { readonly then: (cb: () => void) => void };
+        export const Comp = () => {
+          useLayoutEffect(() => makeThenable(), []);
+          return null;
+        };
+      `,
+      errors: [{ messageId: "expressionEffectReturnsPromise" }],
+    },
+    // Async expression-bodied useEffect
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => unknown, deps?: ReadonlyArray<unknown>): void;
+        declare function track(): void;
+        export const Comp = () => {
+          useEffect(async () => track(), []);
+          return null;
+        };
+      `,
+      errors: [{ messageId: "expressionEffectReturnsPromise" }],
+    },
+    // Expression-bodied useEffect returning non-void primitive or object
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => unknown, deps?: ReadonlyArray<unknown>): void;
+        declare function computeCount(): number;
+        export const Comp = () => {
+          useEffect(() => computeCount(), []);
+          return null;
+        };
+      `,
+      errors: [{ messageId: "expressionEffectUnsafeReturn" }],
+    },
+    // Expression-bodied useEffect returning cleanup function that returns Promise instead of void
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => unknown, deps?: ReadonlyArray<unknown>): void;
+        declare function subscribeAsync(): () => Promise<void>;
+        export const Comp = () => {
+          useEffect(() => subscribeAsync(), []);
+          return null;
+        };
+      `,
+      errors: [{ messageId: "expressionEffectUnsafeReturn" }],
+    },
+    // Unmemoized render-time call result passed directly into useEffect / useCallback / useMemo deps
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => void, deps?: ReadonlyArray<unknown>): void;
+        declare function useCallback<T>(fn: T, deps: ReadonlyArray<unknown>): T;
+        declare function useMemo<T>(factory: () => T, deps: ReadonlyArray<unknown>): T;
+        declare function computePlan(id: string): { readonly stepId: string };
+        declare function run(v: unknown): void;
+        export const Comp = (props: { readonly id: string }) => {
+          const plan = computePlan(props.id);
+          useEffect(() => { run(plan); }, [plan]);
+          const cb = useCallback(() => { run(plan); }, [plan]);
+          const val = useMemo(() => plan.stepId, [plan]);
+          return { cb, val };
+        };
+      `,
+      errors: [
+        { messageId: "unstableHookDependency" },
+        { messageId: "unstableHookDependency" },
+        { messageId: "unstableHookDependency" },
+      ],
+    },
+    // Unmemoized render-time object literal and inline object/call in deps
+    {
+      filename: "file.tsx",
+      code: `
+        declare function useEffect(cb: () => void, deps?: ReadonlyArray<unknown>): void;
+        declare function computePlan(id: string): { readonly stepId: string };
+        declare function run(v: unknown): void;
+        export const Comp = (props: { readonly id: string }) => {
+          const opts = { id: props.id };
+          useEffect(() => { run(opts); }, [opts, { inline: true }, computePlan(props.id)]);
+          return null;
+        };
+      `,
+      errors: [
+        { messageId: "unstableHookDependency" },
+        { messageId: "unstableInlineHookDependency" },
+        { messageId: "unstableInlineHookDependency" },
+      ],
+    },
+  ],
+});
+
 vitest.describe("createStrictReactConfig", () => {
   vitest.it("creates .ts boundary and .tsx thin-component config blocks", () => {
     const blocks = plugin.createStrictReactConfig();
@@ -480,6 +772,8 @@ vitest.describe("createStrictReactConfig", () => {
     vitest.expect(blocks[1]?.name).toBe("strict-fp/react-thin-tsx");
     vitest.expect(blocks[0]?.rules).toEqual({ "strict-fp/no-react-in-ts": "error" });
     vitest.expect(blocks[1]?.rules).toEqual({
+      "no-sequences": "error",
+      "strict-fp/no-unsafe-react-hooks": "error",
       "strict-fp/require-js-thread-schedule-on-rn": "error",
       "strict-fp/thin-react-component": "error",
     });

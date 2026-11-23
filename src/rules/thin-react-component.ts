@@ -1,16 +1,19 @@
-import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
+import { AST_NODE_TYPES, ESLintUtils, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
+import { type CheckerContext, toCheckerContext } from "../lib/checker-context.js";
 import { collectEstreeChildNodes } from "../lib/estree-children.js";
 import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
+import { isCustomHookFn, isHookCallExpr, isHookName } from "../lib/react-hooks.js";
 import {
   isScheduleOnRnCall,
   isWorkletFunction,
   resolveCalleeName,
 } from "../lib/reanimated-worklet.js";
 import { createRule } from "../lib/rule-factory.js";
+import { isPrimitiveTsType } from "../lib/ts-primitive-types.js";
 import { resolveDirectFunctionName } from "../lib/unsafe-function-scope.js";
 
 type Options = [
@@ -102,22 +105,6 @@ const extractMemberPropName = (expr: TSESTree.Expression) =>
     .with(false, () => O.none)
     .exhaustive();
 
-const isUpperChar = (ch: string) => ch >= "A" && ch <= "Z";
-const isDigitChar = (ch: string) => ch >= "0" && ch <= "9";
-
-const isHookName = (name: string) =>
-  name.startsWith("use") &&
-  O.exists((ch: string) => isUpperChar(ch) || isDigitChar(ch))(O.fromNullable(name[3]));
-
-const isHookCallExpr = flow(
-  O.filter(
-    (n: TSESTree.Expression): n is TSESTree.CallExpression =>
-      n.type === AST_NODE_TYPES.CallExpression,
-  ),
-  O.flatMap((c) => resolveCalleeName(c.callee)),
-  O.exists(isHookName),
-);
-
 const FP_TS_NAMESPACE_NAMES: ReadonlySet<string> = new Set([
   "O",
   "E",
@@ -198,8 +185,6 @@ const isHookCallbackArg = (node: FunctionNode) =>
   node.parent.type === AST_NODE_TYPES.CallExpression &&
   flow(resolveCalleeName, O.exists(isHookName))(node.parent.callee);
 
-const isCustomHookFn = flow(resolveDirectFunctionName, O.exists(isHookName));
-
 const isMatchBranchCallee = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.MemberExpression &&
   !callee.computed &&
@@ -266,13 +251,17 @@ type TsxCheckEnv = {
   readonly report: Reporter;
   readonly visitorKeys: TSESLint.SourceCode["visitorKeys"];
   readonly scheduleOnRnTargets: ReadonlySet<string>;
+  readonly checkerCtx: O.Option<CheckerContext>;
 };
 
 const isJsxHelperInit = flow(O.filter(isAnonFn), O.exists(isJsxReturningFn));
 
+const RUN_ON_JS_NAMES: ReadonlySet<string> = new Set(["runOnJS"]);
+const USE_MEMO_NAMES: ReadonlySet<string> = new Set(["useMemo"]);
+
 const isJsBridgeCall = (node: TSESTree.CallExpression) =>
   isScheduleOnRnCall(node) ||
-  O.exists((name: string) => name === "runOnJS")(resolveCalleeName(node.callee));
+  O.exists((name: string) => RUN_ON_JS_NAMES.has(name))(resolveCalleeName(node.callee));
 
 const extractFirstIdentifierArg = flow(
   (args: ReadonlyArray<TSESTree.CallExpressionArgument>) => args[0],
@@ -403,7 +392,51 @@ const isScheduleOnRnTargetDeclarator = (
   targets.has(d.id.name) &&
   O.exists(isAnonFn)(O.fromNullable(d.init));
 
-const isExemptDeclarator = (
+const isUseMemoCallExpr = flow(
+  O.filter(
+    (n: TSESTree.Expression): n is TSESTree.CallExpression =>
+      n.type === AST_NODE_TYPES.CallExpression,
+  ),
+  O.flatMap((c) => resolveCalleeName(c.callee)),
+  O.exists((name) => USE_MEMO_NAMES.has(name)),
+);
+
+const extractPropTargetIdentifier = (val: TSESTree.Property["value"]) =>
+  match(val)
+    .with({ type: AST_NODE_TYPES.Identifier }, O.some)
+    .with({ type: AST_NODE_TYPES.AssignmentPattern, left: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.left))
+    .with(P._, () => O.none as O.Option<TSESTree.Identifier>)
+    .exhaustive();
+
+const extractShallowPropIdentifier = (prop: TSESTree.Property | TSESTree.RestElement) =>
+  prop.type === AST_NODE_TYPES.Property ? extractPropTargetIdentifier(prop.value) : O.none;
+
+const isPrimitiveIdentifier = (id: TSESTree.Identifier, ctx: CheckerContext) =>
+  isPrimitiveTsType(ctx.resolveType(id));
+
+const isShallowPrimitiveProperty = (
+  prop: TSESTree.Property | TSESTree.RestElement,
+  ctx: CheckerContext,
+) => O.exists((id: TSESTree.Identifier) => isPrimitiveIdentifier(id, ctx))(
+  extractShallowPropIdentifier(prop),
+);
+
+const isShallowPrimitiveObjectPattern = (
+  pattern: TSESTree.ObjectPattern,
+  checkerCtx: O.Option<CheckerContext>,
+) =>
+  pattern.properties.length > 0 &&
+  O.exists((ctx: CheckerContext) =>
+    RA.every((prop: TSESTree.Property | TSESTree.RestElement) =>
+      isShallowPrimitiveProperty(prop, ctx),
+    )(pattern.properties),
+  )(checkerCtx);
+
+const extractBodyDeclarators = RA.flatMap((stmt: TSESTree.Statement) =>
+  stmt.type === AST_NODE_TYPES.VariableDeclaration ? stmt.declarations : [],
+);
+
+const isBaseExemptDeclarator = (
   d: TSESTree.VariableDeclarator,
   env: TsxCheckEnv,
   workletCapturedNames: ReadonlySet<string>,
@@ -414,31 +447,86 @@ const isExemptDeclarator = (
   isScheduleOnRnTargetDeclarator(d, env.scheduleOnRnTargets) ||
   isWorkletClosureExtraction(d, workletCapturedNames);
 
-const filterDerivedDeclarators =
-  (env: TsxCheckEnv, captured: ReadonlySet<string>) =>
-  (stmts: ReadonlyArray<TSESTree.Statement>) =>
-    flow(
-      RA.flatMap((stmt: TSESTree.Statement) =>
-        stmt.type === AST_NODE_TYPES.VariableDeclaration ? stmt.declarations : [],
-      ),
-      RA.filter((d) => !isExemptDeclarator(d, env, captured)),
-    )(stmts);
+const collectUseMemoNames = RA.filterMap((d: TSESTree.VariableDeclarator) =>
+  d.id.type === AST_NODE_TYPES.Identifier && isUseMemoCallExpr(O.fromNullable(d.init))
+    ? O.some(d.id.name)
+    : O.none,
+);
+
+const collectSingleViewName = (
+  declarators: ReadonlyArray<TSESTree.VariableDeclarator>,
+  isBaseExempt: (d: TSESTree.VariableDeclarator) => boolean,
+) => {
+  const viewIds = RA.filterMap((d: TSESTree.VariableDeclarator) =>
+    d.id.type === AST_NODE_TYPES.Identifier && !isBaseExempt(d)
+      ? O.some(d.id.name)
+      : O.none,
+  )(declarators);
+  return viewIds.length === 1 ? viewIds : ([] as ReadonlyArray<string>);
+};
+
+const isPrimitiveViewDestructuring = (
+  d: TSESTree.VariableDeclarator,
+  sources: ReadonlySet<string>,
+  checkerCtx: O.Option<CheckerContext>,
+) =>
+  d.id.type === AST_NODE_TYPES.ObjectPattern &&
+  O.exists(
+    (init: TSESTree.Expression) =>
+      init.type === AST_NODE_TYPES.Identifier && sources.has(init.name),
+  )(O.fromNullable(d.init)) &&
+  isShallowPrimitiveObjectPattern(d.id, checkerCtx);
+
+const filterDerivedWithSources = (
+  declarators: ReadonlyArray<TSESTree.VariableDeclarator>,
+  isBaseExempt: (d: TSESTree.VariableDeclarator) => boolean,
+  sources: ReadonlySet<string>,
+  checkerCtx: O.Option<CheckerContext>,
+) =>
+  RA.filter(
+    (d: TSESTree.VariableDeclarator) =>
+      !isBaseExempt(d) && !isPrimitiveViewDestructuring(d, sources, checkerCtx),
+  )(declarators);
+
+const collectDerivedWithCaptured = (
+  declarators: ReadonlyArray<TSESTree.VariableDeclarator>,
+  env: TsxCheckEnv,
+  captured: ReadonlySet<string>,
+) => {
+  const isBaseExempt = (d: TSESTree.VariableDeclarator) => isBaseExemptDeclarator(d, env, captured);
+  return filterDerivedWithSources(
+    declarators,
+    isBaseExempt,
+    new Set<string>([
+      ...collectUseMemoNames(declarators),
+      ...collectSingleViewName(declarators, isBaseExempt),
+    ]),
+    env.checkerCtx,
+  );
+};
 
 const collectDerivedDeclarators = (body: TSESTree.BlockStatement, env: TsxCheckEnv) =>
-  filterDerivedDeclarators(env, collectWorkletCapturedNames(body, env))(body.body);
+  collectDerivedWithCaptured(
+    extractBodyDeclarators(body.body),
+    env,
+    collectWorkletCapturedNames(body, env),
+  );
 
-const reportIfObjectPattern = (report: Reporter) => (d: TSESTree.VariableDeclarator) => {
-  match(d.id.type === AST_NODE_TYPES.ObjectPattern)
-    .with(true, () => { report({ node: d.id, messageId: "noViewDestructuring" }); })
+const reportIfObjectPattern = (env: TsxCheckEnv) => (d: TSESTree.VariableDeclarator) => {
+  match(
+    d.id.type === AST_NODE_TYPES.ObjectPattern &&
+      !isShallowPrimitiveObjectPattern(d.id, env.checkerCtx),
+  )
+    .with(true, () => { env.report({ node: d.id, messageId: "noViewDestructuring" }); })
     .with(false, () => {})
     .exhaustive();
 };
 
 const reportDestructuredView = (
   derived: ReadonlyArray<TSESTree.VariableDeclarator>,
-  report: Reporter,
+  env: TsxCheckEnv,
 ) => {
-  RA.map(reportIfObjectPattern(report))(derived);
+  RA.map(reportIfObjectPattern(env))(derived);
 };
 
 const toTooManyDerivedDescriptor = (
@@ -453,7 +541,7 @@ const toTooManyDerivedDescriptor = (
 
 const checkDerivedConsts = (body: TSESTree.BlockStatement, env: TsxCheckEnv) => {
   const derived = collectDerivedDeclarators(body, env);
-  reportDestructuredView(derived, env.report);
+  reportDestructuredView(derived, env);
   match(derived.length > env.opts.maxDerivedConsts)
     .with(true, () => {
       env.report(toTooManyDerivedDescriptor(body, derived.length, env.opts.maxDerivedConsts));
@@ -622,6 +710,7 @@ const buildTsxCheckEnv = (
     context.sourceCode.ast,
     context.sourceCode.visitorKeys,
   ),
+  checkerCtx: toCheckerContext(ESLintUtils.getParserServices(context, true)),
 });
 
 export const thinReactComponent = createRule<Options, MessageIds>({

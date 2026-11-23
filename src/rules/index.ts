@@ -38,6 +38,7 @@ import { noThrowOutsideUnsafe } from "./no-throw-outside-unsafe.js";
 import { noTrainWreckNavigation } from "./no-train-wreck-navigation.js";
 import { noUnitSuffixedPrimitives } from "./no-unit-suffixed-primitives.js";
 import { noUnnecessaryLocalConst } from "./no-unnecessary-local-const.js";
+import { noUnsafeReactHooks } from "./no-unsafe-react-hooks.js";
 import { parseDontValidate } from "./parse-dont-validate.js";
 import { preferApplicativeOverIndependentBind } from "./prefer-applicative-over-independent-bind.js";
 import { preferCatamorphismOverRecursiveAdtWalk } from "./prefer-catamorphism-over-recursive-adt-walk.js";
@@ -111,6 +112,7 @@ export const rules = {
   "no-train-wreck-navigation": noTrainWreckNavigation,
   "no-unit-suffixed-primitives": noUnitSuffixedPrimitives,
   "no-unnecessary-local-const": noUnnecessaryLocalConst,
+  "no-unsafe-react-hooks": noUnsafeReactHooks,
   "parse-dont-validate": parseDontValidate,
   "prefer-applicative-over-independent-bind": preferApplicativeOverIndependentBind,
   "prefer-catamorphism-over-recursive-adt-walk": preferCatamorphismOverRecursiveAdtWalk,

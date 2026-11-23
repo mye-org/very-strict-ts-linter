@@ -110,6 +110,8 @@ describe("tiered configs and React/Expo exclusions", () => {
     expect(mainBlock?.ignores).toEqual(["**/*.tsx", "**/*.config.ts"]);
     expect(tsxBlock?.files).toEqual(["**/*.tsx"]);
     expect(tsxBlock?.rules).toEqual({
+      "no-sequences": "error",
+      "strict-fp/no-unsafe-react-hooks": "error",
       "strict-fp/require-js-thread-schedule-on-rn": "error",
       "strict-fp/thin-react-component": "error",
     });
@@ -129,6 +131,7 @@ describe("tiered configs and React/Expo exclusions", () => {
     expect(t1Rules).toBeDefined();
     expect(t2Rules).toBeDefined();
     expect(t3Rules).toBeDefined();
+    expect(t1Rules?.["no-sequences"]).toBe("error");
     expect(t1Rules?.["@typescript-eslint/consistent-type-definitions"]).toBeUndefined();
     expect(t1Rules?.["@typescript-eslint/use-unknown-in-catch-callback-variable"]).toBe("off");
     expect(t1Rules?.["@typescript-eslint/no-unnecessary-type-parameters"]).toBe("off");
