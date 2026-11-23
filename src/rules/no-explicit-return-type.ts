@@ -1,6 +1,6 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import { match, P } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "noExplicitReturnType";
 

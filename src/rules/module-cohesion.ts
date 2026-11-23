@@ -1,22 +1,22 @@
-import { ESLintUtils, TSESTree } from "@typescript-eslint/utils";
+import {
+  ESLintUtils,
+  ParserServicesWithTypeInformation,
+  TSESLint,
+  TSESTree,
+} from "@typescript-eslint/utils";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
+import { match } from "ts-pattern";
 import {
   analyzeFileCohesion,
   CohesionCluster,
   DEFAULT_UBIQUITOUS_TYPES,
+  FileCohesionResult,
+  ModuleCohesionOptions,
 } from "../analyzers/module-cohesion-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
+import { createRule } from "../lib/rule-factory.js";
 
-type Options = [
-  Partial<
-    Readonly<{
-      readonly ubiquitousTypes: ReadonlyArray<string>;
-      readonly primaryDomainTypes: ReadonlyArray<string>;
-    }>
-  >,
-];
-
+type Options = [Partial<ModuleCohesionOptions>];
 type MessageIds = "disconnectedExportClusters";
 
 const formatCluster = (cluster: CohesionCluster, index: number) => {
@@ -26,8 +26,60 @@ const formatCluster = (cluster: CohesionCluster, index: number) => {
     : base;
 };
 
-const formatClusters = (clusters: ReadonlyArray<CohesionCluster>) =>
-  pipe(clusters, RA.mapWithIndex((idx, c) => formatCluster(c, idx))).join(" | ");
+const joinClusters = (items: ReadonlyArray<string>) => items.join(" | ");
+
+const formatClusters = flow(
+  RA.mapWithIndex((idx: number, cluster: CohesionCluster) => formatCluster(cluster, idx)),
+  joinClusters,
+);
+
+const formatClusterCount = (count: number) => String(count);
+
+const formatCohesionPayload = (clusters: ReadonlyArray<CohesionCluster>) => ({
+  clusterCount: formatClusterCount(clusters.length),
+  clusters: formatClusters(clusters),
+});
+
+const resolveCohesionOptions = (options: Options[0]) => ({
+  ubiquitousTypes: options.ubiquitousTypes ?? DEFAULT_UBIQUITOUS_TYPES,
+  primaryDomainTypes: options.primaryDomainTypes ?? [],
+});
+
+const evaluateProgramCohesion = (
+  node: TSESTree.Program,
+  services: ParserServicesWithTypeInformation,
+  options: Options[0],
+) =>
+  analyzeFileCohesion(
+    services.esTreeNodeToTSNodeMap.get(node),
+    services.program.getTypeChecker(),
+    resolveCohesionOptions(options),
+  );
+
+const reportIfDisconnected = (
+  node: TSESTree.Program,
+  result: FileCohesionResult,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  match(result.isCohesive)
+    .with(true, () => {})
+    .with(false, () => {
+      report({ node, messageId: "disconnectedExportClusters", data: formatCohesionPayload(result.clusters) });
+    })
+    .exhaustive();
+};
+
+const checkProgramCohesion = (
+  node: TSESTree.Program,
+  services: ParserServicesWithTypeInformation,
+  options: Options[0],
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  flow(
+    (n: TSESTree.Program) => evaluateProgramCohesion(n, services, options),
+    (result) => { reportIfDisconnected(node, result, report); },
+  )(node);
+};
 
 export const moduleCohesion = createRule<Options, MessageIds>({
   name: "module-cohesion",
@@ -58,29 +110,9 @@ export const moduleCohesion = createRule<Options, MessageIds>({
       },
     ],
   },
-  create: (context, [options]) => {
-    const services = ESLintUtils.getParserServices(context);
-    const checker = services.program.getTypeChecker();
-    const resolvedOptions = {
-      ubiquitousTypes: options.ubiquitousTypes ?? DEFAULT_UBIQUITOUS_TYPES,
-      primaryDomainTypes: options.primaryDomainTypes ?? [],
-    };
-
-    return {
-      Program: (node: TSESTree.Program) => {
-        const sf = services.esTreeNodeToTSNodeMap.get(node);
-        const result = analyzeFileCohesion(sf, checker, resolvedOptions);
-        if (!result.isCohesive) {
-          context.report({
-            node,
-            messageId: "disconnectedExportClusters",
-            data: {
-              clusterCount: String(result.clusters.length),
-              clusters: formatClusters(result.clusters),
-            },
-          });
-        }
-      },
-    };
-  },
+  create: (context, [options]) => ({
+    Program: (node: TSESTree.Program) => {
+      checkProgramCohesion(node, ESLintUtils.getParserServices(context), options, (d) => { context.report(d); });
+    },
+  }),
 });

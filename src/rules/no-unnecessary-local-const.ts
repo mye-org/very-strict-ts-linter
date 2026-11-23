@@ -1,23 +1,20 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { hasFunctionInit, isFlowCallExpression } from "../utils/type-helpers.js";
+import { hasFunctionInit } from "../lib/estree-function-nodes.js";
+import { isFlowCallExpression } from "../lib/flow-call.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "unnecessaryLocalConst";
 
-const isFunctionNode = (node: O.Option<TSESTree.Node>) =>
-  pipe(
-    node,
-    O.exists(
-      (n) =>
-        n.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-        n.type === AST_NODE_TYPES.FunctionDeclaration ||
-        n.type === AST_NODE_TYPES.FunctionExpression,
-    ),
-  );
+const isFunctionNode = O.exists(
+  (n: TSESTree.Node) =>
+    n.type === AST_NODE_TYPES.ArrowFunctionExpression ||
+    n.type === AST_NODE_TYPES.FunctionDeclaration ||
+    n.type === AST_NODE_TYPES.FunctionExpression,
+);
 
 const isLocalHelperFunction = (declarator: TSESTree.VariableDeclarator) =>
   hasFunctionInit(declarator) ||
@@ -25,17 +22,19 @@ const isLocalHelperFunction = (declarator: TSESTree.VariableDeclarator) =>
     isFlowCallExpression(declarator.init));
 
 const hasSingleReadRef = (v: TSESLint.Scope.Variable) =>
-  pipe(v.references, RA.filter((ref) => ref.isRead())).length === 1;
+  flow(
+    RA.filter((ref: TSESLint.Scope.Reference) => ref.isRead()),
+    RA.size,
+  )(v.references) === 1;
 
 const hasSingleRead = (
   declarator: TSESTree.VariableDeclarator,
   sourceCode: Readonly<TSESLint.SourceCode>,
 ) =>
-  pipe(
-    O.fromNullable(sourceCode.getDeclaredVariables(declarator)[0]),
+  flow(
     O.filter(hasSingleReadRef),
-    O.map((v) => ({ declarator, name: v.name })),
-  );
+    O.map((v: TSESLint.Scope.Variable) => ({ declarator, name: v.name })),
+  )(O.fromNullable(sourceCode.getDeclaredVariables(declarator)[0]));
 
 const isSingleUseDeclarator = (
   declarator: TSESTree.VariableDeclarator,
@@ -56,13 +55,12 @@ const reportSingleUseDeclarators = (
   sourceCode: Readonly<TSESLint.SourceCode>,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
-  pipe(
-    node.declarations as ReadonlyArray<TSESTree.VariableDeclarator>,
-    RA.filterMap((d) => isSingleUseDeclarator(d, sourceCode)),
+  flow(
+    RA.filterMap((d: TSESTree.VariableDeclarator) => isSingleUseDeclarator(d, sourceCode)),
     RA.map(({ declarator, name }) => {
       report({ node: declarator, messageId: "unnecessaryLocalConst", data: { name } });
     }),
-  );
+  )(node.declarations);
 };
 
 export const noUnnecessaryLocalConst = createRule<[], MessageIds>({

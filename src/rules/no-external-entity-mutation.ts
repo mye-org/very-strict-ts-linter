@@ -2,18 +2,16 @@ import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLin
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as R from "fp-ts/lib/Record.js";
-import { flow, pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import type * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import { normalizeFilePath } from "../utils/program-cache.js";
-import {
-  getEstreeChildNodes,
-  getTsTypeDeclarationFile,
-  isEsTreeFunctionNode,
-  isMemberAssignment,
-  isSetterMethodName,
-} from "../utils/type-helpers.js";
+import { collectEstreeChildNodes } from "../lib/estree-children.js";
+import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
+import { isMemberAssignment } from "../lib/member-assignment.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isSetterMethodName } from "../lib/setter-method.js";
+import { normalizeFilePath } from "../lib/source-paths.js";
+import { resolveTsTypeDeclarationFile } from "../lib/ts-type-declaration.js";
 
 type Options = [Readonly<Record<"minMutations", number>>];
 type MessageIds = "externalMutation" | "setterAbuse";
@@ -29,39 +27,44 @@ type TargetAssignment = Readonly<{
 }>;
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive root unwrap
-const getRootTarget = (node: TSESTree.Expression): O.Option<TSESTree.Identifier> =>
+const resolveRootTarget = (node: TSESTree.Expression): O.Option<TSESTree.Identifier> =>
   match(node)
     .with({ type: AST_NODE_TYPES.Identifier }, O.some)
-    .with({ type: AST_NODE_TYPES.MemberExpression }, (m) => getRootTarget(m.object))
+    .with({ type: AST_NODE_TYPES.MemberExpression }, (m) => resolveRootTarget(m.object))
     .with(P._, () => O.none as O.Option<TSESTree.Identifier>)
     .exhaustive();
 
+const isProjectSourcePath = (norm: string) =>
+  !norm.includes("/node_modules/") && !norm.endsWith(".d.ts");
+
 const isExternalProjectFile = (declFile: string, currentFile: string) => {
   const norm = normalizeFilePath(declFile);
-  return (
-    norm !== normalizeFilePath(currentFile) &&
-    !norm.includes("/node_modules/") &&
-    !norm.endsWith(".d.ts")
-  );
+  return norm !== normalizeFilePath(currentFile) && isProjectSourcePath(norm);
 };
 
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive intersection check
 const isExternalProjectTsType = (type: ts.Type, currentFile: string): boolean =>
-  pipe(
-    getTsTypeDeclarationFile(type),
+  flow(
+    resolveTsTypeDeclarationFile,
     O.exists((declFile) => isExternalProjectFile(declFile, currentFile)),
-  ) ||
+  )(type) ||
   (type.isIntersection() &&
-    pipe(type.types, RA.some((member) => isExternalProjectTsType(member, currentFile))));
+    RA.some((member: ts.Type) => isExternalProjectTsType(member, currentFile))(type.types));
+
+const resolveExpressionTsType = (
+  target: TSESTree.Expression,
+  services: ParserServicesWithTypeInformation,
+) =>
+  flow(
+    (expr: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(expr),
+    (tsNode) => services.program.getTypeChecker().getTypeAtLocation(tsNode),
+  )(target);
 
 const isExternalProjectEntityType = (
   target: TSESTree.Expression,
   currentFile: string,
   services: ParserServicesWithTypeInformation,
-) =>
-  isExternalProjectTsType(
-    services.program.getTypeChecker().getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(target)),
-    currentFile,
-  );
+) => isExternalProjectTsType(resolveExpressionTsType(target, services), currentFile);
 
 const extractMemberUpdate = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.UpdateExpression && node.argument.type === AST_NODE_TYPES.MemberExpression
@@ -80,27 +83,29 @@ const collectAssignmentsInBlock = (
     ? []
     : [
         ...extractDirectMemberAssignment(node),
-        ...pipe(
-          getEstreeChildNodes(node, visitorKeys),
-          RA.flatMap((child) => collectAssignmentsInBlock(child, visitorKeys)),
+        ...RA.flatMap((child: TSESTree.Node) => collectAssignmentsInBlock(child, visitorKeys))(
+          collectEstreeChildNodes(node, visitorKeys),
         ),
       ];
 
 const toTargetAssignment = (m: TSESTree.MemberExpression) =>
-  pipe(
-    getRootTarget(m.object),
+  flow(
+    resolveRootTarget,
     O.map((id) => ({ targetName: id.name, targetNode: id, member: m })),
-  );
+  )(m.object);
 
-const groupMutationsByTarget = (mutations: ReadonlyArray<TSESTree.MemberExpression>) =>
-  pipe(
-    mutations,
-    RA.filterMap(toTargetAssignment),
-    RA.reduce({}, (acc: Readonly<Record<string, ReadonlyArray<TargetAssignment>>>, entry) => ({
-      ...acc,
-      [entry.targetName]: [...(acc[entry.targetName] ?? []), entry],
-    })),
-  );
+const groupMutationsByTarget = flow(
+  RA.filterMap(toTargetAssignment),
+  RA.reduce({}, (acc: Readonly<Record<string, ReadonlyArray<TargetAssignment>>>, entry) => ({
+    ...acc,
+    [entry.targetName]: [...(acc[entry.targetName] ?? []), entry],
+  })),
+);
+
+const formatExternalMutationPayload = (target: string, count: number) => ({
+  target,
+  count: String(count),
+});
 
 const reportTargetMutations = (
   targetName: string,
@@ -110,13 +115,13 @@ const reportTargetMutations = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(items[0]),
+  flow(
+    RA.head<TargetAssignment>,
     O.filter((first) => items.length >= minMutations && isExternalProjectEntityType(first.targetNode, currentFile, services)),
     O.map((first) => {
-      report({ node: first.member, messageId: "externalMutation", data: { target: targetName, count: String(items.length) } });
+      report({ node: first.member, messageId: "externalMutation", data: formatExternalMutationPayload(targetName, items.length) });
     }),
-  );
+  )(items);
 };
 
 const collectBodyAssignments = (
@@ -124,7 +129,7 @@ const collectBodyAssignments = (
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) =>
   body.type === AST_NODE_TYPES.BlockStatement
-    ? pipe(body.body, RA.flatMap((s) => collectAssignmentsInBlock(s, visitorKeys)))
+    ? RA.flatMap((s: TSESTree.Statement) => collectAssignmentsInBlock(s, visitorKeys))(body.body)
     : ([] as ReadonlyArray<TSESTree.MemberExpression>);
 
 const checkFunctionMutations = (
@@ -135,14 +140,14 @@ const checkFunctionMutations = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    collectBodyAssignments(fn.body, visitorKeys),
+  flow(
+    (body: FunctionBodyNode["body"]) => collectBodyAssignments(body, visitorKeys),
     groupMutationsByTarget,
     R.toEntries,
     RA.map(([targetName, items]) => {
       reportTargetMutations(targetName, items, minMutations, currentFile, services, report);
     }),
-  );
+  )(fn.body);
 };
 
 const isExternalSetterMember = (
@@ -156,24 +161,21 @@ const isExternalSetterMember = (
   isSetterMethodName(member.property.name) &&
   isExternalProjectEntityType(member.object, currentFile, services);
 
+const extractSetterMethodName = (member: TSESTree.MemberExpression) =>
+  member.property.type === AST_NODE_TYPES.Identifier ? O.some(member.property.name) : O.none;
+
 const checkSetterCall = (
   node: TSESTree.CallExpression,
   currentFile: string,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.some(node.callee),
-    O.filter((c): c is TSESTree.MemberExpression => c.type === AST_NODE_TYPES.MemberExpression),
+  flow(
+    O.fromPredicate((c: TSESTree.Expression): c is TSESTree.MemberExpression => c.type === AST_NODE_TYPES.MemberExpression),
     O.filter((m) => isExternalSetterMember(m, currentFile, services)),
-    O.map(
-      flow(
-        (m) => m.property,
-        O.fromPredicate((p): p is TSESTree.Identifier => p.type === AST_NODE_TYPES.Identifier),
-        O.map((id) => { report({ node, messageId: "setterAbuse", data: { method: id.name } }); }),
-      ),
-    ),
-  );
+    O.flatMap(extractSetterMethodName),
+    O.map((method) => { report({ node, messageId: "setterAbuse", data: { method } }); }),
+  )(node.callee);
 };
 
 export const noExternalEntityMutation = createRule<Options, MessageIds>({

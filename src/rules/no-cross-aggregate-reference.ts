@@ -1,11 +1,13 @@
-import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESTree } from "@typescript-eslint/utils";
+import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
+import * as ts from "typescript";
 import { analyzeAggregateGraph } from "../analyzers/aggregate-graph-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsTypeName, unwrapContainerTsTypes } from "../utils/type-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { unwrapContainerTsTypes } from "../lib/ts-container-types.js";
+import { resolveTsTypeName } from "../lib/ts-type-name.js";
 
 type Options = [
   Readonly<{
@@ -16,12 +18,31 @@ type Options = [
 type MessageIds = "crossAggregateReference";
 
 type MemberNode = TSESTree.TSPropertySignature | TSESTree.PropertyDefinition;
+type ReportFn = (d: TSESLint.ReportDescriptor<MessageIds>) => void;
 
-const filterPropSigs = (members: ReadonlyArray<TSESTree.TypeElement>) =>
-  pipe(
-    members,
-    RA.filter((m): m is TSESTree.TSPropertySignature => m.type === AST_NODE_TYPES.TSPropertySignature),
-  );
+const isPropSig = (m: TSESTree.TypeElement): m is TSESTree.TSPropertySignature =>
+  m.type === AST_NODE_TYPES.TSPropertySignature;
+
+const isClassPropDef = (m: TSESTree.ClassElement): m is TSESTree.PropertyDefinition =>
+  m.type === AST_NODE_TYPES.PropertyDefinition;
+
+const filterPropSigs = RA.filter(isPropSig);
+
+const extractFirstTypeArg = flow(
+  (ref: TSESTree.TSTypeReference) => ref.typeArguments,
+  O.fromNullable,
+  O.flatMap((args) => RA.head(args.params)),
+);
+
+const extractLiteralPropSigs = (typeNode: TSESTree.TypeNode) =>
+  typeNode.type === AST_NODE_TYPES.TSTypeLiteral
+    ? filterPropSigs(typeNode.members)
+    : ([] as ReadonlyArray<TSESTree.TSPropertySignature>);
+
+const extractReadonlyMembers = flow(
+  extractFirstTypeArg,
+  O.match(() => [] as ReadonlyArray<TSESTree.TSPropertySignature>, extractLiteralPropSigs),
+);
 
 const extractTypeLiteralMembers = (typeNode: TSESTree.TypeNode) =>
   match(typeNode)
@@ -31,32 +52,52 @@ const extractTypeLiteralMembers = (typeNode: TSESTree.TypeNode) =>
         type: AST_NODE_TYPES.TSTypeReference,
         typeName: { type: AST_NODE_TYPES.Identifier, name: "Readonly" },
       },
-      (ref) =>
-        ref.typeArguments?.params[0]?.type === AST_NODE_TYPES.TSTypeLiteral
-          ? filterPropSigs(ref.typeArguments.params[0].members)
-          : ([] as ReadonlyArray<TSESTree.TSPropertySignature>),
+      extractReadonlyMembers,
     )
     .with(P._, () => [] as ReadonlyArray<TSESTree.TSPropertySignature>)
     .exhaustive();
+
+const formatAggregateRefPayload = (current: string, target: string) => ({
+  current,
+  target,
+  idName: `${target}Id`,
+});
+
+const reportTargetIfCrossAggregate =
+  (
+    member: MemberNode,
+    currentAggregate: string,
+    aggregateRoots: ReadonlySet<string>,
+    report: ReportFn,
+  ) =>
+  (tsType: ts.Type) => {
+    flow(
+      resolveTsTypeName,
+      O.filter((target) => target !== currentAggregate && aggregateRoots.has(target)),
+      O.map((target) => {
+        report({
+          node: member,
+          messageId: "crossAggregateReference",
+          data: formatAggregateRefPayload(currentAggregate, target),
+        });
+      }),
+    )(tsType);
+  };
 
 const checkPropertyMember = (
   member: MemberNode,
   currentAggregate: string,
   aggregateRoots: ReadonlySet<string>,
   services: ParserServicesWithTypeInformation,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+  report: ReportFn,
 ) => {
   const checker = services.program.getTypeChecker();
-  pipe(
-    services.esTreeNodeToTSNodeMap.get(member),
+  flow(
+    (m: MemberNode) => services.esTreeNodeToTSNodeMap.get(m),
     (tsNode) => checker.getTypeAtLocation(tsNode),
     (t) => unwrapContainerTsTypes(t, checker),
-    RA.filterMap(getTsTypeName),
-    RA.filter((target) => target !== currentAggregate && aggregateRoots.has(target)),
-    RA.map((target) => {
-      report({ node: member, messageId: "crossAggregateReference", data: { current: currentAggregate, target, idName: `${target}Id` } });
-    }),
-  );
+    RA.map(reportTargetIfCrossAggregate(member, currentAggregate, aggregateRoots, report)),
+  )(member);
 };
 
 const checkAllPropertyMembers = (
@@ -64,9 +105,11 @@ const checkAllPropertyMembers = (
   aggName: string,
   aggregateRoots: ReadonlySet<string>,
   services: ParserServicesWithTypeInformation,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+  report: ReportFn,
 ) => {
-  pipe(members, RA.map((m) => { checkPropertyMember(m, aggName, aggregateRoots, services, report); }));
+  RA.map((m: MemberNode) => {
+    checkPropertyMember(m, aggName, aggregateRoots, services, report);
+  })(members);
 };
 
 const checkAggregateMembers = (
@@ -74,36 +117,29 @@ const checkAggregateMembers = (
   members: ReadonlyArray<MemberNode>,
   aggregateRoots: ReadonlySet<string>,
   services: ParserServicesWithTypeInformation,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+  report: ReportFn,
 ) => {
-  pipe(
-    name,
-    O.filter((aggName) => aggregateRoots.has(aggName)),
+  flow(
+    O.filter((aggName: string) => aggregateRoots.has(aggName)),
     O.map((aggName) => {
       checkAllPropertyMembers(members, aggName, aggregateRoots, services, report);
     }),
-  );
+  )(name);
 };
 
-const isPropSig = (m: TSESTree.TypeElement): m is TSESTree.TSPropertySignature =>
-  m.type === AST_NODE_TYPES.TSPropertySignature;
-
-const isClassPropDef = (m: TSESTree.ClassElement): m is TSESTree.PropertyDefinition =>
-  m.type === AST_NODE_TYPES.PropertyDefinition;
-
-const createAggregateRefListeners = (
+const buildAggregateRefListeners = (
   services: ParserServicesWithTypeInformation,
   aggregateRoots: ReadonlySet<string>,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+  report: ReportFn,
 ) => ({
   TSTypeAliasDeclaration: (node: TSESTree.TSTypeAliasDeclaration) => {
     checkAggregateMembers(O.some(node.id.name), extractTypeLiteralMembers(node.typeAnnotation), aggregateRoots, services, report);
   },
   TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => {
-    checkAggregateMembers(O.some(node.id.name), pipe(node.body.body, RA.filter(isPropSig)), aggregateRoots, services, report);
+    checkAggregateMembers(O.some(node.id.name), RA.filter(isPropSig)(node.body.body), aggregateRoots, services, report);
   },
   ClassDeclaration: (node: TSESTree.ClassDeclaration) => {
-    checkAggregateMembers(O.fromNullable(node.id?.name), pipe(node.body.body, RA.filter(isClassPropDef)), aggregateRoots, services, report);
+    checkAggregateMembers(O.fromNullable(node.id?.name), RA.filter(isClassPropDef)(node.body.body), aggregateRoots, services, report);
   },
 });
 
@@ -138,7 +174,7 @@ export const noCrossAggregateReference = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => {
     const services = ESLintUtils.getParserServices(context);
-    return createAggregateRefListeners(
+    return buildAggregateRefListeners(
       services,
       analyzeAggregateGraph(services.program, options.aggregateRoots, options.aggregatePathPatterns).aggregateRoots,
       (d) => { context.report(d); },

@@ -2,10 +2,12 @@ import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as S from "fp-ts/lib/string.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { getEstreeChildNodes, isFlowCallExpression, isPipeCallExpression } from "../utils/type-helpers.js";
+import { collectEstreeChildNodes } from "../lib/estree-children.js";
+import { isFlowCallExpression } from "../lib/flow-call.js";
+import { isPipeCallExpression } from "../lib/pipe-call.js";
+import { createRule } from "../lib/rule-factory.js";
 
 // eslint-disable-next-line strict-fp/no-domain-raw-primitives -- ESLint rule schema requires boolean options
 type Options = [Partial<Readonly<{ ignoreTrivialProjections: boolean; checkPipeSteps: boolean }>>];
@@ -170,6 +172,8 @@ const neutralCombinators = new Set([
   "fromTraversable",
 ]);
 
+const REGEXP_CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set(["RegExp"]);
+
 const emptyCounts: AbstractionCounts = { high: [], low: [] };
 
 const isFunctionNode = (node: TSESTree.Node): node is FunctionNode =>
@@ -182,12 +186,13 @@ const isPipeOrFlowCall = (node: TSESTree.CallExpression) =>
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive parent walk
 const hasEnclosingFunction = (node: TSESTree.Node): boolean =>
-  pipe(
-    O.fromNullable(node.parent),
+  flow(
+    (n: TSESTree.Node) => n.parent,
+    O.fromNullable,
     O.exists((parent) => isFunctionNode(parent) || hasEnclosingFunction(parent)),
-  );
+  )(node);
 
-const getCalleeName = (callee: TSESTree.Expression) =>
+const resolveCalleeName = (callee: TSESTree.Expression) =>
   match(callee)
     .with({ type: AST_NODE_TYPES.Identifier }, (id) => O.some(id.name))
     .with(
@@ -226,7 +231,7 @@ const isRegexNode = (node: TSESTree.Node) =>
   (node.type === AST_NODE_TYPES.Literal && "regex" in node) ||
   (node.type === AST_NODE_TYPES.NewExpression &&
     node.callee.type === AST_NODE_TYPES.Identifier &&
-    node.callee.name === "RegExp");
+    REGEXP_CONSTRUCTOR_NAMES.has(node.callee.name));
 
 const isControlFlowStatement = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.IfStatement ||
@@ -253,9 +258,8 @@ const collectWithinBody = (
     ? [node]
     : [
         node,
-        ...pipe(
-          getEstreeChildNodes(node, visitorKeys),
-          RA.flatMap((child) => collectWithinBody(child, "nested", visitorKeys)),
+        ...RA.flatMap((child: TSESTree.Node) => collectWithinBody(child, "nested", visitorKeys))(
+          collectEstreeChildNodes(node, visitorKeys),
         ),
       ];
 
@@ -264,13 +268,13 @@ const toHighCount = (name: string) => ({ high: [`${name}()`], low: [] as Readonl
 
 const classifyCall = (node: TSESTree.CallExpression) =>
   isLowLevelMemberCall(node.callee) || isLowLevelIdentifierCall(node.callee)
-    ? pipe(getCalleeName(node.callee), O.map(toLowCount), O.getOrElse(() => emptyCounts))
-    : pipe(
-        getCalleeName(node.callee),
+    ? flow(resolveCalleeName, O.map(toLowCount), O.getOrElse(() => emptyCounts))(node.callee)
+    : flow(
+        resolveCalleeName,
         O.filter((name) => !neutralCombinators.has(name)),
         O.map(toHighCount),
         O.getOrElse(() => emptyCounts),
-      );
+      )(node.callee);
 
 const classifyFunctionStep = (
   fn: FunctionNode,
@@ -291,18 +295,18 @@ const classifyPipeStep = (
     ? { high: [arg.name], low: [] as ReadonlyArray<string> }
     : classifyNonIdStep(arg, trivialMode);
 
-const getPipeSteps = (node: TSESTree.CallExpression) =>
+const extractPipeSteps = (node: TSESTree.CallExpression) =>
   isPipeCallExpression(node) ? RA.dropLeft(1)(node.arguments) : node.arguments;
 
 const classifyPipeCall = (
   node: TSESTree.CallExpression,
   trivialMode: AnalysisConfig["trivialProjections"],
 ) =>
-  pipe(
-    getPipeSteps(node),
+  flow(
+    extractPipeSteps,
     RA.map((step) => classifyPipeStep(step, trivialMode)),
     RA.reduce(emptyCounts, mergeCounts),
-  );
+  )(node);
 
 const isNonEmptyTemplateLiteral = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.TemplateLiteral && node.expressions.length > 0;
@@ -310,15 +314,14 @@ const isNonEmptyTemplateLiteral = (node: TSESTree.Node) =>
 const toLowCounts = (low: ReadonlyArray<string>) => ({ high: [] as ReadonlyArray<string>, low });
 
 const classifyNonCallNode = (node: TSESTree.Node) =>
-  pipe(
-    [
-      isRegexNode(node) ? O.some("RegExp") : O.none,
-      isControlFlowStatement(node) ? O.some(node.type) : O.none,
-      isNonEmptyTemplateLiteral(node) ? O.some("template literal") : O.none,
-    ],
-    RA.compact,
+  flow(
+    RA.compact<string>,
     toLowCounts,
-  );
+  )([
+    isRegexNode(node) ? O.some("RegExp") : O.none,
+    isControlFlowStatement(node) ? O.some(node.type) : O.none,
+    isNonEmptyTemplateLiteral(node) ? O.some("template literal") : O.none,
+  ]);
 
 const classifyCallNode = (node: TSESTree.CallExpression, config: AnalysisConfig) =>
   config.pipeSteps === "check" && isPipeOrFlowCall(node)
@@ -331,14 +334,13 @@ const classifyNode = (node: TSESTree.Node, config: AnalysisConfig) =>
     : classifyNonCallNode(node);
 
 const analyzeFunctionBody = (fn: FunctionNode, config: AnalysisConfig) =>
-  pipe(
-    collectWithinBody(fn.body, "root", config.visitorKeys),
-    RA.map((n) => classifyNode(n, config)),
+  flow(
+    RA.map((n: TSESTree.Node) => classifyNode(n, config)),
     RA.reduce(emptyCounts, mergeCounts),
-  );
+  )(collectWithinBody(fn.body, "root", config.visitorKeys));
 
 const formatExamples = (items: ReadonlyArray<string>) =>
-  pipe(items, RA.uniq(S.Eq), RA.takeLeft(3)).join(", ");
+  flow(RA.uniq(S.Eq), RA.takeLeft(3))(items).join(", ");
 
 const reportIfMixed = (
   node: TSESTree.Node,
@@ -380,7 +382,7 @@ const checkFlowNode = (
     .exhaustive();
 };
 
-const createHandlers = (
+const buildListeners = (
   config: AnalysisConfig,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
@@ -420,5 +422,5 @@ export const singleLevelOfAbstraction = createRule<Options, MessageIds>({
     defaultOptions: [{ ignoreTrivialProjections: true, checkPipeSteps: true }],
   },
   create: (context, [options]) =>
-    createHandlers(toConfig(context.sourceCode.visitorKeys, options), (d) => { context.report(d); }),
+    buildListeners(toConfig(context.sourceCode.visitorKeys, options), (d) => { context.report(d); }),
 });

@@ -1,7 +1,22 @@
-import { TSESTree } from "@typescript-eslint/utils";
-import { createRule } from "../utils/create-rule.js";
+import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
+import { match } from "ts-pattern";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "noClass";
+type ClassNode = TSESTree.ClassDeclaration | TSESTree.ClassExpression;
+
+const isAmbientClassDeclaration = (node: ClassNode) =>
+  node.type === AST_NODE_TYPES.ClassDeclaration && node.declare;
+
+const reportNonAmbientClass = (
+  node: ClassNode,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  match(isAmbientClassDeclaration(node))
+    .with(true, () => {})
+    .with(false, () => { report({ node, messageId: "noClass" }); })
+    .exhaustive();
+};
 
 export const noClasses = createRule<[], MessageIds>({
   name: "no-classes",
@@ -19,15 +34,12 @@ export const noClasses = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const reportClass = (node: TSESTree.ClassDeclaration | TSESTree.ClassExpression) => {
-      if (node.type === "ClassDeclaration" && node.declare) {
-        return;
-      }
-      context.report({ node, messageId: "noClass" });
+    const check = (node: ClassNode) => {
+      reportNonAmbientClass(node, (d) => { context.report(d); });
     };
     return {
-      ClassDeclaration: reportClass,
-      ClassExpression: reportClass,
+      ClassDeclaration: check,
+      ClassExpression: check,
     };
   },
 });

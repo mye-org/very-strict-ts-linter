@@ -5,17 +5,14 @@ import {
   TSESTree,
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import {
-  getEnclosingEsTreeFunction,
-  isInsideUnsafeOrMustFunction,
-  isTsParameterSymbol,
-  isUnsafeOrMustName,
-  PREDICATE_NAME_RE,
-} from "../utils/type-helpers.js";
+import { resolveEnclosingEsTreeFunction } from "../lib/estree-function-nodes.js";
+import { PREDICATE_NAME_RE } from "../lib/predicate-name.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isTsParameterSymbol } from "../lib/ts-parameter-symbol.js";
+import { isInsideUnsafeOrMustFunction, isUnsafeOrMustName } from "../lib/unsafe-function-scope.js";
 
 type MessageIds = "preferTupleDestructuring" | "preferNonEmptyOrFixedTuple";
 
@@ -28,6 +25,9 @@ const COLLECTION_PREDICATE_METHODS = new Set([
   "when",
 ]);
 const LENGTH_OPERATORS = new Set(["===", "!==", "==", "!=", ">", ">=", "<", "<="]);
+const LENGTH_PROPERTY_NAMES: ReadonlySet<string> = new Set(["length"]);
+const FAILURE_NAMESPACES: ReadonlySet<string> = new Set(["O", "E"]);
+const FAILURE_MEMBERS: ReadonlySet<string> = new Set(["none", "left"]);
 
 const isNonTupleArrayType = (type: ts.Type, checker: ts.TypeChecker) => {
   const symName = type.getSymbol()?.name;
@@ -37,23 +37,25 @@ const isNonTupleArrayType = (type: ts.Type, checker: ts.TypeChecker) => {
   );
 };
 
-const getPatternTargetNode = (pattern: TSESTree.ArrayPattern) =>
+const resolvePatternTargetNode = (pattern: TSESTree.ArrayPattern) =>
   match(pattern.parent)
     .with({ type: AST_NODE_TYPES.VariableDeclarator }, (d) => O.fromNullable(d.init))
     .with({ type: AST_NODE_TYPES.AssignmentPattern }, (a) => O.some(a.left))
     .with(P._, () => O.some(pattern as TSESTree.Node))
     .exhaustive();
 
+const resolveTargetType = (
+  target: TSESTree.Node,
+  services: ParserServicesWithTypeInformation,
+  checker: ts.TypeChecker,
+) => checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(target));
+
 const isTargetNonTuple = (
   target: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
 ) => {
   const checker = services.program.getTypeChecker();
-  return pipe(
-    services.esTreeNodeToTSNodeMap.get(target),
-    (tsNode) => checker.getTypeAtLocation(tsNode),
-    (type) => isNonTupleArrayType(type, checker),
-  );
+  return isNonTupleArrayType(resolveTargetType(target, services, checker), checker);
 };
 
 const isNonTupleDestructuring = (
@@ -61,58 +63,66 @@ const isNonTupleDestructuring = (
   services: ParserServicesWithTypeInformation,
 ) =>
   node.elements.length >= 1 &&
-  pipe(getPatternTargetNode(node), O.exists((target) => isTargetNonTuple(target, services)));
+  O.exists((target: TSESTree.Node) => isTargetNonTuple(target, services))(
+    resolvePatternTargetNode(node),
+  );
 
-const getEnclosingFnName = (fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression) =>
-  match(fn)
-    .with({ type: AST_NODE_TYPES.FunctionDeclaration }, (f) => O.fromNullable(f.id?.name))
-    .with({ parent: { type: AST_NODE_TYPES.VariableDeclarator, id: { type: AST_NODE_TYPES.Identifier } } }, (f) =>
-      O.some(f.parent.id.name),
-    )
-    .with(P._, () => O.none)
-    .exhaustive();
+const resolveVarDeclaratorName = (parent: TSESTree.Node) =>
+  parent.type === AST_NODE_TYPES.VariableDeclarator &&
+  parent.id.type === AST_NODE_TYPES.Identifier
+    ? O.some(parent.id.name)
+    : O.none;
+
+const resolveEnclosingFnName = (
+  fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression,
+) =>
+  fn.type === AST_NODE_TYPES.FunctionDeclaration
+    ? O.fromNullable(fn.id?.name)
+    : O.flatMap(resolveVarDeclaratorName)(O.fromNullable(fn.parent));
+
+const isMemberParentOfCall = (member: TSESTree.MemberExpression) =>
+  member.parent.type === AST_NODE_TYPES.CallExpression;
 
 const isInlineCallCallback = (fn: TSESTree.Node) =>
   fn.parent?.type === AST_NODE_TYPES.CallExpression ||
-  (fn.parent?.type === AST_NODE_TYPES.MemberExpression &&
-    fn.parent.parent.type === AST_NODE_TYPES.CallExpression);
+  (fn.parent?.type === AST_NODE_TYPES.MemberExpression && isMemberParentOfCall(fn.parent));
+
+const isCollectionPredicateMember = (member: TSESTree.MemberExpression) =>
+  member.property.type === AST_NODE_TYPES.Identifier &&
+  COLLECTION_PREDICATE_METHODS.has(member.property.name);
+
+const isCollectionPredicateCall = (call: TSESTree.CallExpression) =>
+  call.callee.type === AST_NODE_TYPES.MemberExpression &&
+  isCollectionPredicateMember(call.callee);
 
 const isPredicateCallbackArg = (fn: TSESTree.Node) =>
-  fn.parent?.type === AST_NODE_TYPES.CallExpression &&
-  fn.parent.callee.type === AST_NODE_TYPES.MemberExpression &&
-  fn.parent.callee.property.type === AST_NODE_TYPES.Identifier &&
-  COLLECTION_PREDICATE_METHODS.has(fn.parent.callee.property.name);
+  fn.parent?.type === AST_NODE_TYPES.CallExpression && isCollectionPredicateCall(fn.parent);
 
-const isExemptFnName = (
-  fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression,
-) =>
-  pipe(
-    getEnclosingFnName(fn),
-    O.exists((name) => isUnsafeOrMustName(name) || PREDICATE_NAME_RE.test(name)),
-  );
+const isPredicateFnName = (name: string) => PREDICATE_NAME_RE.test(name);
+
+const isExemptFnName = flow(
+  resolveEnclosingFnName,
+  O.exists((name: string) => isUnsafeOrMustName(name) || isPredicateFnName(name)),
+);
 
 const isExemptLengthContext = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
-  pipe(
-    getEnclosingEsTreeFunction(node),
-    O.exists(
-      (fn) =>
-        isInlineCallCallback(fn) ||
-        isPredicateCallbackArg(fn) ||
-        isExemptFnName(fn),
-    ),
-  );
+  O.exists(
+    (
+      fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression,
+    ) => isInlineCallCallback(fn) || isPredicateCallbackArg(fn) || isExemptFnName(fn),
+  )(resolveEnclosingEsTreeFunction(node));
 
-const getLengthMemberTarget = (expr: TSESTree.Expression) =>
+const resolveLengthMemberTarget = (expr: TSESTree.Expression) =>
   expr.type === AST_NODE_TYPES.MemberExpression &&
   !expr.computed &&
   expr.property.type === AST_NODE_TYPES.Identifier &&
-  expr.property.name === "length" &&
+  LENGTH_PROPERTY_NAMES.has(expr.property.name) &&
   expr.object.type === AST_NODE_TYPES.Identifier
     ? O.some(expr.object)
     : O.none;
 
-const getNumericLiteralValue = (expr: TSESTree.Expression) =>
+const resolveNumericLiteralValue = (expr: TSESTree.Expression) =>
   expr.type === AST_NODE_TYPES.Literal && typeof expr.value === "number"
     ? O.some(expr.value)
     : O.none;
@@ -123,9 +133,9 @@ const isFailureMember = (expr: TSESTree.Expression) =>
   expr.type === AST_NODE_TYPES.MemberExpression &&
   !expr.computed &&
   expr.object.type === AST_NODE_TYPES.Identifier &&
-  (expr.object.name === "O" || expr.object.name === "E") &&
+  FAILURE_NAMESPACES.has(expr.object.name) &&
   expr.property.type === AST_NODE_TYPES.Identifier &&
-  (expr.property.name === "none" || expr.property.name === "left");
+  FAILURE_MEMBERS.has(expr.property.name);
 
 const isFailureReturnExpr = (expr: TSESTree.Expression) =>
   isFailureMember(expr) ||
@@ -143,8 +153,11 @@ const isParamArrayIdentifier = (
   const checker = services.program.getTypeChecker();
   const tsNode = services.esTreeNodeToTSNodeMap.get(id);
   return (
-    pipe(O.fromNullable(checker.getSymbolAtLocation(tsNode)), O.exists(isTsParameterSymbol)) &&
-    isNonTupleArrayType(checker.getTypeAtLocation(tsNode), checker)
+    flow(
+      (n: ts.Node) => checker.getSymbolAtLocation(n),
+      O.fromNullable,
+      O.exists(isTsParameterSymbol),
+    )(tsNode) && isNonTupleArrayType(checker.getTypeAtLocation(tsNode), checker)
   );
 };
 
@@ -160,10 +173,10 @@ const pickCheckedTarget = (
 const extractCheckedArrayTarget = (node: TSESTree.BinaryExpression) =>
   LENGTH_OPERATORS.has(node.operator) && node.left.type !== AST_NODE_TYPES.PrivateIdentifier
     ? match({
-        leftLen: getLengthMemberTarget(node.left),
-        rightNum: getNumericLiteralValue(node.right),
-        rightLen: getLengthMemberTarget(node.right),
-        leftNum: getNumericLiteralValue(node.left),
+        leftLen: resolveLengthMemberTarget(node.left),
+        rightNum: resolveNumericLiteralValue(node.right),
+        rightLen: resolveLengthMemberTarget(node.right),
+        leftNum: resolveNumericLiteralValue(node.left),
       })
         .with({ leftLen: { _tag: "Some" }, rightNum: { _tag: "Some" } }, ({ leftLen, rightNum }) =>
           pickCheckedTarget(leftLen, rightNum.value, node),
@@ -179,9 +192,8 @@ const isRuntimeArrayLengthCheck = (
   services: ParserServicesWithTypeInformation,
 ) =>
   !isExemptLengthContext(node) &&
-  pipe(
+  O.exists((id: TSESTree.Identifier) => isParamArrayIdentifier(id, services))(
     extractCheckedArrayTarget(node),
-    O.exists((id) => isParamArrayIdentifier(id, services)),
   );
 
 const reportOpt = (
@@ -189,7 +201,7 @@ const reportOpt = (
   msg: O.Option<MessageIds>,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
 ) => {
-  pipe(msg, O.map((messageId) => { report({ node, messageId }); }));
+  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
 };
 
 export const preferNonemptyTuple = createRule<[], MessageIds>({

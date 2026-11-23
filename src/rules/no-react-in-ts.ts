@@ -1,9 +1,9 @@
 import { AST_NODE_TYPES, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type Options = [Readonly<{ bannedSources: ReadonlyArray<string> }>];
 type MessageIds = "forbiddenReactInTs";
@@ -18,14 +18,11 @@ const DEFAULT_BANNED_SOURCES = [
 ] as const;
 
 const isBannedSource = (source: string, bannedSources: ReadonlyArray<string>) =>
-  pipe(
-    bannedSources,
-    RA.some((pattern) =>
-      pattern.endsWith("/")
-        ? source.startsWith(pattern)
-        : source === pattern || source.startsWith(`${pattern}/`),
-    ),
-  );
+  RA.some((pattern: string) =>
+    pattern.endsWith("/")
+      ? source.startsWith(pattern)
+      : source === pattern || source.startsWith(`${pattern}/`),
+  )(bannedSources);
 
 const reportIfBanned = (
   sourceNode: TSESTree.Node,
@@ -45,21 +42,20 @@ const reportIfBanned = (
     .exhaustive();
 };
 
+const isStringLiteral = (s: TSESTree.Expression): s is TSESTree.StringLiteral =>
+  s.type === AST_NODE_TYPES.Literal && typeof s.value === "string";
+
 const checkDynamicImport = (
   node: TSESTree.ImportExpression,
   bannedSources: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.some(node.source),
-    O.filter(
-      (s): s is TSESTree.StringLiteral =>
-        s.type === AST_NODE_TYPES.Literal && typeof s.value === "string",
-    ),
+  flow(
+    O.fromPredicate(isStringLiteral),
     O.map((s) => {
       reportIfBanned(s, s.value, bannedSources, report);
     }),
-  );
+  )(node.source);
 };
 
 const checkExportNamed = (
@@ -67,13 +63,12 @@ const checkExportNamed = (
   bannedSources: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(node.source),
-    O.map((src) => {
-      reportIfBanned(src, src.value, bannedSources, report);
-    }),
-  );
+  O.map((src: TSESTree.StringLiteral) => {
+    reportIfBanned(src, src.value, bannedSources, report);
+  })(O.fromNullable(node.source));
 };
+
+const isTsxFile = (filename: string) => filename.endsWith(".tsx");
 
 const buildListeners = (
   bannedSources: ReadonlyArray<string>,
@@ -117,7 +112,7 @@ export const noReactInTs = createRule<Options, MessageIds>({
     defaultOptions: [{ bannedSources: DEFAULT_BANNED_SOURCES }],
   },
   create: (context, [options]) =>
-    context.filename.endsWith(".tsx")
+    isTsxFile(context.filename)
       ? {}
       : buildListeners(options.bannedSources, (d) => {
           context.report(d);

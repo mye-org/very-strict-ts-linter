@@ -7,12 +7,13 @@ import { pathToFileURL } from "node:url";
 import { ESLint, type Linter } from "eslint";
 import {
   ruleTiers,
-  tier0TypeChecker,
   type LintTier,
   type PluginRuleName,
   type PluginRuleTier,
 } from "../configs/recommended.js";
+import { tier0TypeChecker } from "../configs/tier0.js";
 import {
+  buildEslintCacheOptions,
   computeProjectFingerprint,
   loadParsedTsConfig,
   readCachedArtifact,
@@ -61,6 +62,24 @@ export type PhasedLintResult = {
   readonly cacheHit?: boolean;
 };
 
+type LintRunnerEnv = Readonly<{
+  readonly cwd: string;
+  readonly EslintCtor: typeof ESLint;
+}>;
+
+type TypeCheckTarget = Readonly<{
+  readonly workspaceDir: string;
+  readonly configPath: string | undefined;
+  readonly cacheRoot: string | undefined;
+}>;
+
+type LintPassOutput = Readonly<{
+  readonly lintResults: ReadonlyArray<ESLint.LintResult>;
+  readonly lintFormatter: ESLint.Formatter;
+}>;
+
+const DEFAULT_MAX_TIER: PluginRuleTier = 3;
+
 const tierLabels: Record<LintTier, string> = {
   0: `Tier 0 (${tier0TypeChecker.name} — ${tier0TypeChecker.command})`,
   1: "Tier 1 (Type Safety & Correctness)",
@@ -68,34 +87,39 @@ const tierLabels: Record<LintTier, string> = {
   3: "Tier 3 (FP & Style)",
 };
 
-export const classifyRuleTier = (ruleId: string): PluginRuleTier => {
+export const classifyRuleTier = (ruleId: string) => {
   if (ruleId.startsWith("strict-fp/")) {
     const shortName = ruleId.slice("strict-fp/".length);
     return Object.prototype.hasOwnProperty.call(ruleTiers, shortName)
       ? ruleTiers[shortName as PluginRuleName]
-      : 3;
+      : DEFAULT_MAX_TIER;
   }
-  return 1;
+  return 1 as const;
 };
 
 export const classifyMessageTier = (
   message: Pick<Linter.LintMessage, "fatal" | "ruleId">,
-): PluginRuleTier => {
-  if (message.fatal === true || message.ruleId === null || message.ruleId === undefined) {
-    return 1;
+) => {
+  if (message.fatal === true || message.ruleId === null) {
+    return 1 as const;
   }
   return classifyRuleTier(message.ruleId);
 };
 
-export const createTierRuleFilter =
+const buildTierRuleFilter =
   (tier: LintTier) =>
   ({ ruleId }: { readonly ruleId: string }) =>
     tier !== 0 && classifyRuleTier(ruleId) <= tier;
 
-export const createExactTierRuleFilter =
+const buildExactTierRuleFilter =
   (tier: LintTier) =>
   ({ ruleId }: { readonly ruleId: string }) =>
     tier !== 0 && classifyRuleTier(ruleId) === tier;
+
+export {
+  buildExactTierRuleFilter as createExactTierRuleFilter,
+  buildTierRuleFilter as createTierRuleFilter,
+};
 
 const parseTier = (raw: string | undefined) => {
   if (raw === "0") return 0 as const;
@@ -109,7 +133,7 @@ export const parseCliArgs = (args: ReadonlyArray<string>) => {
   let targets: ReadonlyArray<string> = [];
   let fix = false;
   let format = "stylish";
-  let maxTier: LintTier = 3;
+  let maxTier: LintTier = DEFAULT_MAX_TIER;
   let onlyTier: LintTier | undefined;
   let tsconfig: string | undefined;
   let cache: boolean | undefined;
@@ -142,7 +166,7 @@ export const parseCliArgs = (args: ReadonlyArray<string>) => {
       format = args[i + 1] ?? "stylish";
       i += 1;
     } else if (arg === "--max-tier") {
-      maxTier = parseTier(args[i + 1]) ?? 3;
+      maxTier = parseTier(args[i + 1]) ?? DEFAULT_MAX_TIER;
       i += 1;
     } else if (arg === "--tier") {
       onlyTier = parseTier(args[i + 1]);
@@ -178,8 +202,8 @@ const tiersUpTo: Record<LintTier, ReadonlyArray<LintTier>> = {
   3: [0, 1, 2, 3],
 };
 
-const resolveTiersToRun = (options: PhasedLintOptions): ReadonlyArray<LintTier> =>
-  options.onlyTier !== undefined ? [options.onlyTier] : tiersUpTo[options.maxTier];
+const resolveTiersToRun = (options: PhasedLintOptions) =>
+  options.onlyTier !== undefined ? ([options.onlyTier] as ReadonlyArray<LintTier>) : tiersUpTo[options.maxTier];
 
 const findLocalTscBin = (startDir: string) => {
   let current = path.resolve(startDir);
@@ -215,15 +239,11 @@ const countTscErrors = (output: string) => {
   return matches && matches.length > 0 ? matches.length : 1;
 };
 
-const buildIncrementalTscArgs = (
-  cwd: string,
-  tsconfig: string | undefined,
-  cacheDir: string | undefined,
-) => {
-  if (!cacheDir) {
+const buildIncrementalTscArgs = (target: TypeCheckTarget) => {
+  if (!target.cacheRoot) {
     return ["--incremental", "false"] as ReadonlyArray<string>;
   }
-  const tsconfigPath = resolveTsConfigPath(cwd, tsconfig);
+  const tsconfigPath = resolveTsConfigPath(target.workspaceDir, target.configPath);
   if (!tsconfigPath || !fs.existsSync(tsconfigPath)) {
     return [] as ReadonlyArray<string>;
   }
@@ -231,29 +251,25 @@ const buildIncrementalTscArgs = (
   if (parsed?.options.composite === true) {
     return [] as ReadonlyArray<string>;
   }
-  const tsBuildInfoPath = resolveTsBuildInfoPath(cacheDir, "tsc", tsconfigPath);
+  const tsBuildInfoPath = resolveTsBuildInfoPath(target.cacheRoot, "tsc", tsconfigPath);
   return ["--incremental", "--tsBuildInfoFile", tsBuildInfoPath] as ReadonlyArray<string>;
 };
 
-const runTypeCheck = (
-  cwd: string,
-  tsconfig: string | undefined,
-  cacheDir: string | undefined,
-) =>
+const runTypeCheck = (target: TypeCheckTarget) =>
   new Promise<TierRunSummary>((resolve) => {
-    const { command, prefixArgs } = resolveTscCommand(cwd);
-    const incrementalArgs = buildIncrementalTscArgs(cwd, tsconfig, cacheDir);
+    const { command, prefixArgs } = resolveTscCommand(target.workspaceDir);
+    const incrementalArgs = buildIncrementalTscArgs(target);
     const tscArgs = [
       ...prefixArgs,
       "--noEmit",
-      ...(tsconfig ? ["-p", tsconfig] : []),
+      ...(target.configPath ? ["-p", target.configPath] : []),
       ...incrementalArgs,
     ];
 
     execFile(
       command,
       tscArgs,
-      { cwd, maxBuffer: 10 * 1024 * 1024 },
+      { cwd: target.workspaceDir, maxBuffer: 10 * 1024 * 1024 },
       (error, stdout, stderr) => {
         const combinedOutput = [stdout, stderr]
           .filter((chunk) => chunk.trim().length > 0)
@@ -284,8 +300,8 @@ const runTypeCheck = (
 export const sliceLintResultsForTier = (
   results: ReadonlyArray<ESLint.LintResult>,
   tier: PluginRuleTier,
-): Array<ESLint.LintResult> =>
-  results.map((result) => {
+) =>
+  results.map<ESLint.LintResult>((result) => {
     const messages = result.messages.filter((msg) => classifyMessageTier(msg) === tier);
     const suppressedMessages = result.suppressedMessages.filter(
       (msg) => classifyMessageTier(msg) === tier,
@@ -309,7 +325,7 @@ export const sliceLintResultsForTier = (
         if (msg.fix !== undefined) {
           fixableErrorCount += 1;
         }
-      } else if (msg.severity === 1) {
+      } else {
         warningCount += 1;
         if (msg.fix !== undefined) {
           fixableWarningCount += 1;
@@ -335,13 +351,12 @@ export const sliceLintResultsForTier = (
 
 const buildTierSummary = async (
   tier: PluginRuleTier,
-  results: Array<ESLint.LintResult>,
-  formatter: ESLint.Formatter,
-): Promise<TierRunSummary> => {
-  const errorCount = results.reduce((sum, r) => sum + r.errorCount, 0);
-  const warningCount = results.reduce((sum, r) => sum + r.warningCount, 0);
-  const output = await formatter.format(results);
-  return { tier, errorCount, warningCount, output };
+  pass: LintPassOutput,
+) => {
+  const errorCount = pass.lintResults.reduce((sum, r) => sum + r.errorCount, 0);
+  const warningCount = pass.lintResults.reduce((sum, r) => sum + r.warningCount, 0);
+  const output = await pass.lintFormatter.format([...pass.lintResults]);
+  return { tier, errorCount, warningCount, output } satisfies TierRunSummary;
 };
 
 const buildLintCacheScopeKey = (options: PhasedLintOptions) =>
@@ -357,16 +372,15 @@ const buildLintCacheScopeKey = (options: PhasedLintOptions) =>
 const runNonFixPhased = async (
   tiers: ReadonlyArray<LintTier>,
   options: PhasedLintOptions,
-  cwd: string,
-  EslintCtor: typeof ESLint,
-): Promise<PhasedLintResult> => {
+  env: LintRunnerEnv,
+) => {
   const useCache = options.cache !== false;
-  const cacheDir = useCache ? resolveCacheDir(cwd, options.cacheLocation) : undefined;
-  const tsconfigPath = resolveTsConfigPath(cwd, options.tsconfig);
+  const cacheDir = useCache ? resolveCacheDir(env.cwd, options.cacheLocation) : undefined;
+  const tsconfigPath = resolveTsConfigPath(env.cwd, options.tsconfig);
   const scopeKey = buildLintCacheScopeKey(options);
   const projectFingerprint = useCache
     ? computeProjectFingerprint({
-        cwd,
+        cwd: env.cwd,
         kind: "lint",
         ...(tsconfigPath !== undefined ? { tsconfigPath } : {}),
         targets: options.targets,
@@ -382,39 +396,29 @@ const runNonFixPhased = async (
       projectFingerprint,
     );
     if (cached) {
-      return { ...cached, cacheHit: true };
+      const hitResult: PhasedLintResult = { ...cached, cacheHit: true };
+      return hitResult;
     }
   }
 
-  let singlePass:
-    | {
-        readonly results: Array<ESLint.LintResult>;
-        readonly formatter: ESLint.Formatter;
-      }
-    | undefined;
+  let singlePass: LintPassOutput | undefined;
 
-  const getSinglePass = async () => {
+  const loadSinglePass = async () => {
     if (!singlePass) {
       const ruleFilter =
         options.onlyTier !== undefined
-          ? createExactTierRuleFilter(options.onlyTier)
-          : createTierRuleFilter(options.maxTier);
+          ? buildExactTierRuleFilter(options.onlyTier)
+          : buildTierRuleFilter(options.maxTier);
       const eslintOptions: ESLint.Options = {
-        cwd,
+        cwd: env.cwd,
         fix: false,
         ruleFilter,
-        ...(options.eslintCache === true && cacheDir
-          ? {
-              cache: true,
-              cacheStrategy: "content" as const,
-              cacheLocation: path.join(cacheDir, "eslint-cache.json"),
-            }
-          : {}),
+        ...buildEslintCacheOptions(options.eslintCache, cacheDir),
       };
-      const eslint = new EslintCtor(eslintOptions);
-      const results = await eslint.lintFiles([...options.targets]);
-      const formatter = await eslint.loadFormatter(options.format);
-      singlePass = { results, formatter };
+      const eslint = new env.EslintCtor(eslintOptions);
+      const lintResults = await eslint.lintFiles([...options.targets]);
+      const lintFormatter = await eslint.loadFormatter(options.format);
+      singlePass = { lintResults, lintFormatter };
     }
     return singlePass;
   };
@@ -423,12 +427,21 @@ const runNonFixPhased = async (
   for (const tier of tiers) {
     let summary: TierRunSummary;
     if (tier === 0) {
-      summary = await runTypeCheck(cwd, options.tsconfig, cacheDir);
+      summary = await runTypeCheck({
+        workspaceDir: env.cwd,
+        configPath: options.tsconfig,
+        cacheRoot: cacheDir,
+      });
     } else {
-      const pass = await getSinglePass();
+      const pass = await loadSinglePass();
       const tierResults =
-        options.onlyTier !== undefined ? pass.results : sliceLintResultsForTier(pass.results, tier);
-      summary = await buildTierSummary(tier, tierResults, pass.formatter);
+        options.onlyTier !== undefined
+          ? pass.lintResults
+          : sliceLintResultsForTier(pass.lintResults, tier);
+      summary = await buildTierSummary(tier, {
+        lintResults: tierResults,
+        lintFormatter: pass.lintFormatter,
+      });
     }
 
     summaries = [...summaries, summary];
@@ -451,43 +464,49 @@ const runNonFixPhased = async (
 const runTierForFix = async (
   tier: LintTier,
   options: PhasedLintOptions,
-  cwd: string,
-  EslintCtor: typeof ESLint,
-): Promise<{ readonly summary: TierRunSummary; readonly didMutate: boolean }> => {
+  env: LintRunnerEnv,
+) => {
   if (tier === 0) {
     const cacheDir =
-      options.cache !== false ? resolveCacheDir(cwd, options.cacheLocation) : undefined;
-    return { summary: await runTypeCheck(cwd, options.tsconfig, cacheDir), didMutate: false };
+      options.cache !== false ? resolveCacheDir(env.cwd, options.cacheLocation) : undefined;
+    return {
+      summary: await runTypeCheck({
+        workspaceDir: env.cwd,
+        configPath: options.tsconfig,
+        cacheRoot: cacheDir,
+      }),
+      didMutate: false,
+    };
   }
 
-  const eslint = new EslintCtor({
-    cwd,
+  const eslint = new env.EslintCtor({
+    cwd: env.cwd,
     fix: true,
-    ruleFilter: createExactTierRuleFilter(tier),
+    ruleFilter: buildExactTierRuleFilter(tier),
   });
-  const results = await eslint.lintFiles([...options.targets]);
-  const didMutate = results.some((r) => r.output !== undefined);
+  const lintResults = await eslint.lintFiles([...options.targets]);
+  const didMutate = lintResults.some((r) => r.output !== undefined);
   if (didMutate) {
-    await EslintCtor.outputFixes(results);
+    await env.EslintCtor.outputFixes(lintResults);
   }
-  const formatter = await eslint.loadFormatter(options.format);
-  const summary = await buildTierSummary(tier, results, formatter);
+  const lintFormatter = await eslint.loadFormatter(options.format);
+  const summary = await buildTierSummary(tier, { lintResults, lintFormatter });
   return { summary, didMutate };
 };
 
 const runFixPhased = async (
   tiers: ReadonlyArray<LintTier>,
   options: PhasedLintOptions,
-  cwd: string,
-  EslintCtor: typeof ESLint,
-): Promise<PhasedLintResult> => {
+  env: LintRunnerEnv,
+) => {
   let summaries: ReadonlyArray<TierRunSummary> = [];
 
   for (const tier of tiers) {
-    const { summary, didMutate } = await runTierForFix(tier, options, cwd, EslintCtor);
+    const { summary, didMutate } = await runTierForFix(tier, options, env);
     summaries = [...summaries, summary];
     if (summary.errorCount > 0) {
-      return { passed: false, failedTier: tier, summaries };
+      const failedResult: PhasedLintResult = { passed: false, failedTier: tier, summaries };
+      return failedResult;
     }
 
     if (didMutate && tier > 0 && options.onlyTier === undefined) {
@@ -495,27 +514,28 @@ const runFixPhased = async (
       const recheck = await runNonFixPhased(
         tiersUpTo[prevMaxTier],
         { ...options, fix: false, maxTier: prevMaxTier },
-        cwd,
-        EslintCtor,
+        env,
       );
       if (!recheck.passed && recheck.failedTier !== undefined) {
         const failedSummary = recheck.summaries[recheck.summaries.length - 1];
-        return {
+        const regressedResult: PhasedLintResult = {
           passed: false,
           failedTier: recheck.failedTier,
           summaries: failedSummary ? [...summaries, failedSummary] : summaries,
         };
+        return regressedResult;
       }
     }
   }
 
-  return { passed: true, summaries };
+  const passedResult: PhasedLintResult = { passed: true, summaries };
+  return passedResult;
 };
 
 export const runPhasedLint = async (
   options: PhasedLintOptions,
   deps?: PhasedLintDependencies,
-): Promise<PhasedLintResult> => {
+) => {
   const tiers = resolveTiersToRun(options);
   const cwd = options.cwd ?? process.cwd();
   const EslintCtor = deps?.ESLintClass ?? ESLint;
@@ -525,8 +545,8 @@ export const runPhasedLint = async (
   }
 
   return options.fix
-    ? runFixPhased(tiers, options, cwd, EslintCtor)
-    : runNonFixPhased(tiers, options, cwd, EslintCtor);
+    ? runFixPhased(tiers, options, { cwd, EslintCtor })
+    : runNonFixPhased(tiers, options, { cwd, EslintCtor });
 };
 
 const runCli = async () => {

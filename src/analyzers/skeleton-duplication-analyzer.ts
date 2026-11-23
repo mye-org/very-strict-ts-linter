@@ -1,20 +1,14 @@
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RNEA from "fp-ts/lib/ReadonlyNonEmptyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
-import {
-  getProjectSourceFiles,
-  memoizeByProgram,
-  memoizeByProgramAndKey,
-} from "../utils/program-cache.js";
-import {
-  collectTsNodes,
-  getTsNodeLocation,
-  makeLocationKey,
-  TsLocation,
-} from "../utils/ts-ast-helpers.js";
+import { memoizeByProgram, memoizeByProgramAndKey } from "../lib/program-memo.js";
+import { collectProjectSourceFiles } from "../lib/source-paths.js";
+import { TsLocation, makeLocationKey, resolveTsNodeLocation } from "../lib/ts-node-location.js";
+import { collectTsNodes } from "../lib/ts-node-traversal.js";
 
 export type SkeletonSite = Readonly<
   Record<"functionName", string> & {
@@ -41,40 +35,48 @@ type PipelineOccurrence = Readonly<
     }
 >;
 
+type MemberToken = Readonly<Record<"token" | "combinator" | "method", string>>;
+
 const occurrenceCache = new WeakMap<ts.Program, ReadonlyArray<PipelineOccurrence>>();
 const analysisCache = new WeakMap<
   ts.Program,
   Readonly<Record<string, SkeletonDuplicationAnalysis>>
 >();
 
-const PURE_LIFT_METHODS = new Set(["some", "of", "right", "left", "none"]);
+const PURE_LIFT_METHODS: ReadonlySet<string> = new Set(["some", "of", "right", "left", "none"]);
+const PIPELINE_FN_NAMES: ReadonlySet<string> = new Set(["pipe", "flow"]);
+const PIPE_FN_NAMES: ReadonlySet<string> = new Set(["pipe"]);
 
 const isPipeOrFlowCall = (node: ts.Node): node is ts.CallExpression =>
   ts.isCallExpression(node) &&
   ts.isIdentifier(node.expression) &&
-  (node.expression.text === "pipe" || node.expression.text === "flow");
+  PIPELINE_FN_NAMES.has(node.expression.text);
+
+const isPipeCallee = (expr: ts.Expression) =>
+  ts.isIdentifier(expr) && PIPE_FN_NAMES.has(expr.text);
+
+const buildMemberToken = (obj: string, method: string) => ({
+  token: `${obj}.${method}`,
+  combinator: `${obj}.${method}`,
+  method,
+});
 
 const formatMemberPropToken = (prop: ts.PropertyAccessExpression) =>
   ts.isIdentifier(prop.expression)
-    ? O.some({
-        token: `${prop.expression.text}.${prop.name.text}`,
-        combinator: `${prop.expression.text}.${prop.name.text}`,
-        method: prop.name.text,
-      })
+    ? O.some(buildMemberToken(prop.expression.text, prop.name.text))
     : O.none;
+
+const appendArity = (arity: number) => (base: MemberToken) => ({
+  ...base,
+  token: `${base.token}(${String(arity)})`,
+});
 
 const formatMemberCallToken = (call: ts.CallExpression) =>
   ts.isPropertyAccessExpression(call.expression)
-    ? pipe(
-        formatMemberPropToken(call.expression),
-        O.map((base) => ({
-          ...base,
-          token: `${base.token}(${String(call.arguments.length)})`,
-        })),
-      )
+    ? O.map(appendArity(call.arguments.length))(formatMemberPropToken(call.expression))
     : O.none;
 
-const getMemberCombinatorToken = (expr: ts.Expression) =>
+const resolveMemberCombinatorToken = (expr: ts.Expression) =>
   match(expr)
     .when(ts.isCallExpression, formatMemberCallToken)
     .when(ts.isPropertyAccessExpression, formatMemberPropToken)
@@ -82,25 +84,30 @@ const getMemberCombinatorToken = (expr: ts.Expression) =>
 
 const isWorkflowSeedCall = (arg: ts.Expression) =>
   ts.isCallExpression(arg) &&
-  pipe(
-    getMemberCombinatorToken(arg),
-    O.exists(({ method }) => !PURE_LIFT_METHODS.has(method)),
+  O.exists(({ method }: MemberToken) => !PURE_LIFT_METHODS.has(method))(
+    resolveMemberCombinatorToken(arg),
   );
+
+const dropFirstArg = (args: ReadonlyArray<ts.Expression>) => args.slice(1);
+
+const readFirstArg = (args: ReadonlyArray<ts.Expression>) => O.fromNullable(args[0]);
 
 const extractPipeArgs = (args: ReadonlyArray<ts.Expression>) =>
-  pipe(
-    O.fromNullable(args[0]),
+  flow(
+    readFirstArg,
     O.filter(isWorkflowSeedCall),
     O.match(
-      () => args.slice(1),
+      () => dropFirstArg(args),
       () => args,
     ),
-  );
+  )(args);
+
+const toExprArray = (nodes: ts.NodeArray<ts.Expression>) => Array.from(nodes);
 
 const extractPipelineSteps = (call: ts.CallExpression) =>
-  ts.isIdentifier(call.expression) && call.expression.text === "pipe"
-    ? extractPipeArgs(Array.from(call.arguments))
-    : Array.from(call.arguments);
+  isPipeCallee(call.expression)
+    ? extractPipeArgs(toExprArray(call.arguments))
+    : toExprArray(call.arguments);
 
 const matchEnclosingDeclName = (node: ts.Node) =>
   match(node)
@@ -108,91 +115,84 @@ const matchEnclosingDeclName = (node: ts.Node) =>
     .when(ts.isVariableDeclaration, (v) => (ts.isIdentifier(v.name) ? O.some(v.name.text) : O.none))
     .otherwise(() => O.none);
 
-const lookupParentFunctionName = (parent: O.Option<ts.Node>) =>
-  pipe(parent, O.match(() => "<anonymous>", findEnclosingFunctionName));
+const lookupParentFunctionName = (node: ts.Node) =>
+  flow(
+    (n: ts.Node) => O.fromNullable(n.parent),
+    O.match(() => "<anonymous>", findEnclosingFunctionName),
+  )(node);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive parent walk
 const findEnclosingFunctionName = (node: ts.Node): string =>
-  pipe(
-    matchEnclosingDeclName(node),
-    O.getOrElse(() => lookupParentFunctionName(O.fromNullable(node.parent))),
-  );
+  flow(
+    matchEnclosingDeclName,
+    O.getOrElse(() => lookupParentFunctionName(node)),
+  )(node);
 
-const parseStepToken = (step: ts.Expression) =>
-  pipe(
-    getMemberCombinatorToken(step),
-    O.getOrElse(() => ({ token: "$step", combinator: "", method: "" })),
-  );
+const parseStepToken = flow(
+  resolveMemberCombinatorToken,
+  O.getOrElse(() => ({ token: "$step", combinator: "", method: "" })),
+);
 
-const countDistinctCombinators = (
-  parsedSteps: ReadonlyArray<Readonly<Record<"combinator", string>>>,
-) =>
-  new Set(
-    pipe(
-      parsedSteps,
-      RA.filterMap((s) => (s.combinator.length > 0 ? O.some(s.combinator) : O.none)),
-    ),
-  ).size;
+const toSetSize = (items: ReadonlyArray<string>) => new Set(items).size;
 
-const formatSignature = (parsedSteps: ReadonlyArray<Readonly<Record<"token", string>>>) =>
-  pipe(parsedSteps, RA.map((s) => s.token)).join(" |> ");
+const countDistinctCombinators = flow(
+  RA.filterMap((s: Readonly<Record<"combinator", string>>) =>
+    s.combinator.length > 0 ? O.some(s.combinator) : O.none,
+  ),
+  toSetSize,
+);
+
+const joinPipeArrow = (tokens: ReadonlyArray<string>) => tokens.join(" |> ");
+
+const formatSignature = flow(
+  RA.map((s: Readonly<Record<"token", string>>) => s.token),
+  joinPipeArrow,
+);
 
 const toPipelineOccurrence = (call: ts.CallExpression, sf: ts.SourceFile) => {
   const steps = extractPipelineSteps(call);
-  const parsedSteps = pipe(steps, RA.map(parseStepToken));
+  const parsedSteps = RA.map(parseStepToken)(steps);
   const signature = formatSignature(parsedSteps);
   return steps.length >= 2
-    ? O.some({
+    ? O.some<PipelineOccurrence>({
         signature,
         preview: signature,
         functionName: findEnclosingFunctionName(call),
         stepCount: steps.length,
         distinctCombinators: countDistinctCombinators(parsedSteps),
-        location: getTsNodeLocation(call, sf),
+        location: resolveTsNodeLocation(call, sf),
       })
     : O.none;
 };
 
+const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
+
 const extractFilePipelines = (sf: ts.SourceFile) =>
-  pipe(
-    collectTsNodes(sf, sf),
+  flow(
+    collectFileNodes,
     RA.filter(isPipeOrFlowCall),
     RA.filterMap((call) => toPipelineOccurrence(call, sf)),
-  );
+  )(sf);
 
-const getProgramPipelines = (program: ts.Program) =>
-  memoizeByProgram(program, occurrenceCache, (p) =>
-    pipe(getProjectSourceFiles(p), RA.flatMap(extractFilePipelines)),
-  );
+const collectAllProgramPipelines = flow(collectProjectSourceFiles, RA.flatMap(extractFilePipelines));
 
-const groupBySignature = (occurrences: ReadonlyArray<PipelineOccurrence>) => {
-  const map: Record<string, Array<PipelineOccurrence>> = {};
-  for (const occ of occurrences) {
-    const list = map[occ.signature] ?? [];
-    list.push(occ);
-    map[occ.signature] = list;
-  }
-  return map as Readonly<Record<string, ReadonlyArray<PipelineOccurrence>>>;
-};
+const collectProgramPipelines = (program: ts.Program) =>
+  memoizeByProgram(program, occurrenceCache, collectAllProgramPipelines);
 
-const deduplicateOccurrences = (group: ReadonlyArray<PipelineOccurrence>) => {
-  const seen = new Set<string>();
-  const unique: Array<PipelineOccurrence> = [];
-  for (const occ of group) {
-    const key = makeLocationKey(occ.location);
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(occ);
-    }
-  }
-  return unique as ReadonlyArray<PipelineOccurrence>;
-};
+const groupBySignature = RNEA.groupBy((occ: PipelineOccurrence) => occ.signature);
 
-const toSiteList = (occurrences: ReadonlyArray<PipelineOccurrence>) =>
-  pipe(
-    occurrences,
-    RA.map((o) => ({ functionName: o.functionName, location: o.location })),
-  );
+const deduplicateOccurrences = flow(
+  RNEA.groupBy((occ: PipelineOccurrence) => makeLocationKey(occ.location)),
+  RR.toEntries,
+  RA.map(([, group]) => RNEA.head(group)),
+);
+
+const toSiteList = RA.map((o: PipelineOccurrence) => ({
+  functionName: o.functionName,
+  location: o.location,
+}));
+
+const readFirstOccurrence = (list: ReadonlyArray<PipelineOccurrence>) => O.fromNullable(list[0]);
 
 const toCluster = (
   signature: string,
@@ -200,8 +200,8 @@ const toCluster = (
   minOccurrences: number,
 ) => {
   const uniqueLocations = deduplicateOccurrences(group);
-  return pipe(
-    O.fromNullable(uniqueLocations[0]),
+  return flow(
+    readFirstOccurrence,
     O.filter(() => uniqueLocations.length >= minOccurrences),
     O.map((first) => ({
       signature,
@@ -209,47 +209,70 @@ const toCluster = (
       stepCount: first.stepCount,
       sites: toSiteList(uniqueLocations),
     })),
-  );
+  )(uniqueLocations);
 };
 
-const indexClustersByLocation = (groups: ReadonlyArray<SkeletonCluster>) => {
-  const map: Record<string, Array<SkeletonCluster>> = {};
-  for (const cluster of groups) {
-    for (const site of cluster.sites) {
-      const key = makeLocationKey(site.location);
-      const list = map[key] ?? [];
-      list.push(cluster);
-      map[key] = list;
-    }
-  }
-  return map as Readonly<Record<string, ReadonlyArray<SkeletonCluster>>>;
-};
+const expandClusterSites = (cluster: SkeletonCluster) =>
+  RA.map((site: SkeletonSite) => [makeLocationKey(site.location), cluster] as const)(cluster.sites);
 
-const computeSkeletonDuplications = (
-  program: ts.Program,
-  minSteps: number,
-  minDistinctCombinators: number,
-  minOccurrences: number,
-) => {
-  const groups = pipe(
-    getProgramPipelines(program),
-    RA.filter((o) => o.stepCount >= minSteps && o.distinctCombinators >= minDistinctCombinators),
+const extractClusterFromPair = ([, cluster]: readonly [string, SkeletonCluster]) => cluster;
+
+const indexClustersByLocation = flow(
+  RA.flatMap(expandClusterSites),
+  RNEA.groupBy(([locKey]) => locKey),
+  RR.map(RA.map(extractClusterFromPair)),
+);
+
+const buildSkeletonAnalysis = (groups: ReadonlyArray<SkeletonCluster>) => ({
+  groups,
+  locationIndex: indexClustersByLocation(groups),
+});
+
+type SkeletonThresholds = Readonly<
+  Record<"minSteps" | "minDistinctCombinators" | "minOccurrences", number>
+>;
+
+const collectEligiblePipelines = (program: ts.Program, thresholds: SkeletonThresholds) =>
+  flow(
+    collectProgramPipelines,
+    RA.filter(
+      (o) =>
+        o.stepCount >= thresholds.minSteps &&
+        o.distinctCombinators >= thresholds.minDistinctCombinators,
+    ),
     groupBySignature,
-    RR.toEntries,
+  )(program);
+
+const clusterGroupedPipelines = (
+  grouped: Readonly<Record<string, ReadonlyArray<PipelineOccurrence>>>,
+  minOccurrences: number,
+) =>
+  flow(
+    (rec: Readonly<Record<string, ReadonlyArray<PipelineOccurrence>>>) => RR.toEntries(rec),
     RA.filterMap(([sig, group]) => toCluster(sig, group, minOccurrences)),
+    buildSkeletonAnalysis,
+  )(grouped);
+
+const computeSkeletonDuplications = (program: ts.Program, thresholds: SkeletonThresholds) =>
+  clusterGroupedPipelines(
+    collectEligiblePipelines(program, thresholds),
+    thresholds.minOccurrences,
   );
-  return { groups, locationIndex: indexClustersByLocation(groups) };
-};
+
+const makeSkeletonCacheKey = (thresholds: SkeletonThresholds) =>
+  `${String(thresholds.minSteps)}:${String(thresholds.minDistinctCombinators)}:${String(thresholds.minOccurrences)}`;
 
 export const analyzeSkeletonDuplications = (
   program: ts.Program,
   minSteps = 4,
   minDistinctCombinators = 3,
   minOccurrences = 2,
-) =>
-  memoizeByProgramAndKey(
+) => {
+  const thresholds = { minSteps, minDistinctCombinators, minOccurrences };
+  return memoizeByProgramAndKey(
     program,
-    `${String(minSteps)}:${String(minDistinctCombinators)}:${String(minOccurrences)}`,
+    makeSkeletonCacheKey(thresholds),
     analysisCache,
-    (p) => computeSkeletonDuplications(p, minSteps, minDistinctCombinators, minOccurrences),
+    (p) => computeSkeletonDuplications(p, thresholds),
   );
+};

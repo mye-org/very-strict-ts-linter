@@ -1,19 +1,18 @@
 import type { TSESLint } from "@typescript-eslint/utils";
 import {
-  createDddBoundaryConfig,
-  createDddDiscoveryConfig,
-  createFpDiscoveryConfig,
-  createStrictFpConfig,
-  createStrictReactConfig,
-  createTestScopeConfig,
-  createTieredConfig,
-  pluginMeta,
-  pluginRules,
+  buildDddBoundaryConfig,
+  buildDddDiscoveryConfig,
+  buildFpDiscoveryConfig,
+  buildStrictFpConfig,
+  buildStrictReactConfig,
+  buildTestScopeConfig,
+  buildTieredConfig,
+  defaultStrictFpFiles,
+  defaultStrictFpIgnores,
   reactTsRules,
   reactTsxRules,
   ruleTiers,
   testScopeRules,
-  tier0TypeChecker,
   tier1Rules,
   tier2Rules,
   tier3Rules,
@@ -23,6 +22,15 @@ import {
   type StrictFpConfigOptions,
   type StrictReactConfigOptions,
 } from "./configs/recommended.js";
+import { tier0TypeChecker } from "./configs/tier0.js";
+import { rules } from "./rules/index.js";
+
+const pluginMeta = {
+  name: "@mye-org/eslint-plugin-strict-fp",
+  version: "0.1.0",
+} as const;
+
+const pluginRules = rules;
 
 const plugin: TSESLint.FlatConfig.Plugin = {
   meta: pluginMeta,
@@ -30,28 +38,31 @@ const plugin: TSESLint.FlatConfig.Plugin = {
 };
 
 const configs = {
-  recommended: createStrictFpConfig(plugin),
-  tier0: createTieredConfig(plugin, { maxTier: 0 }),
-  tier1: createTieredConfig(plugin, { maxTier: 1 }),
-  tier2: createTieredConfig(plugin, { maxTier: 2 }),
-  tier3: createTieredConfig(plugin, { maxTier: 3 }),
-  dddBoundary: createDddBoundaryConfig(plugin),
-  dddDiscovery: createDddDiscoveryConfig(plugin),
-  fpDiscovery: createFpDiscoveryConfig(plugin),
-  testScope: createTestScopeConfig(plugin),
-  react: createStrictReactConfig(plugin),
+  recommended: buildStrictFpConfig(plugin),
+  tier0: buildTieredConfig(plugin, { maxTier: 0 }),
+  tier1: buildTieredConfig(plugin, { maxTier: 1 }),
+  tier2: buildTieredConfig(plugin, { maxTier: 2 }),
+  tier3: buildTieredConfig(plugin, { maxTier: 3 }),
+  dddBoundary: buildDddBoundaryConfig(plugin),
+  dddDiscovery: buildDddDiscoveryConfig(plugin),
+  fpDiscovery: buildFpDiscoveryConfig(plugin),
+  testScope: buildTestScopeConfig(plugin),
+  react: buildStrictReactConfig(plugin),
 } as const;
+
+export { rules } from "./rules/index.js";
 
 export {
   configs,
-  createDddBoundaryConfig,
-  createDddDiscoveryConfig,
-  createFpDiscoveryConfig,
-  createStrictFpConfig,
-  createStrictReactConfig,
-  createTestScopeConfig,
-  createTieredConfig,
-  pluginRules as rules,
+  buildDddBoundaryConfig as createDddBoundaryConfig,
+  buildDddDiscoveryConfig as createDddDiscoveryConfig,
+  buildFpDiscoveryConfig as createFpDiscoveryConfig,
+  buildStrictFpConfig as createStrictFpConfig,
+  buildStrictReactConfig as createStrictReactConfig,
+  buildTestScopeConfig as createTestScopeConfig,
+  buildTieredConfig as createTieredConfig,
+  defaultStrictFpFiles,
+  defaultStrictFpIgnores,
   reactTsRules,
   reactTsxRules,
   ruleTiers,
@@ -72,17 +83,17 @@ export default {
   rules: pluginRules,
   configs,
   createStrictFpConfig: (options?: StrictFpConfigOptions) =>
-    createStrictFpConfig(plugin, options),
+    buildStrictFpConfig(plugin, options),
   createStrictReactConfig: (options?: StrictReactConfigOptions) =>
-    createStrictReactConfig(plugin, options),
+    buildStrictReactConfig(plugin, options),
   createTieredConfig: (options?: StrictFpConfigOptions) =>
-    createTieredConfig(plugin, options),
+    buildTieredConfig(plugin, options),
   createDddBoundaryConfig: (options?: StrictFpConfigOptions) =>
-    createDddBoundaryConfig(plugin, options),
+    buildDddBoundaryConfig(plugin, options),
   createDddDiscoveryConfig: (options?: StrictFpConfigOptions) =>
-    createDddDiscoveryConfig(plugin, options),
+    buildDddDiscoveryConfig(plugin, options),
   createFpDiscoveryConfig: (options?: StrictFpConfigOptions) =>
-    createFpDiscoveryConfig(plugin, options),
+    buildFpDiscoveryConfig(plugin, options),
   createTestScopeConfig: (options?: StrictFpConfigOptions) =>
-    createTestScopeConfig(plugin, options),
+    buildTestScopeConfig(plugin, options),
 };

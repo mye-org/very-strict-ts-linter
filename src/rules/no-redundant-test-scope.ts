@@ -1,11 +1,21 @@
-import { ESLintUtils, TSESTree } from "@typescript-eslint/utils";
+import {
+  ESLintUtils,
+  ParserServicesWithTypeInformation,
+  TSESLint,
+  TSESTree,
+} from "@typescript-eslint/utils";
+import * as O from "fp-ts/lib/Option.js";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import { flow } from "fp-ts/lib/function.js";
+import { match } from "ts-pattern";
 import { DEFAULT_TEST_PATTERNS } from "../analyzers/module-symbol-graph.js";
 import {
   analyzeTestScope,
   DEFAULT_TEST_SCOPE_OPTIONS,
+  RedundantTestFinding,
 } from "../analyzers/test-scope-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { isMatchingAnyPattern, normalizeFilePath } from "../utils/program-cache.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isMatchingAnyPattern, normalizeFilePath } from "../lib/source-paths.js";
 
 // eslint-disable-next-line strict-fp/prefer-union-over-boolean -- ESLint rule JSON schema boolean option
 type CheckSameLevelFlag = boolean;
@@ -14,13 +24,117 @@ type Options = [
   Partial<
     Readonly<{
       readonly testPatterns: ReadonlyArray<string>;
-      readonly minRepeatedCases: number;
       readonly checkSameLevelDuplicates: CheckSameLevelFlag;
-    }>
+    }> &
+      Readonly<Record<"minRepeatedCases", number>>
   >,
 ];
 
 type MessageIds = "redundantCrossLevelTest" | "duplicateSameLevelTest";
+
+const toLineLoc = (line: number) => ({
+  start: { line, column: 0 },
+  end: { line, column: 1 },
+});
+
+const formatExistingTests = (existingTests: ReadonlyArray<string>) =>
+  RA.map((t: string) => `'${t}'`)(existingTests).join(", ");
+
+const toCrossLevelDescriptor = (
+  f: Extract<RedundantTestFinding, { readonly kind: "redundantCrossLevelTest" }>,
+) => ({
+  loc: toLineLoc(f.line),
+  messageId: "redundantCrossLevelTest" as const,
+  data: {
+    testName: f.testName,
+    property: f.property,
+    lowerComponent: f.lowerComponent,
+    higherComponent: f.higherComponent,
+    existingTests: formatExistingTests(f.existingTests),
+  },
+});
+
+const toSameLevelDescriptor = (
+  f: Extract<RedundantTestFinding, { readonly kind: "duplicateSameLevelTest" }>,
+) => ({
+  loc: toLineLoc(f.line),
+  messageId: "duplicateSameLevelTest" as const,
+  data: {
+    testName: f.testName,
+    targetComponent: f.targetComponent,
+    primaryTest: f.primaryTest,
+  },
+});
+
+const reportRedundantFinding = (
+  finding: RedundantTestFinding,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  match(finding)
+    .with({ kind: "redundantCrossLevelTest" }, (f) => { report(toCrossLevelDescriptor(f)); })
+    .with({ kind: "duplicateSameLevelTest" }, (f) => { report(toSameLevelDescriptor(f)); })
+    .exhaustive();
+};
+
+const resolveScopeOptions = (options: Options[0], testPatterns: ReadonlyArray<string>) => ({
+  ...DEFAULT_TEST_SCOPE_OPTIONS,
+  testPatterns,
+  minRepeatedCases: options.minRepeatedCases ?? DEFAULT_TEST_SCOPE_OPTIONS.minRepeatedCases,
+  checkSameLevelDuplicates:
+    (options.checkSameLevelDuplicates ?? true) ? ("enabled" as const) : ("disabled" as const),
+});
+
+const reportRedundantFindings = (
+  fileName: string,
+  options: Options[0],
+  testPatterns: ReadonlyArray<string>,
+  services: ParserServicesWithTypeInformation,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  RA.map((finding: RedundantTestFinding) => {
+    reportRedundantFinding(finding, report);
+  })(
+    analyzeTestScope(services.program, resolveScopeOptions(options, testPatterns)).redundancyByFile[
+      fileName
+    ] ?? [],
+  );
+};
+
+const resolveProgramFileName = (
+  programNode: TSESTree.Program,
+  services: ParserServicesWithTypeInformation,
+) => normalizeFilePath(services.esTreeNodeToTSNodeMap.get(programNode).fileName);
+
+const checkProgram = (
+  programNode: TSESTree.Program,
+  options: Options[0],
+  testPatterns: ReadonlyArray<string>,
+  services: ParserServicesWithTypeInformation,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  flow(
+    O.fromPredicate((fileName: string) => isMatchingAnyPattern(fileName, testPatterns)),
+    O.map((fileName) => {
+      reportRedundantFindings(fileName, options, testPatterns, services, report);
+    }),
+  )(resolveProgramFileName(programNode, services));
+};
+
+const buildTestScopeListeners = (
+  options: Options[0],
+  services: ParserServicesWithTypeInformation,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => ({
+  Program: (programNode: TSESTree.Program) => {
+    checkProgram(
+      programNode,
+      options,
+      options.testPatterns ?? DEFAULT_TEST_PATTERNS,
+      services,
+      report,
+    );
+  },
+});
 
 export const noRedundantTestScope = createRule<Options, MessageIds>({
   name: "no-redundant-test-scope",
@@ -55,56 +169,8 @@ export const noRedundantTestScope = createRule<Options, MessageIds>({
       },
     ],
   },
-  create: (context, [options]) => {
-    const services = ESLintUtils.getParserServices(context);
-    const testPatterns = options.testPatterns ?? DEFAULT_TEST_PATTERNS;
-
-    return {
-      Program: (programNode: TSESTree.Program) => {
-        const sf = services.esTreeNodeToTSNodeMap.get(programNode);
-        const fileName = normalizeFilePath(sf.fileName);
-        if (!isMatchingAnyPattern(fileName, testPatterns)) return;
-
-        const analysis = analyzeTestScope(services.program, {
-          ...DEFAULT_TEST_SCOPE_OPTIONS,
-          testPatterns,
-          minRepeatedCases:
-            options.minRepeatedCases ?? DEFAULT_TEST_SCOPE_OPTIONS.minRepeatedCases,
-          checkSameLevelDuplicates:
-            (options.checkSameLevelDuplicates ?? true) ? "enabled" : "disabled",
-        });
-
-        const findings = analysis.redundancyByFile[fileName] ?? [];
-        for (const finding of findings) {
-          const loc = {
-            start: { line: finding.line, column: 0 },
-            end: { line: finding.line, column: 1 },
-          };
-          if (finding.kind === "redundantCrossLevelTest") {
-            context.report({
-              loc,
-              messageId: "redundantCrossLevelTest",
-              data: {
-                testName: finding.testName,
-                property: finding.property,
-                lowerComponent: finding.lowerComponent,
-                higherComponent: finding.higherComponent,
-                existingTests: finding.existingTests.map((t) => `'${t}'`).join(", "),
-              },
-            });
-          } else {
-            context.report({
-              loc,
-              messageId: "duplicateSameLevelTest",
-              data: {
-                testName: finding.testName,
-                targetComponent: finding.targetComponent,
-                primaryTest: finding.primaryTest,
-              },
-            });
-          }
-        }
-      },
-    };
-  },
+  create: (context, [options]) =>
+    buildTestScopeListeners(options, ESLintUtils.getParserServices(context), (d) => {
+      context.report(d);
+    }),
 });

@@ -6,11 +6,11 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
-import { isFiniteExhaustiveCandidate } from "../utils/type-helpers.js";
+import { isFiniteExhaustiveCandidate } from "../lib/finite-types.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "preferTypeLevelDispatch";
 
@@ -19,16 +19,19 @@ type FunctionNode =
   | TSESTree.FunctionExpression
   | TSESTree.ArrowFunctionExpression;
 
-const MONADIC_TYPE_NAMES = new Set(["Option", "Either", "TaskEither", "These"]);
+const MONADIC_TYPE_NAMES: ReadonlySet<string> = new Set(["Option", "Either", "TaskEither", "These"]);
+const MATCH_CALLEES: ReadonlySet<string> = new Set(["match"]);
+const WITH_METHODS: ReadonlySet<string> = new Set(["with"]);
+const OTHERWISE_METHODS: ReadonlySet<string> = new Set(["otherwise"]);
 
 const isBooleanType = (type: ts.Type) =>
-  Boolean(type.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral));
+  (type.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) !== 0;
 
 const isBooleanOnlyUnion = (type: ts.Type) =>
-  type.isUnion() && pipe(type.types, RA.every(isBooleanType));
+  type.isUnion() && RA.every(isBooleanType)(type.types);
 
 const isTrivialEmptyType = (type: ts.Type) =>
-  Boolean(type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void | ts.TypeFlags.Never));
+  (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void | ts.TypeFlags.Never)) !== 0;
 
 const MONADIC_TAG_SETS = [
   new Set(["None", "Some"]),
@@ -36,26 +39,29 @@ const MONADIC_TAG_SETS = [
   new Set(["Left", "Right", "Both"]),
 ] as const satisfies ReadonlyArray<ReadonlySet<string>>;
 
-const getMemberTagLiteral = (member: ts.Type, checker: ts.TypeChecker) =>
-  pipe(
-    O.fromNullable(member.getProperty("_tag")),
+const extractMemberTagLiteral = (member: ts.Type, checker: ts.TypeChecker) =>
+  flow(
+    (m: ts.Type) => m.getProperty("_tag"),
+    O.fromNullable,
     O.map((prop) => checker.getTypeOfSymbol(prop)),
     O.filter((t): t is ts.StringLiteralType => t.isStringLiteral()),
     O.map((t) => t.value),
-  );
+  )(member);
 
 const hasAllTagsInSet = (tags: ReadonlyArray<string>, tagSet: ReadonlySet<string>) =>
-  pipe(tags, RA.every((tag) => tagSet.has(tag)));
+  RA.every((tag: string) => tagSet.has(tag))(tags);
 
 const hasMonadicTagSet = (tags: ReadonlyArray<string>) =>
-  pipe(MONADIC_TAG_SETS, RA.some((set) => hasAllTagsInSet(tags, set)));
+  RA.some((set: ReadonlySet<string>) => hasAllTagsInSet(tags, set))(MONADIC_TAG_SETS);
+
+const hasFullMonadicTags = (tags: ReadonlyArray<string>, expectedCount: number) =>
+  tags.length === expectedCount && hasMonadicTagSet(tags);
 
 const isExpandedMonadicUnion = (type: ts.Type, checker: ts.TypeChecker) =>
   type.isUnion() &&
-  pipe(
-    type.types,
-    RA.filterMap((m) => getMemberTagLiteral(m, checker)),
-    (tags) => tags.length === type.types.length && hasMonadicTagSet(tags),
+  hasFullMonadicTags(
+    RA.filterMap((m: ts.Type) => extractMemberTagLiteral(m, checker))(type.types),
+    type.types.length,
   );
 
 const isMonadicWrapperType = (type: ts.Type, checker: ts.TypeChecker) =>
@@ -64,10 +70,10 @@ const isMonadicWrapperType = (type: ts.Type, checker: ts.TypeChecker) =>
   isExpandedMonadicUnion(type, checker);
 
 const isStringLiteralLike = (type: ts.Type) =>
-  Boolean(type.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral));
+  (type.flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral)) !== 0;
 
 const isNumberLiteralLike = (type: ts.Type) =>
-  Boolean(type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral));
+  (type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0;
 
 const isSamePrimitiveFamily = (a: ts.Type, b: ts.Type) =>
   (isStringLiteralLike(a) && isStringLiteralLike(b)) ||
@@ -82,13 +88,10 @@ const hasDistinctOther = (
   a: ts.Type,
   members: ReadonlyArray<ts.Type>,
   checker: ts.TypeChecker,
-) => pipe(members, RA.some((b) => a !== b && isPairDistinct(a, b, checker)));
+) => RA.some((b: ts.Type) => a !== b && isPairDistinct(a, b, checker))(members);
 
 const hasHeterogeneousMembers = (members: ReadonlyArray<ts.Type>, checker: ts.TypeChecker) =>
-  pipe(
-    members,
-    RA.some((a) => hasDistinctOther(a, members, checker)),
-  );
+  RA.some((a: ts.Type) => hasDistinctOther(a, members, checker))(members);
 
 const isFiniteNonBooleanUnionParam = (
   param: ts.Symbol,
@@ -103,92 +106,112 @@ const isFiniteNonBooleanUnionParam = (
   );
 };
 
+const isArgInParamSet = (
+  paramNames: ReadonlySet<string>,
+  arg?: TSESTree.CallExpressionArgument,
+) => arg?.type === AST_NODE_TYPES.Identifier && paramNames.has(arg.name);
+
 const isMatchCallOnParam = (
   node: TSESTree.Node,
   paramNames: ReadonlySet<string>,
 ) =>
   node.type === AST_NODE_TYPES.CallExpression &&
   node.callee.type === AST_NODE_TYPES.Identifier &&
-  node.callee.name === "match" &&
+  MATCH_CALLEES.has(node.callee.name) &&
   node.arguments.length === 1 &&
-  node.arguments[0]?.type === AST_NODE_TYPES.Identifier &&
-  paramNames.has(node.arguments[0].name);
+  isArgInParamSet(paramNames, node.arguments[0]);
 
-const getWithBranchArg = (call: TSESTree.CallExpression) =>
-  pipe(
-    O.fromNullable(call.arguments[call.arguments.length - 1]),
-    O.filter((a): a is TSESTree.Expression => a.type !== AST_NODE_TYPES.SpreadElement),
-  );
+const extractWithBranchArg = flow(
+  (call: TSESTree.CallExpression) => call.arguments[call.arguments.length - 1],
+  O.fromNullable,
+  O.filter((a): a is TSESTree.Expression => a.type !== AST_NODE_TYPES.SpreadElement),
+);
 
-const getOtherwiseBranchArg = (call: TSESTree.CallExpression) =>
-  pipe(
-    O.fromNullable(call.arguments[0]),
-    O.filter((a): a is TSESTree.Expression => a.type !== AST_NODE_TYPES.SpreadElement),
-  );
+const extractOtherwiseBranchArg = flow(
+  (call: TSESTree.CallExpression) => call.arguments[0],
+  O.fromNullable,
+  O.filter((a): a is TSESTree.Expression => a.type !== AST_NODE_TYPES.SpreadElement),
+);
 
 const appendBranchArg = (
   arg: O.Option<TSESTree.Expression>,
   acc: ReadonlyArray<TSESTree.Expression>,
 ) =>
-  pipe(
-    arg,
-    O.match(
-      () => acc,
-      (cb) => [...acc, cb],
-    ),
-  );
+  O.match(
+    () => acc,
+    (cb: TSESTree.Expression) => [...acc, cb],
+  )(arg);
 
-const getParentMethodCall = (current: TSESTree.Node) =>
-  current.parent?.type === AST_NODE_TYPES.MemberExpression &&
-  current.parent.object === current &&
-  current.parent.property.type === AST_NODE_TYPES.Identifier &&
-  current.parent.parent.type === AST_NODE_TYPES.CallExpression
-    ? O.some([current.parent.property.name, current.parent.parent] as const)
+const resolveMemberParentCall = (member: TSESTree.MemberExpression, current: TSESTree.Node) =>
+  member.object === current &&
+  member.property.type === AST_NODE_TYPES.Identifier &&
+  member.parent.type === AST_NODE_TYPES.CallExpression
+    ? O.some([member.property.name, member.parent] as const)
+    : O.none;
+
+const resolveParentMethodCall = (current: TSESTree.Node) =>
+  current.parent?.type === AST_NODE_TYPES.MemberExpression
+    ? resolveMemberParentCall(current.parent, current)
     : O.none;
 
 const stepMatchBranchCallbacks = (
   parentCall: TSESTree.CallExpression,
   acc: ReadonlyArray<TSESTree.Expression>,
 ) =>
-  pipe(
-    getWithBranchArg(parentCall),
+  flow(
+    extractWithBranchArg,
     (arg) => appendBranchArg(arg, acc),
-    (nextAcc) => getMatchBranchCallbacks(parentCall, nextAcc),
-  );
+    (nextAcc) => collectMatchBranchCallbacks(parentCall, nextAcc),
+  )(parentCall);
 
-const getMatchBranchCallbacks = (
+const collectMatchBranchCallbacks = (
   current: TSESTree.Node,
   acc: ReadonlyArray<TSESTree.Expression>,
   // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST climb
 ): ReadonlyArray<TSESTree.Expression> =>
-  pipe(
-    getParentMethodCall(current),
+  flow(
+    resolveParentMethodCall,
     O.match(
       () => acc,
       ([method, parentCall]) =>
         match(method)
-          .with("with", () => stepMatchBranchCallbacks(parentCall, acc))
-          .with("otherwise", () => appendBranchArg(getOtherwiseBranchArg(parentCall), acc))
+          .with(P.when((m) => WITH_METHODS.has(m)), () => stepMatchBranchCallbacks(parentCall, acc))
+          .with(P.when((m) => OTHERWISE_METHODS.has(m)), () =>
+            appendBranchArg(extractOtherwiseBranchArg(parentCall), acc),
+          )
           .otherwise(() => acc),
     ),
-  );
+  )(current);
+
+const extractSingleReturnArg = (block: TSESTree.BlockStatement) =>
+  block.body.length === 1
+    ? flow(
+        RA.head<TSESTree.Statement>,
+        O.filter((s): s is TSESTree.ReturnStatement => s.type === AST_NODE_TYPES.ReturnStatement),
+        O.flatMap((s) => O.fromNullable(s.argument)),
+      )(block.body)
+    : O.none;
 
 const findMatchInBlock = (b: TSESTree.BlockStatement, paramNames: ReadonlySet<string>) =>
-  b.body.length === 1 && b.body[0]?.type === AST_NODE_TYPES.ReturnStatement && b.body[0].argument
-    ? findMatchChainInExpr(b.body[0].argument, paramNames)
-    : [];
+  flow(
+    extractSingleReturnArg,
+    O.match(
+      () => [] as ReadonlyArray<ReadonlyArray<TSESTree.Expression>>,
+      (arg) => findMatchChainInExpr(arg, paramNames),
+    ),
+  )(b);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST search
 const findMatchChainInExpr = (expr: TSESTree.Node, paramNames: ReadonlySet<string>): ReadonlyArray<ReadonlyArray<TSESTree.Expression>> =>
   isMatchCallOnParam(expr, paramNames)
-    ? [getMatchBranchCallbacks(expr, [])]
+    ? [collectMatchBranchCallbacks(expr, [])]
     : match(expr)
         .with({ type: AST_NODE_TYPES.BlockStatement }, (b) => findMatchInBlock(b, paramNames))
         .with({ type: AST_NODE_TYPES.CallExpression }, (c) =>
-          pipe(
-            [c.callee, ...c.arguments] as ReadonlyArray<TSESTree.Node>,
-            RA.flatMap((child) => findMatchChainInExpr(child, paramNames)),
-          ),
+          RA.flatMap((child: TSESTree.Node) => findMatchChainInExpr(child, paramNames))([
+            c.callee,
+            ...c.arguments,
+          ]),
         )
         .with({ type: AST_NODE_TYPES.MemberExpression }, (m) =>
           findMatchChainInExpr(m.object, paramNames),
@@ -196,28 +219,31 @@ const findMatchChainInExpr = (expr: TSESTree.Node, paramNames: ReadonlySet<strin
         .with(P._, () => [] as ReadonlyArray<ReadonlyArray<TSESTree.Expression>>)
         .exhaustive();
 
-const getCallbackReturnType = (
+const resolveCallbackReturnType = (
   cb: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
-  pipe(
-    checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(cb)).getCallSignatures(),
-    RA.head,
+  flow(
+    RA.head<ts.Signature>,
     O.map((sig) => checker.getReturnTypeOfSignature(sig)),
-  );
+  )(checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(cb)).getCallSignatures());
 
 const hasAtLeastTwo = (xs: ReadonlyArray<ts.Type>) => xs.length >= 2;
+
+const hasMultipleHeterogeneous = (members: ReadonlyArray<ts.Type>, checker: ts.TypeChecker) =>
+  hasAtLeastTwo(members) && hasHeterogeneousMembers(members, checker);
 
 const hasHeterogeneousCallbacks = (
   callbacks: ReadonlyArray<TSESTree.Expression>,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
-  pipe(
-    callbacks,
-    RA.filterMap((cb) => getCallbackReturnType(cb, services, checker)),
-    (types) => hasAtLeastTwo(types) && hasHeterogeneousMembers(types, checker),
+  hasMultipleHeterogeneous(
+    RA.filterMap((cb: TSESTree.Expression) => resolveCallbackReturnType(cb, services, checker))(
+      callbacks,
+    ),
+    checker,
   );
 
 const hasCorrelatedMatchBranches = (
@@ -226,10 +252,9 @@ const hasCorrelatedMatchBranches = (
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
-  pipe(
-    findMatchChainInExpr(node.body, paramNames),
-    RA.some((callbacks) => hasHeterogeneousCallbacks(callbacks, services, checker)),
-  );
+  RA.some((callbacks: ReadonlyArray<TSESTree.Expression>) =>
+    hasHeterogeneousCallbacks(callbacks, services, checker),
+  )(findMatchChainInExpr(node.body, paramNames));
 
 const isWideUnionReturn = (sig: ts.Signature, checker: ts.TypeChecker) => {
   const ret = checker.getReturnTypeOfSignature(sig);
@@ -237,37 +262,64 @@ const isWideUnionReturn = (sig: ts.Signature, checker: ts.TypeChecker) => {
     ret.isUnion() &&
     !isMonadicWrapperType(ret, checker) &&
     !isBooleanOnlyUnion(ret) &&
-    pipe(
-      ret.types,
-      RA.filter((t) => !isTrivialEmptyType(t)),
-      (members) => hasAtLeastTwo(members) && hasHeterogeneousMembers(members, checker),
+    hasMultipleHeterogeneous(
+      RA.filter((t: ts.Type) => !isTrivialEmptyType(t))(ret.types),
+      checker,
     )
   );
 };
 
-const getFiniteUnionParamNames = (sig: ts.Signature, checker: ts.TypeChecker) =>
-  pipe(
-    sig.getParameters(),
-    RA.filter((p) => isFiniteNonBooleanUnionParam(p, checker)),
-    RA.map((p) => p.name),
-  );
+const collectFiniteUnionParamNames = (sig: ts.Signature, checker: ts.TypeChecker) =>
+  RA.filterMap((p: ts.Symbol) =>
+    isFiniteNonBooleanUnionParam(p, checker) ? O.some(p.name) : O.none,
+  )(sig.getParameters());
+
+const hasFunctionTypeParams = flow(
+  (node: FunctionNode) => node.typeParameters,
+  O.fromNullable,
+  O.exists((tp) => tp.params.length > 0),
+);
+
+const resolveFunctionSignature = (
+  node: FunctionNode,
+  services: ParserServicesWithTypeInformation,
+  checker: ts.TypeChecker,
+) =>
+  flow(
+    (n: FunctionNode) => services.esTreeNodeToTSNodeMap.get(n),
+    (tsNode) => checker.getSignatureFromDeclaration(tsNode),
+    O.fromNullable,
+  )(node);
 
 const isDispatchCandidate = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
-  !node.typeParameters?.params.length &&
-  pipe(
-    services.esTreeNodeToTSNodeMap.get(node) as ts.SignatureDeclaration,
-    (tsNode) => checker.getSignatureFromDeclaration(tsNode),
-    O.fromNullable,
-    O.filter((sig) => isWideUnionReturn(sig, checker)),
-    O.map((sig) => getFiniteUnionParamNames(sig, checker)),
+  !hasFunctionTypeParams(node) &&
+  flow(
+    O.filter((sig: ts.Signature) => isWideUnionReturn(sig, checker)),
+    O.map((sig) => collectFiniteUnionParamNames(sig, checker)),
     O.filter((names) => names.length > 0),
     O.map((names) => new Set(names)),
     O.exists((nameSet) => hasCorrelatedMatchBranches(node, nameSet, services, checker)),
-  );
+  )(resolveFunctionSignature(node, services, checker));
+
+const isDispatchCandidateNode = (
+  node: FunctionNode,
+  services: ParserServicesWithTypeInformation,
+) => isDispatchCandidate(node, services, services.program.getTypeChecker());
+
+const checkDispatchFunction = (
+  node: FunctionNode,
+  services: ParserServicesWithTypeInformation,
+  report: (n: FunctionNode) => void,
+) => {
+  match(isDispatchCandidateNode(node, services))
+    .with(true, () => { report(node); })
+    .with(false, () => {})
+    .exhaustive();
+};
 
 export const preferTypeLevelDispatch = createRule<[], MessageIds>({
   name: "prefer-type-level-dispatch",
@@ -285,14 +337,10 @@ export const preferTypeLevelDispatch = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const services = ESLintUtils.getParserServices(context);
     const check = (node: FunctionNode) => {
-      pipe(
-        isDispatchCandidate(node, services, services.program.getTypeChecker()),
-        (flag) => {
-          match(flag).with(true, () => { context.report({ node, messageId: "preferTypeLevelDispatch" }); }).with(false, () => {}).exhaustive();
-        },
-      );
+      checkDispatchFunction(node, ESLintUtils.getParserServices(context), (n) => {
+        context.report({ node: n, messageId: "preferTypeLevelDispatch" });
+      });
     };
     return { FunctionDeclaration: check, FunctionExpression: check, ArrowFunctionExpression: check };
   },

@@ -1,7 +1,7 @@
 import { TSESTree } from "@typescript-eslint/utils";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { isInsideUnsafeOrMustFunction } from "../utils/type-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isInsideUnsafeOrMustFunction } from "../lib/unsafe-function-scope.js";
 
 type MessageIds = "noThrow";
 

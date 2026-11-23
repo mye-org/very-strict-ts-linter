@@ -1,12 +1,29 @@
-import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESTree } from "@typescript-eslint/utils";
-import { pipe } from "fp-ts/lib/function.js";
+import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
+import * as O from "fp-ts/lib/Option.js";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { isArrayLikeType } from "../utils/type-helpers.js";
+import * as ts from "typescript";
+import { createRule } from "../lib/rule-factory.js";
+
+const ARRAY_SYMBOL_NAMES: ReadonlySet<string> = new Set(["Array", "ReadonlyArray"]);
+
+const isArraySymbol = (type: ts.Type) =>
+  ARRAY_SYMBOL_NAMES.has(type.getSymbol()?.name ?? "");
+
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive union check
+const isArrayLikeType = (type: ts.Type, checker: ts.TypeChecker): boolean =>
+  match({
+    isArrayOrTuple: checker.isArrayType(type) || checker.isTupleType(type),
+    isUnion: type.isUnion(),
+  })
+    .with({ isArrayOrTuple: true }, () => true)
+    .with({ isUnion: true }, () => type.isUnion() && RA.every((t: ts.Type) => isArrayLikeType(t, checker))(type.types))
+    .otherwise(() => isArraySymbol(type));
 
 type MessageIds = "preferFpTsArray";
 
-const ARRAY_METHOD_REPLACEMENTS: Readonly<Record<string, string>> = {
+const ARRAY_METHOD_REPLACEMENTS = {
   map: "RA.map",
   filter: "RA.filter",
   reduce: "RA.reduce",
@@ -25,33 +42,61 @@ const ARRAY_METHOD_REPLACEMENTS: Readonly<Record<string, string>> = {
   shift: "RA.tail",
   unshift: "RA.prepend",
   splice: "RA.modifyAt / RA.deleteAt",
-};
+} as const satisfies Readonly<Record<string, string>>;
+
+const resolveCallTargetTsNode = (
+  node: TSESTree.CallExpression,
+  services: ParserServicesWithTypeInformation,
+) =>
+  services.esTreeNodeToTSNodeMap.get(
+    node.callee.type === AST_NODE_TYPES.MemberExpression ? node.callee.object : node,
+  );
+
+const resolveCallTargetType = (
+  node: TSESTree.CallExpression,
+  services: ParserServicesWithTypeInformation,
+  checker: ts.TypeChecker,
+) => checker.getTypeAtLocation(resolveCallTargetTsNode(node, services));
 
 const isArrayTypeCall = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
-  checker: ReturnType<ParserServicesWithTypeInformation["program"]["getTypeChecker"]>,
-) =>
-  pipe(
-    services.esTreeNodeToTSNodeMap.get(node.callee.type === AST_NODE_TYPES.MemberExpression ? node.callee.object : node),
-    (tsNode) => checker.getTypeAtLocation(tsNode),
-    (type) => isArrayLikeType(type, checker),
-  );
+  checker: ts.TypeChecker,
+) => isArrayLikeType(resolveCallTargetType(node, services, checker), checker);
+
+const isBannedMemberProperty = (member: TSESTree.MemberExpression) =>
+  !member.computed &&
+  member.property.type === AST_NODE_TYPES.Identifier &&
+  O.isSome(RR.lookup(member.property.name, ARRAY_METHOD_REPLACEMENTS));
 
 const isBannedArrayCall = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
 ) =>
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
-  !node.callee.computed &&
-  node.callee.property.type === AST_NODE_TYPES.Identifier &&
-  Object.prototype.hasOwnProperty.call(ARRAY_METHOD_REPLACEMENTS, node.callee.property.name) &&
+  isBannedMemberProperty(node.callee) &&
   isArrayTypeCall(node, services, services.program.getTypeChecker());
+
+const formatReplacementFields = (method: string) => ({
+  method,
+  replacement: O.getOrElse(() => `RA.${method}`)(RR.lookup(method, ARRAY_METHOD_REPLACEMENTS)),
+});
+
+const reportBannedProperty = (
+  property: TSESTree.Identifier,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  report({
+    node: property,
+    messageId: "preferFpTsArray",
+    data: formatReplacementFields(property.name),
+  });
+};
 
 const checkArrayCall = (
   node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
-  report: (prop: TSESTree.Identifier) => void,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   match({ callee: node.callee, isBanned: isBannedArrayCall(node, services) })
     .with(
@@ -63,10 +108,19 @@ const checkArrayCall = (
           property: { type: AST_NODE_TYPES.Identifier },
         },
       },
-      ({ callee }) => { report(callee.property); },
+      ({ callee }) => { reportBannedProperty(callee.property, report); },
     )
     .otherwise(() => {});
 };
+
+const buildArrayMethodListeners = (
+  services: ParserServicesWithTypeInformation,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => ({
+  CallExpression: (node: TSESTree.CallExpression) => {
+    checkArrayCall(node, services, report);
+  },
+});
 
 export const preferFpTsArrayMethods = createRule<[], MessageIds>({
   name: "prefer-fp-ts-array-methods",
@@ -84,20 +138,7 @@ export const preferFpTsArrayMethods = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const services = ESLintUtils.getParserServices(context);
-    return {
-      CallExpression: (node) => {
-        checkArrayCall(node, services, (prop) => {
-          context.report({
-            node: prop,
-            messageId: "preferFpTsArray",
-            data: {
-              method: prop.name,
-              replacement: ARRAY_METHOD_REPLACEMENTS[prop.name] ?? `RA.${prop.name}`,
-            },
-          });
-        });
-      },
-    };
+    const report = (d: TSESLint.ReportDescriptor<MessageIds>) => { context.report(d); };
+    return buildArrayMethodListeners(ESLintUtils.getParserServices(context), report);
   },
 });

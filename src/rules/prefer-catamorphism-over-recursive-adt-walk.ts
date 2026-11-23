@@ -6,37 +6,38 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import {
   analyzeCatamorphisms,
   CatamorphismFinding,
 } from "../analyzers/catamorphism-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsNodeOwnLocation, makeLocationKey } from "../utils/ts-ast-helpers.js";
-import { hasFunctionInit } from "../utils/type-helpers.js";
+import { hasFunctionInit } from "../lib/estree-function-nodes.js";
+import { createRule } from "../lib/rule-factory.js";
+import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
 type Options = [Readonly<Record<"minWalkers", number>>];
 type MessageIds = "preferCatamorphism";
 
-const getNodeLocationKey = (
+const resolveNodeLocationKey = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
-) => pipe(services.esTreeNodeToTSNodeMap.get(node), getTsNodeOwnLocation, makeLocationKey);
+) => flow(resolveTsNodeOwnLocation, makeLocationKey)(services.esTreeNodeToTSNodeMap.get(node));
 
 const formatWalkerList = (finding: CatamorphismFinding) =>
-  pipe(
-    finding.walkers,
-    RA.map((w) => w.functionName),
-  ).join(", ");
+  RA.map((w: CatamorphismFinding["walkers"][number]) => w.functionName)(finding.walkers).join(", ");
+
+const formatWalkerCount = (finding: CatamorphismFinding) => String(finding.walkers.length);
+
+const formatSuggestedFold = (adtName: string) => `fold${adtName}`;
 
 const toCatamorphismDescriptor = (node: TSESTree.Node, finding: CatamorphismFinding) => ({
   node,
   messageId: "preferCatamorphism" as const,
   data: {
     adt: finding.adtName,
-    count: String(finding.walkers.length),
+    count: formatWalkerCount(finding),
     walkers: formatWalkerList(finding),
-    suggestedFold: `fold${finding.adtName}`,
+    suggestedFold: formatSuggestedFold(finding.adtName),
   },
 });
 
@@ -46,9 +47,8 @@ const reportWalkerFindings = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(locationIndex[getNodeLocationKey(node, services)]),
-    O.map(RA.map((finding) => { report(toCatamorphismDescriptor(node, finding)); })),
+  O.map(RA.map((finding: CatamorphismFinding) => { report(toCatamorphismDescriptor(node, finding)); }))(
+    O.fromNullable(locationIndex[resolveNodeLocationKey(node, services)]),
   );
 };
 
@@ -66,7 +66,7 @@ const checkWalkerNode = (
   );
 };
 
-const createCatamorphismListeners = (
+const buildCatamorphismListeners = (
   minWalkers: number,
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -75,10 +75,10 @@ const createCatamorphismListeners = (
     checkWalkerNode(node, minWalkers, services, report);
   },
   VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
-    pipe(
-      O.fromPredicate(hasFunctionInit)(node),
+    flow(
+      O.fromPredicate(hasFunctionInit),
       O.map((n) => { checkWalkerNode(n, minWalkers, services, report); }),
-    );
+    )(node);
   },
 });
 
@@ -106,7 +106,7 @@ export const preferCatamorphismOverRecursiveAdtWalk = createRule<Options, Messag
     defaultOptions: [{ minWalkers: 2 }],
   },
   create: (context, [options]) =>
-    createCatamorphismListeners(options.minWalkers, ESLintUtils.getParserServices(context), (d) => {
+    buildCatamorphismListeners(options.minWalkers, ESLintUtils.getParserServices(context), (d) => {
       context.report(d);
     }),
 });

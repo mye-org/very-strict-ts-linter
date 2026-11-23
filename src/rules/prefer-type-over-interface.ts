@@ -1,5 +1,6 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
-import { createRule } from "../utils/create-rule.js";
+import { match } from "ts-pattern";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "preferType" | "preferUnionOverEnum";
 
@@ -7,11 +8,7 @@ const isAmbientModuleAugmentation = (node: TSESTree.TSInterfaceDeclaration) => {
   const parent = node.parent;
   const blockParent =
     parent.type === AST_NODE_TYPES.ExportNamedDeclaration ? parent.parent : parent;
-  return (
-    blockParent.type === AST_NODE_TYPES.TSModuleBlock &&
-    blockParent.parent.type === AST_NODE_TYPES.TSModuleDeclaration &&
-    blockParent.parent.declare
-  );
+  return blockParent.type === AST_NODE_TYPES.TSModuleBlock && blockParent.parent.declare;
 };
 
 export const preferTypeOverInterface = createRule<[], MessageIds>({
@@ -32,9 +29,12 @@ export const preferTypeOverInterface = createRule<[], MessageIds>({
   },
   create: (context) => ({
     TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => {
-      if (!isAmbientModuleAugmentation(node)) {
-        context.report({ node, messageId: "preferType" });
-      }
+      match(isAmbientModuleAugmentation(node))
+        .with(true, () => {})
+        .with(false, () => {
+          context.report({ node, messageId: "preferType" });
+        })
+        .exhaustive();
     },
     TSEnumDeclaration: (node: TSESTree.TSEnumDeclaration) => {
       context.report({ node, messageId: "preferUnionOverEnum" });

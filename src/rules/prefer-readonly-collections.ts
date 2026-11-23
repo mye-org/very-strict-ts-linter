@@ -1,9 +1,9 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "preferReadonlyArray" | "preferReadonlyMap" | "preferReadonlySet";
 
@@ -13,28 +13,33 @@ const TYPE_TO_MESSAGE = {
   Set: "preferReadonlySet",
 } as const satisfies Readonly<Record<string, MessageIds>>;
 
+const lookupCollectionMessage = (typeName: TSESTree.EntityName) =>
+  match(typeName)
+    .with({ type: AST_NODE_TYPES.Identifier }, ({ name }) => RR.lookup(name, TYPE_TO_MESSAGE))
+    .with(P._, () => O.none)
+    .exhaustive();
+
 const reportTypeReference = (
   node: TSESTree.TSTypeReference,
   report: (n: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  pipe(
-    match(node.typeName)
-      .with({ type: AST_NODE_TYPES.Identifier }, ({ name }) => RR.lookup(name, TYPE_TO_MESSAGE))
-      .with(P._, () => O.none)
-      .exhaustive(),
+  flow(
+    lookupCollectionMessage,
     O.map((messageId) => {
       report(node, messageId);
     }),
-  );
+  )(node.typeName);
 };
 
-const isReadonlyArrayType = (node: TSESTree.TSArrayType) =>
-  (node.parent.type === AST_NODE_TYPES.TSTypeOperator &&
-    node.parent.operator === "readonly") ||
-  (node.parent.type === AST_NODE_TYPES.TSRestType &&
-    node.parent.parent.type === AST_NODE_TYPES.TSTupleType &&
-    node.parent.parent.parent.type === AST_NODE_TYPES.TSTypeOperator &&
-    node.parent.parent.parent.operator === "readonly");
+const isReadonlyOperatorNode = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.TSTypeOperator && node.operator === "readonly";
+
+const isReadonlyTupleRest = (rest: TSESTree.TSRestType) =>
+  rest.parent.type === AST_NODE_TYPES.TSTupleType && isReadonlyOperatorNode(rest.parent.parent);
+
+const isReadonlyArrayType = ({ parent }: TSESTree.TSArrayType) =>
+  isReadonlyOperatorNode(parent) ||
+  (parent.type === AST_NODE_TYPES.TSRestType && isReadonlyTupleRest(parent));
 
 export const preferReadonlyCollections = createRule<[], MessageIds>({
   name: "prefer-readonly-collections",
@@ -57,9 +62,12 @@ export const preferReadonlyCollections = createRule<[], MessageIds>({
   },
   create: (context) => ({
     TSArrayType: (node) => {
-      if (!isReadonlyArrayType(node)) {
-        context.report({ node, messageId: "preferReadonlyArray" });
-      }
+      match(isReadonlyArrayType(node))
+        .with(true, () => {})
+        .with(false, () => {
+          context.report({ node, messageId: "preferReadonlyArray" });
+        })
+        .exhaustive();
     },
     TSTypeReference: (node) => {
       reportTypeReference(node, (n, messageId) => {

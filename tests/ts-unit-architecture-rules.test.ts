@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { commonReuseCohesion } from "../src/rules/common-reuse-cohesion.js";
+import { commonReuseCohesion } from "../src/rules/reuse-cohesion.js";
 import { functionalCoreBoundary } from "../src/rules/functional-core-boundary.js";
 import { moduleCohesion } from "../src/rules/module-cohesion.js";
 import { noSingleCallerExport } from "../src/rules/no-single-caller-export.js";

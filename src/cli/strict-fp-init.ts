@@ -23,6 +23,8 @@ export type InitProjectResult = {
   readonly existingOtherConfigs: ReadonlyArray<string>;
 };
 
+const DEFAULT_MAX_TIER: LintTier = 3;
+
 const parseTier = (raw: string | undefined) => {
   if (raw === "0") return 0 as const;
   if (raw === "1") return 1 as const;
@@ -34,7 +36,7 @@ const parseTier = (raw: string | undefined) => {
 export const parseInitArgs = (args: ReadonlyArray<string>, defaultCwd = process.cwd()) => {
   let cwd = defaultCwd;
   let force = false;
-  let maxTier: LintTier = 3;
+  let maxTier: LintTier = DEFAULT_MAX_TIER;
   let help = false;
 
   for (let i = 0; i < args.length; i += 1) {
@@ -44,7 +46,7 @@ export const parseInitArgs = (args: ReadonlyArray<string>, defaultCwd = process.
     } else if (arg === "--help" || arg === "-h") {
       help = true;
     } else if ((arg === "--max-tier" || arg === "--tier") && args[i + 1]) {
-      maxTier = parseTier(args[i + 1]) ?? 3;
+      maxTier = parseTier(args[i + 1]) ?? DEFAULT_MAX_TIER;
       i += 1;
     } else if (arg === "--cwd" && args[i + 1]) {
       cwd = path.resolve(defaultCwd, args[i + 1] ?? defaultCwd);
@@ -61,7 +63,7 @@ export const parseInitArgs = (args: ReadonlyArray<string>, defaultCwd = process.
 };
 
 export const buildEslintConfigTemplate = (maxTier: LintTier) => {
-  const tierLine = maxTier < 3 ? `\n    maxTier: ${String(maxTier)},` : "";
+  const tierLine = maxTier < DEFAULT_MAX_TIER ? `\n    maxTier: ${String(maxTier)},` : "";
   return `import strictFp from "@mye-org/eslint-plugin-strict-fp";
 
 export default [
@@ -89,7 +91,7 @@ const otherEslintConfigNames = ["eslint.config.js", "eslint.config.mjs", "eslint
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const updatePackageJson = (packageJsonPath: string) => {
+const syncPackageJsonLintScript = (packageJsonPath: string) => {
   if (!fs.existsSync(packageJsonPath)) {
     return { status: "missing" as const };
   }
@@ -141,7 +143,7 @@ export const runInit = (options: InitCliOptions) => {
     eslintConfigStatus = configExists ? "overwritten" : "created";
   }
 
-  const pkgResult = updatePackageJson(packageJsonPath);
+  const pkgResult = syncPackageJsonLintScript(packageJsonPath);
 
   return {
     eslintConfigPath,

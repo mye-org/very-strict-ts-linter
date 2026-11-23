@@ -1,9 +1,10 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
-import { isFlowCallExpression, isPipeCallExpression } from "../utils/type-helpers.js";
+import { isFlowCallExpression } from "../lib/flow-call.js";
+import { isPipeCallExpression } from "../lib/pipe-call.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "noNestedPipe";
 
@@ -12,14 +13,15 @@ const isPipelineCall = (node: TSESTree.CallExpression) =>
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
 const hasEnclosingPipelineCall = (node: TSESTree.Node): boolean =>
-  pipe(
-    O.fromNullable(node.parent),
+  flow(
+    (n: TSESTree.Node) => n.parent,
+    O.fromNullable,
     O.exists(
       (parent) =>
         (parent.type === AST_NODE_TYPES.CallExpression && isPipelineCall(parent)) ||
         hasEnclosingPipelineCall(parent),
     ),
-  );
+  )(node);
 
 const checkPipeCall = (
   node: TSESTree.CallExpression,

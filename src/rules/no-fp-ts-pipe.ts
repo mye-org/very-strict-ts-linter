@@ -1,5 +1,5 @@
-import { createRule } from "../utils/create-rule.js";
-import { createBannedFpTsExportListeners } from "../utils/fp-ts-banned-export.js";
+import { buildBannedFpTsExportListeners } from "../lib/fp-ts-banned-export.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "noFpTsPipe";
 
@@ -18,5 +18,5 @@ export const noFpTsPipe = createRule<[], MessageIds>({
     schema: [],
     defaultOptions: [],
   },
-  create: createBannedFpTsExportListeners("pipe", "noFpTsPipe"),
+  create: buildBannedFpTsExportListeners("pipe", "noFpTsPipe"),
 });

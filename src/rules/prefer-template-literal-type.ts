@@ -6,24 +6,32 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
-import { createRule } from "../utils/create-rule.js";
+import { resolveEnclosingEsTreeFunction } from "../lib/estree-function-nodes.js";
+import { createRule } from "../lib/rule-factory.js";
+import { isTsParameterSymbol } from "../lib/ts-parameter-symbol.js";
 import {
-  getEnclosingEsTreeFunction,
   hasMatchingEnclosingFunctionName,
   isInsideUnsafeOrMustFunction,
-  isTsParameterSymbol,
   isUnsafeOrMustName,
-} from "../utils/type-helpers.js";
+} from "../lib/unsafe-function-scope.js";
 
 type MessageIds = "preferTemplateLiteralUnion" | "preferTemplateLiteralGuard";
 
 const DELIMITERS = [":", "/", ".", "-", "_"] as const;
 const EXEMPT_FN_PREFIX_RE = /^(is|has|can|should|parse|decode|from)(?=$|[A-Z0-9_])/;
-const GUARD_STRING_METHODS = new Set(["startsWith", "endsWith"]);
-const COLLECTION_CALLBACK_METHODS = new Set(["filter", "some", "every", "find", "findFirst", "exists"]);
+const GUARD_STRING_METHODS: ReadonlySet<string> = new Set(["startsWith", "endsWith"]);
+const REGEX_TEST_METHODS: ReadonlySet<string> = new Set(["test"]);
+const COLLECTION_CALLBACK_METHODS: ReadonlySet<string> = new Set([
+  "filter",
+  "some",
+  "every",
+  "find",
+  "findFirst",
+  "exists",
+]);
 const ANCHORED_LITERAL_REGEX_RE = /^(\^[A-Za-z0-9_/:.-]+|[A-Za-z0-9_/:.-]+\$)$/;
 
 const extractStringLiteral = (node: TSESTree.TypeNode) =>
@@ -37,8 +45,8 @@ const hasFullCartesianCounts = (
   partsList: ReadonlyArray<ReadonlyArray<string>>,
   uniqueCount: number,
 ) => {
-  const prefixes = new Set(pipe(partsList, RA.filterMap((p) => O.fromNullable(p[0]))));
-  const suffixes = new Set(pipe(partsList, RA.filterMap((p) => O.fromNullable(p[1]))));
+  const prefixes = new Set(RA.filterMap((p: ReadonlyArray<string>) => O.fromNullable(p[0]))(partsList));
+  const suffixes = new Set(RA.filterMap((p: ReadonlyArray<string>) => O.fromNullable(p[1]))(partsList));
   return (
     prefixes.size >= 2 &&
     suffixes.size >= 2 &&
@@ -46,60 +54,64 @@ const hasFullCartesianCounts = (
   );
 };
 
-const isValidSplitList = (partsList: ReadonlyArray<ReadonlyArray<string>>) =>
-  pipe(partsList, RA.every((p) => p.length === 2 && Boolean(p[0]) && Boolean(p[1])));
+const isValidSplitList = RA.every(
+  (p: ReadonlyArray<string>) => p.length === 2 && Boolean(p[0]) && Boolean(p[1]),
+);
+
+const isCartesianParts = (partsList: ReadonlyArray<ReadonlyArray<string>>, uniqueCount: number) =>
+  isValidSplitList(partsList) && hasFullCartesianCounts(partsList, uniqueCount);
+
+const splitByDelimiter = (delimiter: string) => (value: string) => value.split(delimiter);
+
+const splitValuesByDelimiter = (values: ReadonlyArray<string>, delimiter: string) =>
+  RA.map(splitByDelimiter(delimiter))(values);
 
 const isCartesianProductForDelimiter = (
   values: ReadonlyArray<string>,
   delimiter: string,
-) =>
-  pipe(
-    values,
-    RA.map((v) => v.split(delimiter)),
-    (partsList) =>
-      isValidSplitList(partsList) &&
-      hasFullCartesianCounts(partsList, new Set(values).size),
-  );
+) => isCartesianParts(splitValuesByDelimiter(values, delimiter), new Set(values).size);
 
 const hasAnyDelimiterCartesian = (values: ReadonlyArray<string>) =>
-  pipe(DELIMITERS, RA.some((d) => isCartesianProductForDelimiter(values, d)));
+  RA.some((d: string) => isCartesianProductForDelimiter(values, d))(DELIMITERS);
+
+const isFullCartesianUnion = (values: ReadonlyArray<string>, expectedCount: number) =>
+  values.length === expectedCount && hasAnyDelimiterCartesian(values);
 
 const isCartesianStringUnion = (node: TSESTree.TSUnionType) =>
   node.types.length >= 4 &&
-  pipe(
-    node.types,
-    RA.filterMap(extractStringLiteral),
-    (values) =>
-      values.length === node.types.length &&
-      hasAnyDelimiterCartesian(values),
-  );
+  isFullCartesianUnion(RA.filterMap(extractStringLiteral)(node.types), node.types.length);
 
-const isCollectionCallbackFn = (fn: TSESTree.Node) =>
-  fn.parent?.type === AST_NODE_TYPES.CallExpression &&
-  fn.parent.callee.type === AST_NODE_TYPES.MemberExpression &&
-  fn.parent.callee.property.type === AST_NODE_TYPES.Identifier &&
-  COLLECTION_CALLBACK_METHODS.has(fn.parent.callee.property.name);
+const isCollectionMemberCallee = (callee: TSESTree.Expression) =>
+  callee.type === AST_NODE_TYPES.MemberExpression &&
+  callee.property.type === AST_NODE_TYPES.Identifier &&
+  COLLECTION_CALLBACK_METHODS.has(callee.property.name);
+
+const isCollectionCallbackFn = ({ parent }: TSESTree.Node) =>
+  parent?.type === AST_NODE_TYPES.CallExpression && isCollectionMemberCallee(parent.callee);
+
+const isExemptPrefixName = (name: string) => EXEMPT_FN_PREFIX_RE.test(name);
 
 const isExemptEnclosingFunction = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
   hasMatchingEnclosingFunctionName(
     node,
-    (name) => isUnsafeOrMustName(name) || EXEMPT_FN_PREFIX_RE.test(name),
+    (name) => isUnsafeOrMustName(name) || isExemptPrefixName(name),
   ) ||
-  pipe(getEnclosingEsTreeFunction(node), O.exists(isCollectionCallbackFn));
+  flow(resolveEnclosingEsTreeFunction, O.exists(isCollectionCallbackFn))(node);
+
+const isStringTsType = (type: ts.Type) => (type.flags & ts.TypeFlags.String) !== 0;
 
 const isStringTypedParamTsNode = (
   tsNode: ts.Node,
   checker: ts.TypeChecker,
 ) =>
-  pipe(
-    O.fromNullable(checker.getSymbolAtLocation(tsNode)),
+  flow(
+    (n: ts.Node) => checker.getSymbolAtLocation(n),
+    O.fromNullable,
     O.exists(
-      (sym) =>
-        isTsParameterSymbol(sym) &&
-        Boolean(checker.getTypeAtLocation(tsNode).flags & ts.TypeFlags.String),
+      (sym) => isTsParameterSymbol(sym) && isStringTsType(checker.getTypeAtLocation(tsNode)),
     ),
-  );
+  )(tsNode);
 
 const isPlainStringParamIdentifier = (
   target: TSESTree.Node,
@@ -111,13 +123,10 @@ const isPlainStringParamIdentifier = (
     services.program.getTypeChecker(),
   );
 
-const isNonEmptyStringArg = (arg: O.Option<TSESTree.CallExpressionArgument>) =>
-  pipe(
-    arg,
-    O.exists(
-      (a) => a.type === AST_NODE_TYPES.Literal && typeof a.value === "string" && a.value.length > 0,
-    ),
-  );
+const isNonEmptyStringArg = O.exists(
+  (a: TSESTree.CallExpressionArgument) =>
+    a.type === AST_NODE_TYPES.Literal && typeof a.value === "string" && a.value.length > 0,
+);
 
 const isAnchoredRegexLiteral = (expr: TSESTree.Expression) =>
   expr.type === AST_NODE_TYPES.Literal &&
@@ -134,9 +143,9 @@ const isGuardMemberCall = (
     .with(P.when((m) => GUARD_STRING_METHODS.has(m)), () =>
       isNonEmptyStringArg(arg0) && isPlainStringParamIdentifier(callee.object, services),
     )
-    .with("test", () =>
+    .with(P.when((m) => REGEX_TEST_METHODS.has(m)), () =>
       isAnchoredRegexLiteral(callee.object) &&
-      pipe(arg0, O.exists((a) => isPlainStringParamIdentifier(a, services))),
+      O.exists((a: TSESTree.CallExpressionArgument) => isPlainStringParamIdentifier(a, services))(arg0),
     )
     .otherwise(() => false);
 
@@ -153,7 +162,7 @@ const reportOpt = (
   msg: O.Option<MessageIds>,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
 ) => {
-  pipe(msg, O.map((messageId) => { report({ node, messageId }); }));
+  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
 };
 
 export const preferTemplateLiteralType = createRule<[], MessageIds>({
@@ -174,11 +183,18 @@ export const preferTemplateLiteralType = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const services = ESLintUtils.getParserServices(context);
     const rep = (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => { context.report(d); };
     return {
       TSUnionType: (node) => { reportOpt(node, isCartesianStringUnion(node) ? O.some("preferTemplateLiteralUnion") : O.none, rep); },
-      CallExpression: (node) => { reportOpt(node, isTemplateGuardCall(node, services) ? O.some("preferTemplateLiteralGuard") : O.none, rep); },
+      CallExpression: (node) => {
+        reportOpt(
+          node,
+          isTemplateGuardCall(node, ESLintUtils.getParserServices(context))
+            ? O.some("preferTemplateLiteralGuard")
+            : O.none,
+          rep,
+        );
+      },
     };
   },
 });

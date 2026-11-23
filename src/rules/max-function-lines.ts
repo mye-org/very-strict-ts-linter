@@ -1,6 +1,6 @@
 import { TSESTree } from "@typescript-eslint/utils";
 import { match } from "ts-pattern";
-import { createRule } from "../utils/create-rule.js";
+import { createRule } from "../lib/rule-factory.js";
 
 type Options = [Record<"maxLines", number>];
 type MessageIds = "tooManyLines";
@@ -10,18 +10,26 @@ type FunctionNode =
   | TSESTree.FunctionExpression
   | TSESTree.ArrowFunctionExpression;
 
-const getLineCount = (node: FunctionNode) =>
-  node.body.loc.end.line - node.body.loc.start.line + 1;
+const measureLocationSpan = (loc: TSESTree.SourceLocation) =>
+  loc.end.line - loc.start.line + 1;
+
+const measureLineCount = (node: FunctionNode) =>
+  measureLocationSpan(node.body.loc);
+
+const formatLineLimitPayload = (lineCount: number, maxLines: number) => ({
+  actual: String(lineCount),
+  max: String(maxLines),
+});
 
 const reportIfTooLong = (
   node: FunctionNode,
   maxLines: number,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
 ) => {
-  const lineCount = getLineCount(node);
+  const lineCount = measureLineCount(node);
   match(lineCount > maxLines)
     .with(true, () => {
-      report({ node, messageId: "tooManyLines", data: { actual: String(lineCount), max: String(maxLines) } });
+      report({ node, messageId: "tooManyLines", data: formatLineLimitPayload(lineCount, maxLines) });
     })
     .with(false, () => {})
     .exhaustive();

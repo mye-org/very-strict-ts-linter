@@ -1,11 +1,15 @@
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import * as R from "fp-ts/lib/Record.js";
-import { pipe } from "fp-ts/lib/function.js";
+import * as RNEA from "fp-ts/lib/ReadonlyNonEmptyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
+import * as S from "fp-ts/lib/string.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
-import { getProjectSourceFiles, memoizeByProgram, memoizeByProgramAndKey } from "../utils/program-cache.js";
-import { collectTsNodes, getTsNodeLocation, makeLocationKey, TsLocation } from "../utils/ts-ast-helpers.js";
+import { memoizeByProgram, memoizeByProgramAndKey } from "../lib/program-memo.js";
+import { collectProjectSourceFiles } from "../lib/source-paths.js";
+import { TsLocation, makeLocationKey, resolveTsNodeLocation } from "../lib/ts-node-location.js";
+import { collectTsNodes } from "../lib/ts-node-traversal.js";
 
 export type GuardOccurrence = Readonly<
   Record<"signature" | "preview", string> &
@@ -42,40 +46,84 @@ const isFieldPropertyRead = (node: ts.Node): node is ts.PropertyAccessExpression
   !(ts.isCallExpression(node.parent) && node.parent.expression === node);
 
 const hasFieldPropertyRead = (expr: ts.Expression, sf: ts.SourceFile) =>
-  pipe(collectTsNodes(expr, sf), RA.some(isFieldPropertyRead));
+  RA.some(isFieldPropertyRead)(collectTsNodes(expr, sf));
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
 const extractRootIdentifier = (expr: ts.Expression): O.Option<string> =>
-  ts.isIdentifier(expr) ? O.some(expr.text) : getRootObjectName(expr);
+  ts.isIdentifier(expr) ? O.some(expr.text) : resolveRootObjectName(expr);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
-const getRootObjectName = (expr: ts.Expression): O.Option<string> =>
+const resolveRootObjectName = (expr: ts.Expression): O.Option<string> =>
   ts.isPropertyAccessExpression(expr) ? extractRootIdentifier(expr.expression) : O.none;
 
-const collectRootNames = (expr: ts.Expression, sf: ts.SourceFile) =>
-  pipe(
-    collectTsNodes(expr, sf),
-    RA.filter(isFieldPropertyRead),
-    RA.filterMap(getRootObjectName),
-    RA.reduce([] as ReadonlyArray<string>, (acc, name) =>
-      acc.includes(name) ? acc : [...acc, name],
-    ),
-  );
+const extractFieldRootName = (node: ts.Node) =>
+  isFieldPropertyRead(node) ? resolveRootObjectName(node) : O.none;
+
+const collectRootNames = flow(
+  collectTsNodes,
+  RA.filterMap(extractFieldRootName),
+  RA.uniq(S.Eq),
+);
+
+const joinComma = (items: ReadonlyArray<string>) => items.join(",");
 
 const formatCallArgList = (
   args: ReadonlyArray<ts.Expression>,
   roots: ReadonlyArray<string>,
   sf: ts.SourceFile,
-) => pipe(args, RA.map((a) => normalizeExpr(a, roots, sf))).join(",");
+) =>
+  flow(
+    RA.map((a: ts.Expression) => normalizeExpr(a, roots, sf)),
+    joinComma,
+  )(args);
+
+const wrapBinaryText = (lhs: string, op: string, rhs: string) => `(${lhs} ${op} ${rhs})`;
 
 const formatBinaryExpr = (b: ts.BinaryExpression, roots: ReadonlyArray<string>, sf: ts.SourceFile) =>
-  `(${normalizeExpr(b.left, roots, sf)} ${b.operatorToken.getText(sf)} ${normalizeExpr(b.right, roots, sf)})`;
+  wrapBinaryText(
+    normalizeExpr(b.left, roots, sf),
+    b.operatorToken.getText(sf),
+    normalizeExpr(b.right, roots, sf),
+  );
 
-const formatPrefixExpr = (u: ts.PrefixUnaryExpression, roots: ReadonlyArray<string>, sf: ts.SourceFile) =>
-  `${ts.tokenToString(u.operator) ?? "!"}${normalizeExpr(u.operand, roots, sf)}`;
+const resolveUnaryOp = (op: ts.PrefixUnaryOperator) => ts.tokenToString(op) ?? "!";
+const prefixText = (op: string, operand: string) => `${op}${operand}`;
+
+const formatPrefixExpr = (
+  u: ts.PrefixUnaryExpression,
+  roots: ReadonlyArray<string>,
+  sf: ts.SourceFile,
+) => prefixText(resolveUnaryOp(u.operator), normalizeExpr(u.operand, roots, sf));
+
+const formatCallText = (callee: string, args: string) => `${callee}(${args})`;
 
 const formatCallExpr = (c: ts.CallExpression, roots: ReadonlyArray<string>, sf: ts.SourceFile) =>
-  `${normalizeExpr(c.expression, roots, sf)}(${formatCallArgList(c.arguments, roots, sf)})`;
+  formatCallText(normalizeExpr(c.expression, roots, sf), formatCallArgList(c.arguments, roots, sf));
+
+const formatMemberText = (target: string, prop: string) => `${target}.${prop}`;
+
+const formatMemberExpr = (
+  m: ts.PropertyAccessExpression,
+  roots: ReadonlyArray<string>,
+  sf: ts.SourceFile,
+) => formatMemberText(normalizeExpr(m.expression, roots, sf), m.name.text);
+
+const hasRootName = (roots: ReadonlyArray<string>, name: string) => roots.includes(name);
+
+const isTrackedRootIdentifier = (
+  node: ts.Node,
+  roots: ReadonlyArray<string>,
+): node is ts.Identifier => ts.isIdentifier(node) && hasRootName(roots, node.text);
+
+const formatRootSlot = (roots: ReadonlyArray<string>, name: string) =>
+  `$${String(roots.indexOf(name))}`;
+
+const collapseWhitespace = (text: string) => text.replace(WHITESPACE_RE, " ");
+const truncatePreview = (text: string) => text.slice(0, 120);
+const readNodeText = (node: ts.Node, sf: ts.SourceFile) => node.getText(sf);
+
+const formatFallbackNode = flow(readNodeText, collapseWhitespace);
+const buildGuardPreview = flow(readNodeText, collapseWhitespace, truncatePreview);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive normalization
 const normalizeExpr = (node: ts.Node, roots: ReadonlyArray<string>, sf: ts.SourceFile): string =>
@@ -83,64 +131,54 @@ const normalizeExpr = (node: ts.Node, roots: ReadonlyArray<string>, sf: ts.Sourc
     .when(ts.isParenthesizedExpression, (p) => normalizeExpr(p.expression, roots, sf))
     .when(ts.isBinaryExpression, (b) => formatBinaryExpr(b, roots, sf))
     .when(ts.isPrefixUnaryExpression, (u) => formatPrefixExpr(u, roots, sf))
-    .when(ts.isPropertyAccessExpression, (m) => `${normalizeExpr(m.expression, roots, sf)}.${m.name.text}`)
+    .when(ts.isPropertyAccessExpression, (m) => formatMemberExpr(m, roots, sf))
     .when(ts.isCallExpression, (c) => formatCallExpr(c, roots, sf))
     .when(
-      (n): n is ts.Identifier => ts.isIdentifier(n) && roots.includes(n.text),
-      (id) => `$${String(roots.indexOf(id.text))}`,
+      (n): n is ts.Identifier => isTrackedRootIdentifier(n, roots),
+      (id) => formatRootSlot(roots, id.text),
     )
-    .otherwise((n) => n.getText(sf).replace(WHITESPACE_RE, " "));
+    .otherwise((n) => formatFallbackNode(n, sf));
 
 const toGuardOccurrence = (node: ts.BinaryExpression, sf: ts.SourceFile) => {
   const clauseCount = countAtomicClauses(node);
   return clauseCount >= 2 && hasFieldPropertyRead(node, sf)
     ? O.some<GuardOccurrence>({
         signature: normalizeExpr(node, collectRootNames(node, sf), sf),
-        preview: node.getText(sf).replace(WHITESPACE_RE, " ").slice(0, 120),
+        preview: buildGuardPreview(node, sf),
         clauseCount,
-        location: getTsNodeLocation(node, sf),
+        location: resolveTsNodeLocation(node, sf),
       })
     : O.none;
 };
 
+const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
+
 const extractFileGuards = (sf: ts.SourceFile) =>
-  pipe(
-    collectTsNodes(sf, sf),
+  flow(
+    collectFileNodes,
     RA.filter(isTopLevelLogicalExpr),
     RA.filterMap((node) => toGuardOccurrence(node, sf)),
-  );
+  )(sf);
 
-const getProgramGuards = (program: ts.Program) =>
-  memoizeByProgram(program, guardCache, (p) =>
-    pipe(getProjectSourceFiles(p), RA.flatMap(extractFileGuards)),
-  );
+const collectAllProgramGuards = flow(collectProjectSourceFiles, RA.flatMap(extractFileGuards));
 
-const groupAllBySignature = (occurrences: ReadonlyArray<GuardOccurrence>) => {
-  const map: Record<string, Array<GuardOccurrence>> = {};
-  for (const occ of occurrences) {
-    const list = map[occ.signature] ?? [];
-    list.push(occ);
-    map[occ.signature] = list;
-  }
-  return map as Readonly<Record<string, ReadonlyArray<GuardOccurrence>>>;
-};
+const collectProgramGuards = (program: ts.Program) =>
+  memoizeByProgram(program, guardCache, collectAllProgramGuards);
 
-const extractGuardLocations = (occs: ReadonlyArray<GuardOccurrence>) =>
-  pipe(occs, RA.map((o) => o.location));
+const groupAllBySignature = RNEA.groupBy((occ: GuardOccurrence) => occ.signature);
+
+const extractGuardLocations = RA.map((o: GuardOccurrence) => o.location);
 
 const toGuardCluster = (
   [signature, occs]: readonly [string, ReadonlyArray<GuardOccurrence>],
   minOccurrences: number,
 ) =>
   occs.length >= minOccurrences
-    ? pipe(
-        O.fromNullable(occs[0]),
-        O.map((first) => ({
-          signature,
-          preview: first.preview,
-          locations: extractGuardLocations(occs),
-        })),
-      )
+    ? O.map((first: GuardOccurrence) => ({
+        signature,
+        preview: first.preview,
+        locations: extractGuardLocations(occs),
+      }))(O.fromNullable(occs[0]))
     : (O.none as O.Option<GuardCluster>);
 
 type GuardIndex = Readonly<{
@@ -148,42 +186,62 @@ type GuardIndex = Readonly<{
   readonly byLocation: Readonly<Record<string, ReadonlyArray<GuardCluster>>>;
 }>;
 
+type GuardThresholds = Readonly<Record<"minClauses" | "minOccurrences", number>>;
+
 const guardIndexCache = new WeakMap<ts.Program, Readonly<Record<string, GuardIndex>>>();
 
-const indexClustersByLocation = (clusters: ReadonlyArray<GuardCluster>) => {
-  const map: Record<string, Array<GuardCluster>> = {};
-  for (const cluster of clusters) {
-    for (const loc of cluster.locations) {
-      const key = makeLocationKey(loc);
-      const list = map[key] ?? [];
-      list.push(cluster);
-      map[key] = list;
-    }
-  }
-  return map as Readonly<Record<string, ReadonlyArray<GuardCluster>>>;
-};
+const expandClusterLocations = (cluster: GuardCluster) =>
+  RA.map((loc: TsLocation) => [makeLocationKey(loc), cluster] as const)(cluster.locations);
 
-const computeGuardIndex = (program: ts.Program, minClauses: number, minOccurrences: number) =>
-  pipe(
-    getProgramGuards(program),
+const extractClusterFromPair = ([, cluster]: readonly [string, GuardCluster]) => cluster;
+
+const indexClustersByLocation = flow(
+  RA.flatMap(expandClusterLocations),
+  RNEA.groupBy(([locKey]) => locKey),
+  RR.map(RA.map(extractClusterFromPair)),
+);
+
+const buildGuardIndex = (clusters: ReadonlyArray<GuardCluster>) => ({
+  clusters,
+  byLocation: indexClustersByLocation(clusters),
+});
+
+const collectEligibleGuards = (program: ts.Program, minClauses: number) =>
+  flow(
+    collectProgramGuards,
     RA.filter((occ) => occ.clauseCount >= minClauses),
     groupAllBySignature,
-    R.toEntries,
+  )(program);
+
+const clusterGroupedGuards = (
+  grouped: Readonly<Record<string, ReadonlyArray<GuardOccurrence>>>,
+  minOccurrences: number,
+) =>
+  flow(
+    (rec: Readonly<Record<string, ReadonlyArray<GuardOccurrence>>>) => RR.toEntries(rec),
     RA.filterMap((entry) => toGuardCluster(entry, minOccurrences)),
-    (clusters) => ({
-      clusters,
-      byLocation: indexClustersByLocation(clusters),
-    }),
+    buildGuardIndex,
+  )(grouped);
+
+const computeGuardIndex = (program: ts.Program, thresholds: GuardThresholds) =>
+  clusterGroupedGuards(
+    collectEligibleGuards(program, thresholds.minClauses),
+    thresholds.minOccurrences,
   );
+
+const makeGuardCacheKey = (thresholds: GuardThresholds) =>
+  `${String(thresholds.minClauses)}:${String(thresholds.minOccurrences)}`;
 
 export const analyzeGuardClauses = (
   program: ts.Program,
   minClauses = 2,
   minOccurrences = 2,
-) =>
-  memoizeByProgramAndKey(
+) => {
+  const thresholds = { minClauses, minOccurrences };
+  return memoizeByProgramAndKey(
     program,
-    `${String(minClauses)}:${String(minOccurrences)}`,
+    makeGuardCacheKey(thresholds),
     guardIndexCache,
-    (p) => computeGuardIndex(p, minClauses, minOccurrences),
+    (p) => computeGuardIndex(p, thresholds),
   );
+};

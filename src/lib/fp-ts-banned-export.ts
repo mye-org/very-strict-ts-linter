@@ -12,8 +12,8 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import * as ts from "typescript";
-import { normalizeFilePath } from "./program-cache.js";
-import { isCalleeOfCallExpression } from "./type-helpers.js";
+import { isCalleeOfCallExpression } from "./call-callee.js";
+import { normalizeFilePath } from "./source-paths.js";
 
 type FpTsImports = Readonly<{
   namespaces: ReadonlySet<string>;
@@ -47,57 +47,64 @@ const EXCLUDED_IDENT_PARENT_TYPES: ReadonlySet<string> = new Set([
 
 const isFpTsImportSource = (source: string) => FP_TS_SOURCE_RE.test(source);
 
-const getDeclFileName = (decl: ts.Declaration) => decl.getSourceFile().fileName;
+const resolveDeclFileName = (decl: ts.Declaration) => decl.getSourceFile().fileName;
 
-const isFpTsDeclaration = flow(
-  getDeclFileName,
-  normalizeFilePath,
-  (filePath) => FP_TS_FILE_RE.test(filePath),
-);
+const isFpTsFilePath = (filePath: string) => FP_TS_FILE_RE.test(filePath);
+
+const isFpTsDeclaration = flow(resolveDeclFileName, normalizeFilePath, isFpTsFilePath);
 
 const resolveSymbol = (symbol: ts.Symbol, checker: ts.TypeChecker) =>
   symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 
-const hasFpTsDeclaration = (resolved: ts.Symbol) =>
-  flow(
-    (r: ts.Symbol) => r.getDeclarations(),
-    O.fromNullable,
-    O.exists(RA.some(isFpTsDeclaration)),
-  )(resolved);
+const hasFpTsDeclaration = flow(
+  (r: ts.Symbol) => r.getDeclarations(),
+  O.fromNullable,
+  O.exists(RA.some(isFpTsDeclaration)),
+);
 
-const isFpTsExportSymbol = (symbol: ts.Symbol, checker: ts.TypeChecker, exportName: string) => {
-  const resolved = resolveSymbol(symbol, checker);
-  return resolved.name === exportName && hasFpTsDeclaration(resolved);
+type SymbolCheckInput = Readonly<
+  Record<"targetName", string> & {
+    readonly targetSymbol: ts.Symbol;
+    readonly checker: ts.TypeChecker;
+  }
+>;
+
+const isFpTsExportSymbol = ({ targetSymbol, checker, targetName }: SymbolCheckInput) => {
+  const resolved = resolveSymbol(targetSymbol, checker);
+  return resolved.name === targetName && hasFpTsDeclaration(resolved);
 };
 
-const hasTypeInfo = (services: ParserServices): services is ParserServicesWithTypeInformation =>
+const hasTypeProgram = (services: ParserServices): services is ParserServicesWithTypeInformation =>
   Boolean(services.program);
 
 const toCheckerContext = (services: ParserServices) =>
-  hasTypeInfo(services)
+  hasTypeProgram(services)
     ? O.some<CheckerContext>({ services, checker: services.program.getTypeChecker() })
     : O.none;
 
-const lookupSymbol = (tsNode: ts.Node, checker: ts.TypeChecker) =>
-  O.fromNullable(checker.getSymbolAtLocation(tsNode));
+const lookupTsSymbol = (node: TSESTree.Node, ctx: CheckerContext) =>
+  O.fromNullable(ctx.services.esTreeNodeToTSNodeMap.get(node));
+
+const lookupSymbolAtTsNode = (ctx: CheckerContext) =>
+  flow((tsNode: ts.Node) => ctx.checker.getSymbolAtLocation(tsNode), O.fromNullable);
+
+const resolveSymbolForNode = (node: TSESTree.Node, ctx: CheckerContext) =>
+  O.flatMap(lookupSymbolAtTsNode(ctx))(lookupTsSymbol(node, ctx));
 
 const isNodeFpTsExportByType = (node: TSESTree.Node, ctx: CheckerContext, exportName: string) =>
-  flow(
-    (n: TSESTree.Node) => ctx.services.esTreeNodeToTSNodeMap.get(n),
-    O.fromNullable,
-    O.flatMap((tsNode) => lookupSymbol(tsNode, ctx.checker)),
-    O.exists((sym) => isFpTsExportSymbol(sym, ctx.checker, exportName)),
-  )(node);
+  O.exists((targetSymbol: ts.Symbol) =>
+    isFpTsExportSymbol({ targetSymbol, checker: ctx.checker, targetName: exportName }),
+  )(resolveSymbolForNode(node, ctx));
 
-const isValueFpTsImport = (stmt: TSESTree.ProgramStatement): stmt is TSESTree.ImportDeclaration =>
-  stmt.type === AST_NODE_TYPES.ImportDeclaration &&
-  stmt.importKind === "value" &&
-  isFpTsImportSource(stmt.source.value);
+const isValueFpTsImport = (node: TSESTree.Node): node is TSESTree.ImportDeclaration =>
+  node.type === AST_NODE_TYPES.ImportDeclaration &&
+  node.importKind === "value" &&
+  isFpTsImportSource(node.source.value);
 
-const getNamespaceImportName = (spec: TSESTree.ImportClause) =>
+const resolveNamespaceImportName = (spec: TSESTree.ImportClause) =>
   spec.type === AST_NODE_TYPES.ImportNamespaceSpecifier ? O.some(spec.local.name) : O.none;
 
-const getLocalExportImportName = (exportName: string) => (spec: TSESTree.ImportClause) =>
+const resolveLocalExportImportName = (exportName: string) => (spec: TSESTree.ImportClause) =>
   spec.type === AST_NODE_TYPES.ImportSpecifier &&
   spec.importKind !== "type" &&
   spec.imported.type === AST_NODE_TYPES.Identifier &&
@@ -119,8 +126,8 @@ const collectFpTsImports = (body: ReadonlyArray<TSESTree.ProgramStatement>, expo
   flow(
     RA.filter(isValueFpTsImport),
     (fpImports) => ({
-      namespaces: collectSpecifiers(fpImports, getNamespaceImportName),
-      locals: collectSpecifiers(fpImports, getLocalExportImportName(exportName)),
+      namespaces: collectSpecifiers(fpImports, resolveNamespaceImportName),
+      locals: collectSpecifiers(fpImports, resolveLocalExportImportName(exportName)),
     }),
   )(body);
 
@@ -162,12 +169,14 @@ const isDeclOrMemberKeyIdent = (node: TSESTree.Identifier, parent: TSESTree.Node
   ((parent.type === AST_NODE_TYPES.FunctionDeclaration || parent.type === AST_NODE_TYPES.FunctionExpression) &&
     parent.id === node);
 
+const isExcludedParentNode = (node: TSESTree.Identifier, parent: TSESTree.Node) =>
+  EXCLUDED_IDENT_PARENT_TYPES.has(parent.type) || isDeclOrMemberKeyIdent(node, parent);
+
 const isExcludedIdentifierParent = (node: TSESTree.Identifier) =>
   flow(
-    (n: TSESTree.Identifier) => O.fromNullable(n.parent),
-    O.exists((parent: TSESTree.Node) =>
-      EXCLUDED_IDENT_PARENT_TYPES.has(parent.type) || isDeclOrMemberKeyIdent(node, parent),
-    ),
+    (id: TSESTree.Identifier) => id.parent,
+    O.fromNullable,
+    O.exists((parent: TSESTree.Node) => isExcludedParentNode(node, parent)),
   )(node);
 
 const hasZeroReadRefs = (variable: TSESLint.Scope.Variable) =>
@@ -176,33 +185,44 @@ const hasZeroReadRefs = (variable: TSESLint.Scope.Variable) =>
 const hasNoReadReferences = (
   spec: TSESTree.ImportSpecifier,
   sourceCode: Readonly<TSESLint.SourceCode>,
-) =>
-  flow(
-    (s: TSESTree.ImportSpecifier) => O.fromNullable(sourceCode.getDeclaredVariables(s)[0]),
-    O.exists(hasZeroReadRefs),
-  )(spec);
+) => O.exists(hasZeroReadRefs)(O.fromNullable(sourceCode.getDeclaredVariables(spec)[0]));
+
+const isMatchingImportedIdent = (spec: TSESTree.ImportSpecifier, targetName: string) =>
+  spec.importKind !== "type" &&
+  spec.imported.type === AST_NODE_TYPES.Identifier &&
+  spec.imported.name === targetName;
 
 const isUnusedFpTsExportImport = (
   spec: TSESTree.ImportSpecifier,
   sourceCode: Readonly<TSESLint.SourceCode>,
-  exportName: string,
+  ctx: ExportCheckContext,
 ) =>
-  spec.importKind !== "type" &&
-  spec.parent.type === AST_NODE_TYPES.ImportDeclaration &&
-  spec.parent.importKind === "value" &&
-  isFpTsImportSource(spec.parent.source.value) &&
-  spec.imported.type === AST_NODE_TYPES.Identifier &&
-  spec.imported.name === exportName &&
+  isMatchingImportedIdent(spec, ctx.exportName) &&
+  isValueFpTsImport(spec.parent) &&
   hasNoReadReferences(spec, sourceCode);
+
+const isMatchingReExportSource = (
+  source: TSESTree.StringLiteral,
+  spec: TSESTree.ExportSpecifier,
+  targetName: "chain" | "pipe",
+) =>
+  isFpTsImportSource(source.value) &&
+  spec.local.type === AST_NODE_TYPES.Identifier &&
+  spec.local.name === targetName;
+
+const resolveParentSource = (spec: TSESTree.ExportSpecifier) => spec.parent.source;
+
+const isSourceExportMatch = (spec: TSESTree.ExportSpecifier, ctx: ExportCheckContext) => {
+  const source = resolveParentSource(spec);
+  return source
+    ? isMatchingReExportSource(source, spec, ctx.exportName)
+    : isNodeFpTsExport(spec.local, ctx);
+};
 
 const isFpTsExportReExport = (spec: TSESTree.ExportSpecifier, ctx: ExportCheckContext) =>
   spec.exportKind === "value" &&
   spec.parent.exportKind === "value" &&
-  (spec.parent.source
-    ? isFpTsImportSource(spec.parent.source.value) &&
-      spec.local.type === AST_NODE_TYPES.Identifier &&
-      spec.local.name === ctx.exportName
-    : isNodeFpTsExport(spec.local, ctx));
+  isSourceExportMatch(spec, ctx);
 
 const reportWhen = <N extends TSESTree.Node>(
   node: N,
@@ -228,12 +248,15 @@ const buildListeners = (
     MemberExpression: (n) => { reportWhen(n, (m) => isMemberExportRef(m, ctx), report); },
     Identifier: (n) => { reportWhen(n, (id) => isIdentExportRef(id, ctx), report); },
     ImportSpecifier: (n) => {
-      reportWhen(n, (s) => isUnusedFpTsExportImport(s, sourceCode, ctx.exportName), report);
+      reportWhen(n, (s) => isUnusedFpTsExportImport(s, sourceCode, ctx), report);
     },
     ExportSpecifier: (n) => { reportWhen(n, (s) => isFpTsExportReExport(s, ctx), report); },
   }) satisfies TSESLint.RuleListener;
 
-export const createBannedFpTsExportListeners = <MessageIds extends string>(
+const extractProgramStatements = (sourceCode: Readonly<TSESLint.SourceCode>) =>
+  sourceCode.ast.body;
+
+export const buildBannedFpTsExportListeners = <MessageIds extends string>(
   exportName: "chain" | "pipe",
   messageId: MessageIds,
 ) => (context: Readonly<TSESLint.RuleContext<MessageIds, []>>) =>
@@ -241,7 +264,7 @@ export const createBannedFpTsExportListeners = <MessageIds extends string>(
     {
       exportName,
       checkerCtx: toCheckerContext(ESLintUtils.getParserServices(context, true)),
-      imports: collectFpTsImports(context.sourceCode.ast.body, exportName),
+      imports: collectFpTsImports(extractProgramStatements(context.sourceCode), exportName),
     },
     context.sourceCode,
     (node) => { context.report({ node, messageId }); },

@@ -1,21 +1,14 @@
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RNEA from "fp-ts/lib/ReadonlyNonEmptyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
-import {
-  getProjectSourceFiles,
-  memoizeByProgram,
-  memoizeByProgramAndKey,
-} from "../utils/program-cache.js";
-import {
-  collectTsNodes,
-  extractNamedTsFunction,
-  getTsNodeLocation,
-  makeLocationKey,
-  NamedTsFunction,
-  TsLocation,
-} from "../utils/ts-ast-helpers.js";
+import { memoizeByProgram, memoizeByProgramAndKey } from "../lib/program-memo.js";
+import { collectProjectSourceFiles } from "../lib/source-paths.js";
+import { NamedTsFunction, extractNamedTsFunction } from "../lib/ts-named-function.js";
+import { TsLocation, makeLocationKey, resolveTsNodeLocation } from "../lib/ts-node-location.js";
+import { collectTsNodes } from "../lib/ts-node-traversal.js";
 
 export type RecursiveWalker = Readonly<
   Record<"functionName", string> & {
@@ -47,46 +40,47 @@ type WalkerMatch = Readonly<
   }
 >;
 
-type ProgramAdtWalkData = Readonly<{
+type ProgramAdtInventory = Readonly<{
   readonly adts: Readonly<Record<string, RecursiveAdt>>;
   readonly walkers: ReadonlyArray<WalkerMatch>;
 }>;
 
-const walkCache = new WeakMap<ts.Program, ProgramAdtWalkData>();
+const walkCache = new WeakMap<ts.Program, ProgramAdtInventory>();
 const analysisCache = new WeakMap<ts.Program, Readonly<Record<string, CatamorphismAnalysis>>>();
 
 const DISCRIMINANT_CANDIDATES = ["_tag", "kind", "type", "tag"] as const;
 const FOLD_FUNCTION_RE = /^(fold|cata|reduce|traverse)(?=$|[A-Z0-9_])/;
+const MATCH_CALL_NAMES: ReadonlySet<string> = new Set(["match"]);
+
+const isLiteralDiscriminantType = (t: ts.Type) =>
+  Boolean(t.flags & (ts.TypeFlags.StringLiteral | ts.TypeFlags.NumberLiteral));
+
+const lookupMemberProp = (member: ts.Type, key: string) =>
+  O.fromNullable(member.getProperty(key));
 
 const hasLiteralDiscriminant = (member: ts.Type, key: string, checker: ts.TypeChecker) =>
-  pipe(
-    O.fromNullable(member.getProperty(key)),
+  flow(
+    lookupMemberProp,
     O.map((prop) => checker.getTypeOfSymbol(prop)),
-    O.exists((t) => Boolean(t.flags & (ts.TypeFlags.StringLiteral | ts.TypeFlags.NumberLiteral))),
-  );
+    O.exists(isLiteralDiscriminantType),
+  )(member, key);
 
 const hasDiscriminantOnAllMembers = (
   members: ReadonlyArray<ts.Type>,
   key: string,
   checker: ts.TypeChecker,
-) => pipe(members, RA.every((m) => hasLiteralDiscriminant(m, key, checker)));
+) => RA.every((m: ts.Type) => hasLiteralDiscriminant(m, key, checker))(members);
 
 const findSharedDiscriminant = (members: ReadonlyArray<ts.Type>, checker: ts.TypeChecker) =>
-  pipe(
+  RA.findFirst((key: string) => hasDiscriminantOnAllMembers(members, key, checker))(
     DISCRIMINANT_CANDIDATES,
-    RA.findFirst((key) => hasDiscriminantOnAllMembers(members, key, checker)),
   );
 
+const isSelfTypeRefNode = (n: ts.Node, aliasName: string) =>
+  ts.isTypeReferenceNode(n) && ts.isIdentifier(n.typeName) && n.typeName.text === aliasName;
+
 const hasSelfTypeReference = (alias: ts.TypeAliasDeclaration, sf: ts.SourceFile) =>
-  pipe(
-    collectTsNodes(alias.type, sf),
-    RA.some(
-      (n) =>
-        ts.isTypeReferenceNode(n) &&
-        ts.isIdentifier(n.typeName) &&
-        n.typeName.text === alias.name.text,
-    ),
-  );
+  RA.some((n: ts.Node) => isSelfTypeRefNode(n, alias.name.text))(collectTsNodes(alias.type, sf));
 
 const toRecursiveAdt = (
   alias: ts.TypeAliasDeclaration,
@@ -95,14 +89,11 @@ const toRecursiveAdt = (
 ) => {
   const type = checker.getTypeAtLocation(alias);
   return type.isUnion() && type.types.length >= 2
-    ? pipe(
-        findSharedDiscriminant(type.types, checker),
-        O.map((discriminant) => ({
-          name: alias.name.text,
-          discriminant,
-          location: getTsNodeLocation(alias, sf),
-        })),
-      )
+    ? O.map((discriminant: string) => ({
+        name: alias.name.text,
+        discriminant,
+        location: resolveTsNodeLocation(alias, sf),
+      }))(findSharedDiscriminant(type.types, checker))
     : O.none;
 };
 
@@ -111,68 +102,94 @@ const extractRecursiveAdt = (node: ts.Node, sf: ts.SourceFile, checker: ts.TypeC
     ? toRecursiveAdt(node, sf, checker)
     : O.none;
 
-const getAnnotatedAdtName = (
-  param: ts.ParameterDeclaration,
-  adts: Readonly<Record<string, RecursiveAdt>>,
-) =>
-  param.type && ts.isTypeReferenceNode(param.type) && ts.isIdentifier(param.type.typeName)
-    ? pipe(RR.lookup(param.type.typeName.text, adts), O.map((a) => a.name))
+const resolveTypeRefName = (typeNode: ts.TypeNode) =>
+  ts.isTypeReferenceNode(typeNode) && ts.isIdentifier(typeNode.typeName)
+    ? O.some(typeNode.typeName.text)
     : O.none;
 
-const getCheckedAdtName = (
-  param: ts.ParameterDeclaration,
-  adts: Readonly<Record<string, RecursiveAdt>>,
-  checker: ts.TypeChecker,
-) =>
-  pipe(
-    O.fromNullable(checker.getTypeAtLocation(param).aliasSymbol?.name),
-    O.flatMap((name) => RR.lookup(name, adts)),
+const lookupAdtName = (adts: Readonly<Record<string, RecursiveAdt>>) =>
+  flow(
+    (name: string) => RR.lookup(name, adts),
     O.map((a) => a.name),
   );
 
-const getParamAdtName = (
+const resolveAnnotatedAdtName = (
+  param: ts.ParameterDeclaration,
+  adts: Readonly<Record<string, RecursiveAdt>>,
+) =>
+  flow(
+    O.flatMap(resolveTypeRefName),
+    O.flatMap(lookupAdtName(adts)),
+  )(O.fromNullable(param.type));
+
+const readParamAliasName = (param: ts.ParameterDeclaration, checker: ts.TypeChecker) =>
+  O.fromNullable(checker.getTypeAtLocation(param).aliasSymbol?.name);
+
+const resolveCheckedAdtName = (
+  param: ts.ParameterDeclaration,
+  adts: Readonly<Record<string, RecursiveAdt>>,
+  checker: ts.TypeChecker,
+) => flow(readParamAliasName, O.flatMap(lookupAdtName(adts)))(param, checker);
+
+const resolveParamAdtName = (
   param: ts.ParameterDeclaration,
   adts: Readonly<Record<string, RecursiveAdt>>,
   checker: ts.TypeChecker,
 ) =>
-  pipe(
-    getAnnotatedAdtName(param, adts),
-    O.alt(() => getCheckedAdtName(param, adts, checker)),
-  );
+  O.alt(() => resolveCheckedAdtName(param, adts, checker))(resolveAnnotatedAdtName(param, adts));
+
+const hasCallArgument = (call: ts.CallExpression, id: ts.Identifier) => call.arguments.includes(id);
+
+const isCallCalleeOrArg = (call: ts.CallExpression, id: ts.Identifier) =>
+  call.expression === id || hasCallArgument(call, id);
 
 const isSelfCallOrArg = (n: ts.Node, fnName: string) =>
   ts.isIdentifier(n) &&
   n.text === fnName &&
   ts.isCallExpression(n.parent) &&
-  (n.parent.expression === n || n.parent.arguments.includes(n));
+  isCallCalleeOrArg(n.parent, n);
 
 const hasSelfRecursiveReference = (fnBody: ts.Node, fnName: string, sf: ts.SourceFile) =>
-  pipe(
-    collectTsNodes(fnBody, sf),
-    RA.some((n) => isSelfCallOrArg(n, fnName)),
-  );
+  RA.some((n: ts.Node) => isSelfCallOrArg(n, fnName))(collectTsNodes(fnBody, sf));
+
+const isMatchCallExpr = (n: ts.Node) =>
+  ts.isCallExpression(n) && ts.isIdentifier(n.expression) && MATCH_CALL_NAMES.has(n.expression.text);
+
+const isDiscriminantAccess = (n: ts.Node, discriminant: string) =>
+  ts.isPropertyAccessExpression(n) && n.name.text === discriminant;
+
+const isAdtDispatchNode = (n: ts.Node, discriminant: string) =>
+  isMatchCallExpr(n) || ts.isSwitchStatement(n) || isDiscriminantAccess(n, discriminant);
 
 const hasAdtDispatch = (fnBody: ts.Node, discriminant: string, sf: ts.SourceFile) =>
-  pipe(
-    collectTsNodes(fnBody, sf),
-    RA.some(
-      (n) =>
-        (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "match") ||
-        ts.isSwitchStatement(n) ||
-        (ts.isPropertyAccessExpression(n) && n.name.text === discriminant),
-    ),
-  );
+  RA.some((n: ts.Node) => isAdtDispatchNode(n, discriminant))(collectTsNodes(fnBody, sf));
 
 const hasDispatchForAdt = (
   adtName: string,
   fnBody: ts.Node,
   sf: ts.SourceFile,
   adts: Readonly<Record<string, RecursiveAdt>>,
+) => O.exists((adt: RecursiveAdt) => hasAdtDispatch(fnBody, adt.discriminant, sf))(RR.lookup(adtName, adts));
+
+const isFoldFunctionName = (name: string) => FOLD_FUNCTION_RE.test(name);
+const toParamArray = (params: ts.NodeArray<ts.ParameterDeclaration>) => Array.from(params);
+
+const matchWalkerAdt = (
+  decl: NamedTsFunction,
+  sf: ts.SourceFile,
+  adts: Readonly<Record<string, RecursiveAdt>>,
+  checker: ts.TypeChecker,
 ) =>
-  pipe(
-    RR.lookup(adtName, adts),
-    O.exists((adt) => hasAdtDispatch(fnBody, adt.discriminant, sf)),
-  );
+  flow(
+    toParamArray,
+    RA.filterMap((p) => resolveParamAdtName(p, adts, checker)),
+    RA.findFirst((adtName) => hasDispatchForAdt(adtName, decl.fnBody, sf, adts)),
+    O.map((adtName) => ({
+      adtName,
+      functionName: decl.name,
+      location: resolveTsNodeLocation(decl.locNode, sf),
+    })),
+  )(decl.paramNodes);
 
 const inspectFunctionForWalker = (
   decl: NamedTsFunction,
@@ -180,107 +197,105 @@ const inspectFunctionForWalker = (
   adts: Readonly<Record<string, RecursiveAdt>>,
   checker: ts.TypeChecker,
 ) =>
-  FOLD_FUNCTION_RE.test(decl.name) || !hasSelfRecursiveReference(decl.fnBody, decl.name, sf)
+  isFoldFunctionName(decl.name) || !hasSelfRecursiveReference(decl.fnBody, decl.name, sf)
     ? O.none
-    : pipe(
-        Array.from(decl.paramNodes),
-        RA.filterMap((p) => getParamAdtName(p, adts, checker)),
-        RA.findFirst((adtName) => hasDispatchForAdt(adtName, decl.fnBody, sf, adts)),
-        O.map((adtName) => ({
-          adtName,
-          functionName: decl.name,
-          location: getTsNodeLocation(decl.locNode, sf),
-        })),
-      );
+    : matchWalkerAdt(decl, sf, adts, checker);
+
+const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
 
 const extractFileWalkers = (
   sf: ts.SourceFile,
   adts: Readonly<Record<string, RecursiveAdt>>,
   checker: ts.TypeChecker,
 ) =>
-  pipe(
-    collectTsNodes(sf, sf),
+  flow(
+    collectFileNodes,
     RA.filterMap(extractNamedTsFunction),
     RA.filterMap((decl) => inspectFunctionForWalker(decl, sf, adts, checker)),
-  );
+  )(sf);
 
 const collectFileAdts = (sf: ts.SourceFile, checker: ts.TypeChecker) =>
-  pipe(
-    collectTsNodes(sf, sf),
+  flow(
+    collectFileNodes,
     RA.filterMap((n) => extractRecursiveAdt(n, sf, checker)),
-  );
+  )(sf);
 
-const indexAdts = (list: ReadonlyArray<RecursiveAdt>) => {
-  const map: Record<string, RecursiveAdt> = {};
-  for (const adt of list) {
-    map[adt.name] = adt;
-  }
-  return map as Readonly<Record<string, RecursiveAdt>>;
-};
+const indexAdts = flow(
+  RA.map((adt: RecursiveAdt) => [adt.name, adt] as const),
+  RR.fromEntries,
+);
 
 const collectAllAdts = (sourceFiles: ReadonlyArray<ts.SourceFile>, checker: ts.TypeChecker) =>
-  pipe(sourceFiles, RA.flatMap((sf) => collectFileAdts(sf, checker)), indexAdts);
+  flow(
+    RA.flatMap((sf: ts.SourceFile) => collectFileAdts(sf, checker)),
+    indexAdts,
+  )(sourceFiles);
 
-const collectProgramAdtWalkData = (program: ts.Program) => {
+const collectProgramAdtInventory = (program: ts.Program) => {
   const checker = program.getTypeChecker();
-  const sourceFiles = getProjectSourceFiles(program);
+  const sourceFiles = collectProjectSourceFiles(program);
   const adts = collectAllAdts(sourceFiles, checker);
   return {
     adts,
-    walkers: pipe(sourceFiles, RA.flatMap((sf) => extractFileWalkers(sf, adts, checker))),
+    walkers: RA.flatMap((sf: ts.SourceFile) => extractFileWalkers(sf, adts, checker))(sourceFiles),
   };
 };
 
-const indexFindingsByLocation = (candidates: ReadonlyArray<CatamorphismFinding>) => {
-  const map: Record<string, Array<CatamorphismFinding>> = {};
-  for (const finding of candidates) {
-    for (const w of finding.walkers) {
-      const key = makeLocationKey(w.location);
-      const list = map[key] ?? [];
-      list.push(finding);
-      map[key] = list;
-    }
-  }
-  return map as Readonly<Record<string, ReadonlyArray<CatamorphismFinding>>>;
-};
+const expandFindingWalkers = (finding: CatamorphismFinding) =>
+  RA.map((w: RecursiveWalker) => [makeLocationKey(w.location), finding] as const)(finding.walkers);
 
-const groupWalkersByAdt = (walkers: ReadonlyArray<WalkerMatch>) => {
-  const map: Record<string, Array<RecursiveWalker>> = {};
-  for (const w of walkers) {
-    const list = map[w.adtName] ?? [];
-    list.push({ functionName: w.functionName, location: w.location });
-    map[w.adtName] = list;
-  }
-  return map as Readonly<Record<string, ReadonlyArray<RecursiveWalker>>>;
-};
+const extractFindingFromPair = ([, finding]: readonly [string, CatamorphismFinding]) => finding;
+
+const indexFindingsByLocation = flow(
+  RA.flatMap(expandFindingWalkers),
+  RNEA.groupBy(([locKey]) => locKey),
+  RR.map(RA.map(extractFindingFromPair)),
+);
+
+const toRecursiveWalker = (w: WalkerMatch) => ({
+  functionName: w.functionName,
+  location: w.location,
+});
+
+const groupWalkersByAdt = flow(
+  RNEA.groupBy((w: WalkerMatch) => w.adtName),
+  RR.map(RA.map(toRecursiveWalker)),
+);
 
 const buildCatamorphismFinding = (
   adtName: string,
   list: ReadonlyArray<RecursiveWalker>,
   adts: Readonly<Record<string, RecursiveAdt>>,
 ) =>
-  pipe(
-    RR.lookup(adtName, adts),
-    O.map((adt) => ({
-      adtName,
-      discriminant: adt.discriminant,
-      adtLocation: adt.location,
-      walkers: list,
-    })),
-  );
+  O.map((adt: RecursiveAdt) => ({
+    adtName,
+    discriminant: adt.discriminant,
+    adtLocation: adt.location,
+    walkers: list,
+  }))(RR.lookup(adtName, adts));
+
+const buildCatamorphismAnalysis = (candidates: ReadonlyArray<CatamorphismFinding>) => ({
+  candidates,
+  locationIndex: indexFindingsByLocation(candidates),
+});
 
 const computeCatamorphisms = (program: ts.Program, minWalkers: number) => {
-  const { adts, walkers } = memoizeByProgram(program, walkCache, collectProgramAdtWalkData);
-  const candidates = pipe(
-    groupWalkersByAdt(walkers),
+  const { adts, walkers } = memoizeByProgram(program, walkCache, collectProgramAdtInventory);
+  return flow(
+    groupWalkersByAdt,
     RR.toEntries,
     RA.filter(([, list]) => list.length >= minWalkers),
     RA.filterMap(([adtName, list]) => buildCatamorphismFinding(adtName, list, adts)),
-  );
-  return { candidates, locationIndex: indexFindingsByLocation(candidates) };
+    buildCatamorphismAnalysis,
+  )(walkers);
 };
 
+const makeCatamorphismCacheKey = (minWalkers: number) => String(minWalkers);
+
 export const analyzeCatamorphisms = (program: ts.Program, minWalkers = 2) =>
-  memoizeByProgramAndKey(program, String(minWalkers), analysisCache, (p) =>
-    computeCatamorphisms(p, minWalkers),
+  memoizeByProgramAndKey(
+    program,
+    makeCatamorphismCacheKey(minWalkers),
+    analysisCache,
+    (p) => computeCatamorphisms(p, minWalkers),
   );

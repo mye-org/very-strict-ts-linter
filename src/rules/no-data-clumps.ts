@@ -1,10 +1,10 @@
 import { ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow } from "fp-ts/lib/function.js";
 import { analyzeDataClumps, ClumpFinding } from "../analyzers/data-clump-analyzer.js";
-import { createRule } from "../utils/create-rule.js";
-import { getTsNodeOwnLocation, makeLocationKey } from "../utils/ts-ast-helpers.js";
+import { createRule } from "../lib/rule-factory.js";
+import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
 type Options = [Readonly<Record<"minSize" | "minOccurrences", number>>];
 type MessageIds = "dataClump";
@@ -17,10 +17,15 @@ type ClumpCandidateNode =
   | TSESTree.TSInterfaceDeclaration
   | TSESTree.ClassDeclaration;
 
-const getNodeLocationKey = (
+const resolveNodeLocationKey = (
   node: ClumpCandidateNode,
   services: ParserServicesWithTypeInformation,
-) => pipe(services.esTreeNodeToTSNodeMap.get(node), getTsNodeOwnLocation, makeLocationKey);
+) =>
+  flow(
+    (n: ClumpCandidateNode) => services.esTreeNodeToTSNodeMap.get(n),
+    resolveTsNodeOwnLocation,
+    makeLocationKey,
+  )(node);
 
 const formatClumpReport = (
   node: ClumpCandidateNode,
@@ -41,11 +46,12 @@ const reportFirstClump = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  pipe(
-    O.fromNullable(index[getNodeLocationKey(node, services)]),
+  flow(
+    (n: ClumpCandidateNode) => index[resolveNodeLocationKey(n, services)],
+    O.fromNullable,
     O.flatMap(RA.head),
     O.map((clump) => { report(formatClumpReport(node, clump)); }),
-  );
+  )(node);
 };
 
 const runClumpCheck =
