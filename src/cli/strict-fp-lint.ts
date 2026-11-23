@@ -4,12 +4,13 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { ESLint } from "eslint";
+import { ESLint, type Linter } from "eslint";
 import {
   ruleTiers,
   tier0TypeChecker,
   type LintTier,
   type PluginRuleName,
+  type PluginRuleTier,
 } from "../configs/recommended.js";
 
 export type PhasedLintOptions = {
@@ -20,6 +21,10 @@ export type PhasedLintOptions = {
   readonly onlyTier?: LintTier;
   readonly tsconfig?: string;
   readonly cwd?: string;
+};
+
+export type PhasedLintDependencies = {
+  readonly ESLintClass?: typeof ESLint;
 };
 
 export type TierRunSummary = {
@@ -42,24 +47,34 @@ const tierLabels: Record<LintTier, string> = {
   3: "Tier 3 (FP & Style)",
 };
 
+export const classifyRuleTier = (ruleId: string): PluginRuleTier => {
+  if (ruleId.startsWith("strict-fp/")) {
+    const shortName = ruleId.slice("strict-fp/".length);
+    return Object.prototype.hasOwnProperty.call(ruleTiers, shortName)
+      ? ruleTiers[shortName as PluginRuleName]
+      : 3;
+  }
+  return 2;
+};
+
+export const classifyMessageTier = (
+  message: Pick<Linter.LintMessage, "fatal" | "ruleId">,
+): PluginRuleTier => {
+  if (message.fatal === true || message.ruleId === null || message.ruleId === undefined) {
+    return 1;
+  }
+  return classifyRuleTier(message.ruleId);
+};
+
 export const createTierRuleFilter =
   (tier: LintTier) =>
-  ({ ruleId }: { readonly ruleId: string }) => {
-    if (tier === 0) {
-      return false;
-    }
-    if (tier === 3) {
-      return true;
-    }
-    if (ruleId.startsWith("strict-fp/")) {
-      const shortName = ruleId.slice("strict-fp/".length);
-      const ruleTier = Object.prototype.hasOwnProperty.call(ruleTiers, shortName)
-        ? ruleTiers[shortName as PluginRuleName]
-        : undefined;
-      return typeof ruleTier === "number" && ruleTier <= tier;
-    }
-    return tier > 1;
-  };
+  ({ ruleId }: { readonly ruleId: string }) =>
+    tier !== 0 && classifyRuleTier(ruleId) <= tier;
+
+export const createExactTierRuleFilter =
+  (tier: LintTier) =>
+  ({ ruleId }: { readonly ruleId: string }) =>
+    tier !== 0 && classifyRuleTier(ruleId) === tier;
 
 const parseTier = (raw: string | undefined) => {
   if (raw === "0") return 0 as const;
@@ -108,14 +123,15 @@ export const parseCliArgs = (args: ReadonlyArray<string>) => {
   } satisfies PhasedLintOptions;
 };
 
-const allTiers = [0, 1, 2, 3] as const satisfies ReadonlyArray<LintTier>;
-
-const resolveTiersToRun = (options: PhasedLintOptions) => {
-  if (options.onlyTier !== undefined) {
-    return [options.onlyTier] as const;
-  }
-  return allTiers.filter((t) => t <= options.maxTier);
+const tiersUpTo: Record<LintTier, ReadonlyArray<LintTier>> = {
+  0: [0],
+  1: [0, 1],
+  2: [0, 1, 2],
+  3: [0, 1, 2, 3],
 };
+
+const resolveTiersToRun = (options: PhasedLintOptions): ReadonlyArray<LintTier> =>
+  options.onlyTier !== undefined ? [options.onlyTier] : tiersUpTo[options.maxTier];
 
 const findLocalTscBin = (startDir: string) => {
   let current = path.resolve(startDir);
@@ -187,41 +203,190 @@ const runTypeCheck = (cwd: string, tsconfig: string | undefined) =>
     );
   });
 
-const runEslintTier = async (tier: Exclude<LintTier, 0>, options: PhasedLintOptions) => {
-  const eslint = new ESLint({
-    cwd: options.cwd ?? process.cwd(),
-    fix: options.fix,
-    ruleFilter: createTierRuleFilter(tier),
+export const sliceLintResultsForTier = (
+  results: ReadonlyArray<ESLint.LintResult>,
+  tier: PluginRuleTier,
+): Array<ESLint.LintResult> =>
+  results.map((result) => {
+    const messages = result.messages.filter((msg) => classifyMessageTier(msg) === tier);
+    const suppressedMessages = result.suppressedMessages.filter(
+      (msg) => classifyMessageTier(msg) === tier,
+    );
+    const usedDeprecatedRules = result.usedDeprecatedRules.filter(
+      (entry) => classifyRuleTier(entry.ruleId) === tier,
+    );
+
+    let errorCount = 0;
+    let fatalErrorCount = 0;
+    let warningCount = 0;
+    let fixableErrorCount = 0;
+    let fixableWarningCount = 0;
+
+    for (const msg of messages) {
+      if (msg.fatal === true || msg.severity === 2) {
+        errorCount += 1;
+        if (msg.fatal === true) {
+          fatalErrorCount += 1;
+        }
+        if (msg.fix !== undefined) {
+          fixableErrorCount += 1;
+        }
+      } else if (msg.severity === 1) {
+        warningCount += 1;
+        if (msg.fix !== undefined) {
+          fixableWarningCount += 1;
+        }
+      }
+    }
+
+    const { source, ...rest } = result;
+    const hasMessages = messages.length > 0 || suppressedMessages.length > 0;
+    return {
+      ...rest,
+      ...(hasMessages && source !== undefined ? { source } : {}),
+      messages,
+      suppressedMessages,
+      usedDeprecatedRules,
+      errorCount,
+      fatalErrorCount,
+      warningCount,
+      fixableErrorCount,
+      fixableWarningCount,
+    };
   });
-  const results = await eslint.lintFiles([...options.targets]);
-  if (options.fix) {
-    await ESLint.outputFixes(results);
-  }
+
+const buildTierSummary = async (
+  tier: PluginRuleTier,
+  results: Array<ESLint.LintResult>,
+  formatter: ESLint.Formatter,
+): Promise<TierRunSummary> => {
   const errorCount = results.reduce((sum, r) => sum + r.errorCount, 0);
   const warningCount = results.reduce((sum, r) => sum + r.warningCount, 0);
-  const formatter = await eslint.loadFormatter(options.format);
   const output = await formatter.format(results);
-
-  return { tier, errorCount, warningCount, output } satisfies TierRunSummary;
+  return { tier, errorCount, warningCount, output };
 };
 
-export const runPhasedLint = async (options: PhasedLintOptions) => {
-  const tiers = resolveTiersToRun(options);
-  const cwd = options.cwd ?? process.cwd();
-  let summaries: ReadonlyArray<TierRunSummary> = [];
+const runNonFixPhased = async (
+  tiers: ReadonlyArray<LintTier>,
+  options: PhasedLintOptions,
+  cwd: string,
+  EslintCtor: typeof ESLint,
+): Promise<PhasedLintResult> => {
+  let singlePass:
+    | {
+        readonly results: Array<ESLint.LintResult>;
+        readonly formatter: ESLint.Formatter;
+      }
+    | undefined;
 
+  const getSinglePass = async () => {
+    if (!singlePass) {
+      const ruleFilter =
+        options.onlyTier !== undefined
+          ? createExactTierRuleFilter(options.onlyTier)
+          : createTierRuleFilter(options.maxTier);
+      const eslint = new EslintCtor({ cwd, fix: false, ruleFilter });
+      const results = await eslint.lintFiles([...options.targets]);
+      const formatter = await eslint.loadFormatter(options.format);
+      singlePass = { results, formatter };
+    }
+    return singlePass;
+  };
+
+  let summaries: ReadonlyArray<TierRunSummary> = [];
   for (const tier of tiers) {
-    const summary =
-      tier === 0 ? await runTypeCheck(cwd, options.tsconfig) : await runEslintTier(tier, options);
+    let summary: TierRunSummary;
+    if (tier === 0) {
+      summary = await runTypeCheck(cwd, options.tsconfig);
+    } else {
+      const pass = await getSinglePass();
+      const tierResults =
+        options.onlyTier !== undefined ? pass.results : sliceLintResultsForTier(pass.results, tier);
+      summary = await buildTierSummary(tier, tierResults, pass.formatter);
+    }
 
     summaries = [...summaries, summary];
-
     if (summary.errorCount > 0) {
-      return { passed: false, failedTier: tier, summaries } satisfies PhasedLintResult;
+      return { passed: false, failedTier: tier, summaries };
     }
   }
 
-  return { passed: true, summaries } satisfies PhasedLintResult;
+  return { passed: true, summaries };
+};
+
+const runTierForFix = async (
+  tier: LintTier,
+  options: PhasedLintOptions,
+  cwd: string,
+  EslintCtor: typeof ESLint,
+): Promise<{ readonly summary: TierRunSummary; readonly didMutate: boolean }> => {
+  if (tier === 0) {
+    return { summary: await runTypeCheck(cwd, options.tsconfig), didMutate: false };
+  }
+
+  const eslint = new EslintCtor({
+    cwd,
+    fix: true,
+    ruleFilter: createExactTierRuleFilter(tier),
+  });
+  const results = await eslint.lintFiles([...options.targets]);
+  const didMutate = results.some((r) => r.output !== undefined);
+  if (didMutate) {
+    await EslintCtor.outputFixes(results);
+  }
+  const formatter = await eslint.loadFormatter(options.format);
+  const summary = await buildTierSummary(tier, results, formatter);
+  return { summary, didMutate };
+};
+
+const runFixPhased = async (
+  tiers: ReadonlyArray<LintTier>,
+  options: PhasedLintOptions,
+  cwd: string,
+  EslintCtor: typeof ESLint,
+): Promise<PhasedLintResult> => {
+  let summaries: ReadonlyArray<TierRunSummary> = [];
+
+  for (const tier of tiers) {
+    const { summary, didMutate } = await runTierForFix(tier, options, cwd, EslintCtor);
+    summaries = [...summaries, summary];
+    if (summary.errorCount > 0) {
+      return { passed: false, failedTier: tier, summaries };
+    }
+
+    if (didMutate && tier > 0 && options.onlyTier === undefined) {
+      const prevMaxTier = (tier - 1) as 0 | 1 | 2;
+      const recheck = await runNonFixPhased(
+        tiersUpTo[prevMaxTier],
+        { ...options, fix: false, maxTier: prevMaxTier },
+        cwd,
+        EslintCtor,
+      );
+      if (!recheck.passed && recheck.failedTier !== undefined) {
+        const failedSummary = recheck.summaries[recheck.summaries.length - 1];
+        return {
+          passed: false,
+          failedTier: recheck.failedTier,
+          summaries: failedSummary ? [...summaries, failedSummary] : summaries,
+        };
+      }
+    }
+  }
+
+  return { passed: true, summaries };
+};
+
+export const runPhasedLint = async (
+  options: PhasedLintOptions,
+  deps?: PhasedLintDependencies,
+): Promise<PhasedLintResult> => {
+  const tiers = resolveTiersToRun(options);
+  const cwd = options.cwd ?? process.cwd();
+  const EslintCtor = deps?.ESLintClass ?? ESLint;
+
+  return options.fix
+    ? runFixPhased(tiers, options, cwd, EslintCtor)
+    : runNonFixPhased(tiers, options, cwd, EslintCtor);
 };
 
 const runCli = async () => {

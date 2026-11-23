@@ -38,7 +38,7 @@ npx strict-fp-lint
 
 #### Why `strict-fp-lint` instead of `eslint .`?
 
-Running raw `eslint .` skips TypeScript's compiler type checker (`tsc --noEmit`) and evaluates all ESLint tiers at once, which can drown out type-soundness and structural issues in style diagnostics. `strict-fp-lint` runs checks in **phased tiers**, stopping at the first tier with errors:
+Running raw `eslint .` skips TypeScript's compiler type checker (`tsc --noEmit`) and evaluates all ESLint tiers at once, which can drown out type-soundness and structural issues in style diagnostics. `strict-fp-lint` runs checks in **phased tiers**, stopping at the first tier with errors (default non-`--fix` runs execute ESLint in a single pass and partition diagnostics by tier, while `--fix` applies fixes tier by tier):
 
 0. **Tier 0 (Type Checker — `tsc --noEmit`)** — Type soundness — *"Does this code obey TypeScript's type system?"* Runs `tsc --noEmit` first, before any ESLint rules.
 1. **Tier 1 (Architecture & DDD)** — Domain layer purity, functional core / imperative shell boundaries (`functional-core-boundary`), module cohesion (`module-cohesion`), encapsulation (`no-single-caller-export`), common reuse cohesion (`common-reuse-cohesion`), aggregate boundaries, value objects, ubiquitous language, DDD discovery rules, and FP abstraction discovery rules (`prefer-reader-over-context-drilling`, `no-structural-skeleton-duplication`, `prefer-catamorphism-over-recursive-adt-walk`).
