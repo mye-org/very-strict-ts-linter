@@ -178,6 +178,41 @@ describe("tiered configs and React/Expo exclusions", () => {
     expect(testRules?.["strict-fp/no-single-caller-export"]).toBe("off");
     expect(testRules?.["strict-fp/common-reuse-cohesion"]).toBe("off");
   });
+
+  it("enables all 3 TestScope rules as error in Tier 1, forwards testFiles as testPatterns, and keeps them active in test-overrides", () => {
+    const tiered = createTieredConfig(strictFp, {
+      maxTier: 1,
+      testFiles: ["tests/**/*.ts"],
+    });
+    const mainBlock = findTierBlock(tiered, "strict-fp/tier-1");
+    const testBlock = findTierBlock(tiered, "strict-fp/test-overrides");
+    const testScopeBlock = findTierBlock(configs.testScope, "strict-fp/test-scope");
+
+    const mainRules = mainBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    expect(mainRules?.["strict-fp/no-redundant-test-scope"]).toEqual([
+      "error",
+      { testPatterns: ["tests/**/*.ts"] },
+    ]);
+    expect(mainRules?.["strict-fp/prefer-lowest-test-level"]).toEqual([
+      "error",
+      { testPatterns: ["tests/**/*.ts"] },
+    ]);
+    expect(mainRules?.["strict-fp/single-test-responsibility"]).toEqual([
+      "error",
+      { testPatterns: ["tests/**/*.ts"] },
+    ]);
+
+    const testRules = testBlock?.rules as Record<string, TSESLint.FlatConfig.RuleEntry> | undefined;
+    expect(testRules?.["strict-fp/no-redundant-test-scope"]).toBeUndefined();
+    expect(testRules?.["strict-fp/prefer-lowest-test-level"]).toBeUndefined();
+    expect(testRules?.["strict-fp/single-test-responsibility"]).toBeUndefined();
+
+    expect(testScopeBlock?.rules).toEqual({
+      "strict-fp/no-redundant-test-scope": "error",
+      "strict-fp/prefer-lowest-test-level": "error",
+      "strict-fp/single-test-responsibility": "error",
+    });
+  });
 });
 
 describe("strict-fp-lint CLI helpers and phased runner", () => {

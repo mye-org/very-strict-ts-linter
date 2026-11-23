@@ -56,8 +56,11 @@ export const ruleTiers = {
   "no-stringly-typed-discriminants": 1,
   "no-structural-skeleton-duplication": 1,
   "no-train-wreck-navigation": 1,
+  "no-redundant-test-scope": 1,
   "prefer-catamorphism-over-recursive-adt-walk": 1,
+  "prefer-lowest-test-level": 1,
   "prefer-reader-over-context-drilling": 1,
+  "single-test-responsibility": 1,
 
   // Tier 2: Type Safety & Correctness
   "no-any-or-unknown": 2,
@@ -145,6 +148,12 @@ export const fpDiscoveryRules = {
   "strict-fp/prefer-reader-over-context-drilling": "error",
 } as const satisfies TSESLint.FlatConfig.Rules;
 
+export const testScopeRules = {
+  "strict-fp/no-redundant-test-scope": "error",
+  "strict-fp/prefer-lowest-test-level": "error",
+  "strict-fp/single-test-responsibility": "error",
+} as const satisfies TSESLint.FlatConfig.Rules;
+
 export const tier1Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(1);
 
 export const tier2Rules: TSESLint.FlatConfig.Rules = {
@@ -192,6 +201,24 @@ const buildModuleArchitectureOptions = (options: StrictFpConfigOptions) => ({
     : {}),
 });
 
+const buildTestScopeOptions = (options: StrictFpConfigOptions) =>
+  options.testFiles
+    ? {
+        "strict-fp/no-redundant-test-scope": [
+          "error",
+          { testPatterns: options.testFiles },
+        ] as TSESLint.FlatConfig.RuleEntry,
+        "strict-fp/prefer-lowest-test-level": [
+          "error",
+          { testPatterns: options.testFiles },
+        ] as TSESLint.FlatConfig.RuleEntry,
+        "strict-fp/single-test-responsibility": [
+          "error",
+          { testPatterns: options.testFiles },
+        ] as TSESLint.FlatConfig.RuleEntry,
+      }
+    : {};
+
 const buildTier1WithOverrides = (options: StrictFpConfigOptions) =>
   ({
     ...tier1Rules,
@@ -200,6 +227,7 @@ const buildTier1WithOverrides = (options: StrictFpConfigOptions) =>
       : {}),
     ...buildUbiquitousOptions(options),
     ...buildModuleArchitectureOptions(options),
+    ...buildTestScopeOptions(options),
   }) satisfies TSESLint.FlatConfig.Rules;
 
 export const buildTieredRules = (maxTier: LintTier, maxLines = 15, options: StrictFpConfigOptions = {}) =>
@@ -360,6 +388,22 @@ export const createFpDiscoveryConfig = (
     ignores: [...defaultStrictFpIgnores],
     plugins: { "strict-fp": plugin },
     rules: fpDiscoveryRules,
+  },
+];
+
+export const createTestScopeConfig = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictFpConfigOptions = {},
+) => [
+  {
+    name: "strict-fp/test-scope",
+    files: resolveFiles(options),
+    ignores: [...defaultStrictFpIgnores],
+    plugins: { "strict-fp": plugin },
+    rules: {
+      ...testScopeRules,
+      ...buildTestScopeOptions(options),
+    },
   },
 ];
 

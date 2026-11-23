@@ -5,7 +5,7 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["tests/**/*.test.ts"],
-    exclude: ["tests/ts-unit-sample/**"],
+    exclude: ["tests/ts-unit-sample/**", "tests/test-scope-sample/**"],
     pool: "threads",
     isolate: false,
   },

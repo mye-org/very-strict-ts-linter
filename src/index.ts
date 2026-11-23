@@ -5,12 +5,14 @@ import {
   createFpDiscoveryConfig,
   createStrictFpConfig,
   createStrictReactConfig,
+  createTestScopeConfig,
   createTieredConfig,
   pluginMeta,
   pluginRules,
   reactTsRules,
   reactTsxRules,
   ruleTiers,
+  testScopeRules,
   tier0TypeChecker,
   tier1Rules,
   tier2Rules,
@@ -36,6 +38,7 @@ const configs = {
   dddBoundary: createDddBoundaryConfig(plugin),
   dddDiscovery: createDddDiscoveryConfig(plugin),
   fpDiscovery: createFpDiscoveryConfig(plugin),
+  testScope: createTestScopeConfig(plugin),
   react: createStrictReactConfig(plugin),
 } as const;
 
@@ -46,11 +49,13 @@ export {
   createFpDiscoveryConfig,
   createStrictFpConfig,
   createStrictReactConfig,
+  createTestScopeConfig,
   createTieredConfig,
   pluginRules as rules,
   reactTsRules,
   reactTsxRules,
   ruleTiers,
+  testScopeRules,
   tier0TypeChecker,
   tier1Rules,
   tier2Rules,
@@ -78,4 +83,6 @@ export default {
     createDddDiscoveryConfig(plugin, options),
   createFpDiscoveryConfig: (options?: StrictFpConfigOptions) =>
     createFpDiscoveryConfig(plugin, options),
+  createTestScopeConfig: (options?: StrictFpConfigOptions) =>
+    createTestScopeConfig(plugin, options),
 };

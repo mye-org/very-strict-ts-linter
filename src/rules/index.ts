@@ -27,6 +27,7 @@ import { noNestedTernary } from "./no-nested-ternary.js";
 import { noNullUndefined } from "./no-null-undefined.js";
 import { noOptionalStateBags } from "./no-optional-state-bags.js";
 import { noReactInTs } from "./no-react-in-ts.js";
+import { noRedundantTestScope } from "./no-redundant-test-scope.js";
 import { noRepeatedGuardClauses } from "./no-repeated-guard-clauses.js";
 import { noScatteredValidation } from "./no-scattered-validation.js";
 import { noSingleCallerExport } from "./no-single-caller-export.js";
@@ -45,6 +46,7 @@ import { preferFpTsArrayMethods } from "./prefer-fp-ts-array-methods.js";
 import { preferFunctionComposition } from "./prefer-function-composition.js";
 import { preferFunctorFusion } from "./prefer-functor-fusion.js";
 import { preferLensOverNestedSpread } from "./prefer-lens-over-nested-spread.js";
+import { preferLowestTestLevel } from "./prefer-lowest-test-level.js";
 import { preferMonadicComposition } from "./prefer-monadic-composition.js";
 import { preferMonadicErrorHandling } from "./prefer-monadic-error-handling.js";
 import { preferNonemptyTuple } from "./prefer-nonempty-tuple.js";
@@ -62,6 +64,7 @@ import { repositoryAggregateRootOnly } from "./repository-aggregate-root-only.js
 import { requireExhaustiveMatch } from "./require-exhaustive-match.js";
 import { requireKeyofPath } from "./require-keyof-path.js";
 import { singleLevelOfAbstraction } from "./single-level-of-abstraction.js";
+import { singleTestResponsibility } from "./single-test-responsibility.js";
 import { thinReactComponent } from "./thin-react-component.js";
 import { ubiquitousLanguage } from "./ubiquitous-language.js";
 
@@ -95,6 +98,7 @@ export const rules = {
   "no-null-undefined": noNullUndefined,
   "no-optional-state-bags": noOptionalStateBags,
   "no-react-in-ts": noReactInTs,
+  "no-redundant-test-scope": noRedundantTestScope,
   "no-repeated-guard-clauses": noRepeatedGuardClauses,
   "no-scattered-validation": noScatteredValidation,
   "no-single-caller-export": noSingleCallerExport,
@@ -113,6 +117,7 @@ export const rules = {
   "prefer-function-composition": preferFunctionComposition,
   "prefer-functor-fusion": preferFunctorFusion,
   "prefer-lens-over-nested-spread": preferLensOverNestedSpread,
+  "prefer-lowest-test-level": preferLowestTestLevel,
   "prefer-monadic-composition": preferMonadicComposition,
   "prefer-monadic-error-handling": preferMonadicErrorHandling,
   "prefer-nonempty-tuple": preferNonemptyTuple,
@@ -130,6 +135,7 @@ export const rules = {
   "require-exhaustive-match": requireExhaustiveMatch,
   "require-keyof-path": requireKeyofPath,
   "single-level-of-abstraction": singleLevelOfAbstraction,
+  "single-test-responsibility": singleTestResponsibility,
   "thin-react-component": thinReactComponent,
   "ubiquitous-language": ubiquitousLanguage,
 } as const;

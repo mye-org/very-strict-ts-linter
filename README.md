@@ -41,7 +41,7 @@ npx strict-fp-lint
 Running raw `eslint .` skips TypeScript's compiler type checker (`tsc --noEmit`) and evaluates all ESLint tiers at once, which can drown out type-soundness and structural issues in style diagnostics. `strict-fp-lint` runs checks in **phased tiers**, stopping at the first tier with errors (default non-`--fix` runs execute ESLint in a single pass and partition diagnostics by tier, while `--fix` applies fixes tier by tier):
 
 0. **Tier 0 (Type Checker — `tsc --noEmit`)** — Type soundness — *"Does this code obey TypeScript's type system?"* Runs `tsc --noEmit` first, before any ESLint rules.
-1. **Tier 1 (Architecture & DDD)** — Domain layer purity, functional core / imperative shell boundaries (`functional-core-boundary`), module cohesion (`module-cohesion`), encapsulation (`no-single-caller-export`), common reuse cohesion (`common-reuse-cohesion`), aggregate boundaries, value objects, ubiquitous language, DDD discovery rules, and FP abstraction discovery rules (`prefer-reader-over-context-drilling`, `no-structural-skeleton-duplication`, `prefer-catamorphism-over-recursive-adt-walk`).
+1. **Tier 1 (Architecture & DDD)** — Domain layer purity, functional core / imperative shell boundaries (`functional-core-boundary`), module cohesion (`module-cohesion`), encapsulation (`no-single-caller-export`), common reuse cohesion (`common-reuse-cohesion`), aggregate boundaries, value objects, ubiquitous language, DDD discovery rules, FP abstraction discovery rules (`prefer-reader-over-context-drilling`, `no-structural-skeleton-duplication`, `prefer-catamorphism-over-recursive-adt-walk`), and TestScope compositional test rules (`no-redundant-test-scope`, `prefer-lowest-test-level`, `single-test-responsibility`).
 2. **Tier 2 (Type Safety & Correctness)** — No `any`/`unknown`, no `null`/`undefined`, exhaustive matching, readonly collections, `@typescript-eslint/strict-type-checked`.
 3. **Tier 3 (FP & Style)** — `fp-ts` conventions, no `let`/`var`, no imperative loops, no `if`/`else`/`switch`, point-free & monadic composition, `monocle-ts` optics (`prefer-lens-over-nested-spread`, `prefer-prism-over-guarded-update`, `prefer-traversal-over-nested-collection-update`), algebraic laws (`prefer-applicative-over-independent-bind`, `prefer-traverse-over-map-sequence`, `prefer-functor-fusion`), and max function lines.
 
@@ -90,7 +90,7 @@ npx strict-fp-radar [--tsconfig tsconfig.json] [--format markdown|json]
 
 - `files` — Target glob patterns (default: `["**/*.ts"]`)
 - `boundaryFiles` — Imperative shell / CLI / infrastructure globs where boundary-specific rules (including `functional-core-boundary`) are relaxed
-- `testFiles` — Test file globs where test-ergonomic relaxations apply (also forwarded as `testPatterns` to `no-single-caller-export` and `common-reuse-cohesion`)
+- `testFiles` — Test file globs where test-ergonomic relaxations apply (also forwarded as `testPatterns` to `no-single-caller-export`, `common-reuse-cohesion`, `no-redundant-test-scope`, `prefer-lowest-test-level`, and `single-test-responsibility`)
 - `domainFiles` — Domain layer globs for `domain-layer-purity` and `ubiquitous-language`
 - `applicationFiles` — Application layer globs for `ubiquitous-language`
 - `entryPoints` — Public API entry point globs forwarded to `no-single-caller-export` so transitively re-exported symbols are exempt from single-caller checks

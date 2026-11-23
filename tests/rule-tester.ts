@@ -39,3 +39,13 @@ export const createTsUnitSampleRuleTester = () =>
       },
     },
   });
+
+export const createTestScopeSampleRuleTester = () =>
+  new RuleTester({
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: path.resolve(import.meta.dirname, "test-scope-sample"),
+      },
+    },
+  });

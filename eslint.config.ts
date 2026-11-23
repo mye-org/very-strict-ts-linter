@@ -8,6 +8,7 @@ export default [
       "tests/fixtures/**",
       "tests/ddd-sample/**",
       "tests/ts-unit-sample/**",
+      "tests/test-scope-sample/**",
     ],
   },
   ...strictFp.createStrictFpConfig({
