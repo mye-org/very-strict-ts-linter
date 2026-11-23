@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,7 @@ import strictFp, {
   createTieredConfig,
   rules,
   ruleTiers,
+  tier0TypeChecker,
   tier1Rules,
   tier2Rules,
   tier3Rules,
@@ -27,7 +29,21 @@ const findTierBlock = (configList: ReadonlyArray<TSESLint.FlatConfig.Config>, na
     O.toUndefined,
   );
 
+const createTempProjectDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "strict-fp-phased-"));
+
 describe("tiered configs and React/Expo exclusions", () => {
+  it("exposes Tier 0 Type Checker (tsc --noEmit) metadata and empty ESLint tier0 preset", () => {
+    expect(tier0TypeChecker).toEqual({
+      tier: 0,
+      name: "Type Checker",
+      command: "tsc --noEmit",
+      description: 'Type soundness — "Does this code obey TypeScript\'s type system?"',
+    });
+
+    expect(findTierBlock(configs.tier0, "strict-fp/tier-0")?.rules).toEqual({});
+    expect(findTierBlock(configs.tier0, "strict-fp/react-thin-tsx")).toBeUndefined();
+  });
+
   it("excludes .tsx and *.config.ts from strict .ts rules and includes thin-tsx block", () => {
     expect(defaultStrictFpFiles).toEqual(["**/*.ts"]);
     expect(defaultStrictFpIgnores).toEqual(["**/*.tsx", "**/*.config.ts"]);
@@ -137,8 +153,12 @@ describe("tiered configs and React/Expo exclusions", () => {
 
 describe("strict-fp-lint CLI helpers and phased runner", () => {
   it("filters rules accurately per tier", () => {
+    const t0Filter = createTierRuleFilter(0);
     const t1Filter = createTierRuleFilter(1);
     const t2Filter = createTierRuleFilter(2);
+
+    expect(t0Filter({ ruleId: "strict-fp/domain-layer-purity" })).toBe(false);
+    expect(t0Filter({ ruleId: "@typescript-eslint/no-unsafe-assignment" })).toBe(false);
 
     expect(t1Filter({ ruleId: "strict-fp/domain-layer-purity" })).toBe(true);
     expect(t1Filter({ ruleId: "strict-fp/no-react-in-ts" })).toBe(true);
@@ -155,7 +175,7 @@ describe("strict-fp-lint CLI helpers and phased runner", () => {
     expect(createTierRuleFilter(3)({ ruleId: "strict-fp/no-let-or-var" })).toBe(true);
   });
 
-  it("parses CLI flags", () => {
+  it("parses CLI flags including Tier 0 and tsconfig options", () => {
     expect(parseCliArgs(["--fix", "--max-tier", "2", "--format", "json", "src/domain"])).toEqual({
       targets: ["src/domain"],
       fix: true,
@@ -169,21 +189,107 @@ describe("strict-fp-lint CLI helpers and phased runner", () => {
       maxTier: 3,
       onlyTier: 1,
     });
+    expect(parseCliArgs(["--tier", "0", "--tsconfig", "tsconfig.app.json"])).toEqual({
+      targets: ["."],
+      fix: false,
+      format: "stylish",
+      maxTier: 3,
+      onlyTier: 0,
+      tsconfig: "tsconfig.app.json",
+    });
+    expect(parseCliArgs(["--max-tier", "0", "-p", "tsconfig.check.json"])).toEqual({
+      targets: ["."],
+      fix: false,
+      format: "stylish",
+      maxTier: 0,
+      tsconfig: "tsconfig.check.json",
+    });
   });
 
-  it("stops at Tier 1 on architectural or React/TSX boundary errors and ignores *.config.ts", async () => {
-    const tmpDir = pipe(
-      os.tmpdir(),
-      (dir) => path.join(dir, "strict-fp-phased-"),
-      (prefix) => fs.mkdtempSync(prefix),
-    );
+  it("enforces tsc --noEmit as Tier 0 and stops before Tier 1 on type errors", async () => {
+    const tmpDir = createTempProjectDir();
     try {
       const distEntry = path.resolve(import.meta.dirname, "../dist/index.js");
       const tsconfigJson = JSON.stringify({
-        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, jsx: "react-jsx" },
-        include: ["**/*.ts", "**/*.tsx"],
+        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true },
+        include: ["**/*.ts"],
       });
       fs.writeFileSync(path.join(tmpDir, "tsconfig.json"), tsconfigJson);
+      fs.writeFileSync(
+        path.join(tmpDir, "eslint.config.mjs"),
+        `import strictFp from ${JSON.stringify(distEntry)};
+export default [
+  ...strictFp.createTieredConfig({ maxTier: 3 }),
+  { languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } } },
+];
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "broken.ts"),
+        'export type Retry = { readonly timeoutMs: number };\nexport const invalidNumber: number = "not-a-number";\n',
+      );
+
+      const result = await runPhasedLint({
+        targets: ["."],
+        fix: false,
+        format: "json",
+        maxTier: 3,
+        cwd: tmpDir,
+      });
+
+      const [tier0Summary] = result.summaries;
+      expect(result.passed).toBe(false);
+      expect(result.failedTier).toBe(0);
+      expect(result.summaries).toHaveLength(1);
+      expect(tier0Summary?.tier).toBe(0);
+      expect(tier0Summary?.errorCount).toBe(1);
+      expect(tier0Summary?.output).toContain("TS2322");
+
+      const cliEntry = path.resolve(import.meta.dirname, "../dist/cli/strict-fp-lint.js");
+      const cliRun = spawnSync(process.execPath, [cliEntry], { cwd: tmpDir, encoding: "utf8" });
+      expect(cliRun.status).toBe(1);
+      expect(cliRun.stderr).toContain("FAILED at Tier 0 (Type Checker — tsc --noEmit)");
+      expect(cliRun.stderr).toContain("TS2322");
+
+      const customTsconfig = JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true },
+        include: ["valid.ts"],
+      });
+      fs.writeFileSync(path.join(tmpDir, "tsconfig.valid.json"), customTsconfig);
+      fs.writeFileSync(path.join(tmpDir, "valid.ts"), "export const answer = 42;\n");
+
+      const tier0OnlyPass = await runPhasedLint({
+        targets: ["."],
+        fix: false,
+        format: "json",
+        maxTier: 3,
+        onlyTier: 0,
+        tsconfig: "tsconfig.valid.json",
+        cwd: tmpDir,
+      });
+      const [onlyTier0Summary] = tier0OnlyPass.summaries;
+      expect(tier0OnlyPass.passed).toBe(true);
+      expect(tier0OnlyPass.summaries).toHaveLength(1);
+      expect(onlyTier0Summary?.tier).toBe(0);
+      expect(onlyTier0Summary?.errorCount).toBe(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("passes Tier 0 then stops at Tier 1 on architectural or React/TSX boundary errors and ignores *.config.ts", async () => {
+    const tmpDir = createTempProjectDir();
+    try {
+      const distEntry = path.resolve(import.meta.dirname, "../dist/index.js");
+      const tsconfigJson = JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, jsx: "preserve" },
+        include: ["**/*.ts", "**/*.tsx", "**/*.d.ts"],
+      });
+      fs.writeFileSync(path.join(tmpDir, "tsconfig.json"), tsconfigJson);
+      fs.writeFileSync(
+        path.join(tmpDir, "jsx.d.ts"),
+        "declare namespace JSX { interface IntrinsicElements { readonly div: Readonly<Record<string, unknown>>; } }\n",
+      );
       fs.writeFileSync(
         path.join(tmpDir, "eslint.config.mjs"),
         `import strictFp from ${JSON.stringify(distEntry)};
@@ -206,11 +312,14 @@ export default [
         cwd: tmpDir,
       });
 
-      const [firstSummary] = result.summaries;
+      const [tier0Summary, tier1Summary] = result.summaries;
       expect(result.passed).toBe(false);
       expect(result.failedTier).toBe(1);
-      expect(result.summaries).toHaveLength(1);
-      expect(firstSummary?.errorCount).toBeGreaterThan(0);
+      expect(result.summaries).toHaveLength(2);
+      expect(tier0Summary?.tier).toBe(0);
+      expect(tier0Summary?.errorCount).toBe(0);
+      expect(tier1Summary?.tier).toBe(1);
+      expect(tier1Summary?.errorCount).toBeGreaterThan(0);
 
       const cleanTsxAndConfigResult = await runPhasedLint({
         targets: ["App.tsx", "app.config.ts"],
@@ -220,6 +329,9 @@ export default [
         cwd: tmpDir,
       });
       expect(cleanTsxAndConfigResult.passed).toBe(true);
+      expect(RA.map((s: { readonly tier: number }) => s.tier)(cleanTsxAndConfigResult.summaries)).toEqual([
+        0, 1, 2, 3,
+      ]);
 
       const badTsxResult = await runPhasedLint({
         targets: ["BadApp.tsx"],
@@ -233,5 +345,5 @@ export default [
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

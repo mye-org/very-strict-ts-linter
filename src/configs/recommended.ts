@@ -6,7 +6,15 @@ import { pipe } from "fp-ts/lib/function.js";
 import tseslint from "typescript-eslint";
 import { rules } from "../rules/index.js";
 
-export type LintTier = 1 | 2 | 3;
+export type PluginRuleTier = 1 | 2 | 3;
+export type LintTier = 0 | PluginRuleTier;
+
+export const tier0TypeChecker = {
+  tier: 0,
+  name: "Type Checker",
+  command: "tsc --noEmit",
+  description: 'Type soundness — "Does this code obey TypeScript\'s type system?"',
+} as const;
 
 export type StrictFpConfigOptions = Partial<
   Record<
@@ -94,16 +102,19 @@ export const ruleTiers = {
   "prefer-traversal-over-nested-collection-update": 3,
   "prefer-traverse-over-map-sequence": 3,
   "single-level-of-abstraction": 3,
-} as const satisfies Record<PluginRuleName, LintTier>;
+} as const satisfies Record<PluginRuleName, PluginRuleTier>;
 
-const buildRulesForTier = (tier: LintTier) =>
+const buildRulesForTier = (tier: PluginRuleTier) =>
   pipe(
     RR.toEntries(ruleTiers),
     RA.filter(([, ruleTier]) => ruleTier === tier),
-    RA.reduce<readonly [PluginRuleName, LintTier], Record<string, TSESLint.FlatConfig.RuleEntry>>({}, (acc, [name]) => ({
-      ...acc,
-      [`strict-fp/${name}`]: "error",
-    })),
+    RA.reduce<readonly [PluginRuleName, PluginRuleTier], Record<string, TSESLint.FlatConfig.RuleEntry>>(
+      {},
+      (acc, [name]) => ({
+        ...acc,
+        [`strict-fp/${name}`]: "error",
+      }),
+    ),
   );
 
 export const dddBoundaryRules = {
@@ -193,7 +204,7 @@ const buildTier1WithOverrides = (options: StrictFpConfigOptions) =>
 
 export const buildTieredRules = (maxTier: LintTier, maxLines = 15, options: StrictFpConfigOptions = {}) =>
   ({
-    ...buildTier1WithOverrides(options),
+    ...(maxTier >= 1 ? buildTier1WithOverrides(options) : {}),
     ...(maxTier >= 2 ? tier2Rules : {}),
     ...(maxTier >= 3
       ? { ...tier3Rules, "strict-fp/max-function-lines": ["error", { maxLines }] as TSESLint.FlatConfig.RuleEntry }
@@ -413,16 +424,23 @@ const createReactTsxBlock = (
   rules: reactTsxRules,
 });
 
+const buildReactTsxBlocks = (plugin: TSESLint.FlatConfig.Plugin, maxTier: LintTier) =>
+  maxTier > tier0TypeChecker.tier ? [createReactTsxBlock(plugin, {})] : [];
+
 export const createTieredConfig = (
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
-) => [
-  ...((options.maxTier ?? 3) >= 2 ? scopeTypeCheckedConfigs(resolveFiles(options)) : []),
-  createTierRuleBlock(plugin, options.maxTier ?? 3, resolveFiles(options), options),
-  createReactTsxBlock(plugin, {}),
-  ...createBoundaryConfig(O.fromNullable(options.boundaryFiles)),
-  ...createTestConfig(O.fromNullable(options.testFiles)),
-];
+) => {
+  const maxTier = options.maxTier ?? 3;
+  const targetFiles = resolveFiles(options);
+  return [
+    ...(maxTier >= 2 ? scopeTypeCheckedConfigs(targetFiles) : []),
+    createTierRuleBlock(plugin, maxTier, targetFiles, options),
+    ...buildReactTsxBlocks(plugin, maxTier),
+    ...createBoundaryConfig(O.fromNullable(options.boundaryFiles)),
+    ...createTestConfig(O.fromNullable(options.testFiles)),
+  ];
+};
 
 export const createStrictFpConfig = (
   plugin: TSESLint.FlatConfig.Plugin,

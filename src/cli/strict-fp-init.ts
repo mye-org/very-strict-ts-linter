@@ -24,6 +24,7 @@ export type InitProjectResult = {
 };
 
 const parseTier = (raw: string | undefined) => {
+  if (raw === "0") return 0 as const;
   if (raw === "1") return 1 as const;
   if (raw === "2") return 2 as const;
   if (raw === "3") return 3 as const;
@@ -160,10 +161,10 @@ const printHelp = () => {
 Scaffold eslint.config.ts and configure "lint": "strict-fp-lint" in package.json.
 
 Options:
-  --max-tier <1|2|3>  Maximum lint tier to configure (default: 3)
-  --force, -f         Overwrite existing eslint.config.ts
-  --cwd <dir>         Target project directory (default: current directory)
-  --help, -h          Show this help message
+  --max-tier <0|1|2|3>  Maximum lint tier to configure (default: 3)
+  --force, -f           Overwrite existing eslint.config.ts
+  --cwd <dir>           Target project directory (default: current directory)
+  --help, -h            Show this help message
 `);
 };
 
@@ -202,7 +203,7 @@ const runCli = () => {
   }
 
   console.log(`\nNext steps:`);
-  console.log(`  1. Run "npm run lint" (or "npx strict-fp-lint") for phased Tier 1 -> Tier 2 -> Tier 3 linting.`);
+  console.log(`  1. Run "npm run lint" (or "npx strict-fp-lint") for phased Tier 0 (tsc --noEmit) -> Tier 1 -> Tier 2 -> Tier 3 linting.`);
   console.log(`  2. Run "npx strict-fp-radar" to discover DDD/FP refactoring opportunities.`);
 };
 

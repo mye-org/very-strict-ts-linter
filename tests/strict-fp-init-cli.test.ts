@@ -43,6 +43,13 @@ describe("strict-fp-init CLI", () => {
       maxTier: 1,
       help: true,
     });
+
+    expect(parseInitArgs(["--max-tier", "0"], "/tmp/project")).toEqual({
+      cwd: "/tmp/project",
+      force: false,
+      maxTier: 0,
+      help: false,
+    });
   });
 
   it("scaffolds eslint.config.ts and sets scripts.lint to strict-fp-lint", () => {

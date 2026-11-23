@@ -11,11 +11,13 @@ import {
   reactTsRules,
   reactTsxRules,
   ruleTiers,
+  tier0TypeChecker,
   tier1Rules,
   tier2Rules,
   tier3Rules,
   type LintTier,
   type PluginRuleName,
+  type PluginRuleTier,
   type StrictFpConfigOptions,
   type StrictReactConfigOptions,
 } from "./configs/recommended.js";
@@ -27,6 +29,7 @@ const plugin: TSESLint.FlatConfig.Plugin = {
 
 const configs = {
   recommended: createStrictFpConfig(plugin),
+  tier0: createTieredConfig(plugin, { maxTier: 0 }),
   tier1: createTieredConfig(plugin, { maxTier: 1 }),
   tier2: createTieredConfig(plugin, { maxTier: 2 }),
   tier3: createTieredConfig(plugin, { maxTier: 3 }),
@@ -48,11 +51,13 @@ export {
   reactTsRules,
   reactTsxRules,
   ruleTiers,
+  tier0TypeChecker,
   tier1Rules,
   tier2Rules,
   tier3Rules,
   type LintTier,
   type PluginRuleName,
+  type PluginRuleTier,
   type StrictFpConfigOptions,
   type StrictReactConfigOptions,
 };
