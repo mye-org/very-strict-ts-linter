@@ -92,6 +92,13 @@ describe("tiered configs and React/Expo exclusions", () => {
         RA.every((tier: number) => [1, 2, 3].includes(tier)),
       ),
     ).toBe(true);
+
+    const fpDiscoveryBlock = findTierBlock(configs.fpDiscovery, "strict-fp/fp-discovery");
+    expect(fpDiscoveryBlock?.rules).toEqual({
+      "strict-fp/no-structural-skeleton-duplication": "error",
+      "strict-fp/prefer-catamorphism-over-recursive-adt-walk": "error",
+      "strict-fp/prefer-reader-over-context-drilling": "error",
+    });
   });
 
   it("enables all 4 ts-unit architectural rules as error in Tier 1 with entryPoints, boundaryFiles, and testFiles overrides", () => {

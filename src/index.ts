@@ -2,6 +2,7 @@ import type { TSESLint } from "@typescript-eslint/utils";
 import {
   createDddBoundaryConfig,
   createDddDiscoveryConfig,
+  createFpDiscoveryConfig,
   createStrictFpConfig,
   createStrictReactConfig,
   createTieredConfig,
@@ -31,6 +32,7 @@ const configs = {
   tier3: createTieredConfig(plugin, { maxTier: 3 }),
   dddBoundary: createDddBoundaryConfig(plugin),
   dddDiscovery: createDddDiscoveryConfig(plugin),
+  fpDiscovery: createFpDiscoveryConfig(plugin),
   react: createStrictReactConfig(plugin),
 } as const;
 
@@ -38,6 +40,7 @@ export {
   configs,
   createDddBoundaryConfig,
   createDddDiscoveryConfig,
+  createFpDiscoveryConfig,
   createStrictFpConfig,
   createStrictReactConfig,
   createTieredConfig,
@@ -68,4 +71,6 @@ export default {
     createDddBoundaryConfig(plugin, options),
   createDddDiscoveryConfig: (options?: StrictFpConfigOptions) =>
     createDddDiscoveryConfig(plugin, options),
+  createFpDiscoveryConfig: (options?: StrictFpConfigOptions) =>
+    createFpDiscoveryConfig(plugin, options),
 };

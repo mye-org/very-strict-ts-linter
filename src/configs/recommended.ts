@@ -46,7 +46,10 @@ export const ruleTiers = {
   "no-repeated-guard-clauses": 1,
   "no-scattered-validation": 1,
   "no-stringly-typed-discriminants": 1,
+  "no-structural-skeleton-duplication": 1,
   "no-train-wreck-navigation": 1,
+  "prefer-catamorphism-over-recursive-adt-walk": 1,
+  "prefer-reader-over-context-drilling": 1,
 
   // Tier 2: Type Safety & Correctness
   "no-any-or-unknown": 2,
@@ -79,11 +82,17 @@ export const ruleTiers = {
   "no-nested-ternary": 3,
   "no-throw-outside-unsafe": 3,
   "no-unnecessary-local-const": 3,
+  "prefer-applicative-over-independent-bind": 3,
   "prefer-fp-ts-array-methods": 3,
   "prefer-function-composition": 3,
+  "prefer-functor-fusion": 3,
+  "prefer-lens-over-nested-spread": 3,
   "prefer-monadic-composition": 3,
   "prefer-monadic-error-handling": 3,
   "prefer-point-free": 3,
+  "prefer-prism-over-guarded-update": 3,
+  "prefer-traversal-over-nested-collection-update": 3,
+  "prefer-traverse-over-map-sequence": 3,
   "single-level-of-abstraction": 3,
 } as const satisfies Record<PluginRuleName, LintTier>;
 
@@ -117,6 +126,12 @@ export const dddDiscoveryRules = {
   "strict-fp/no-scattered-validation": "error",
   "strict-fp/no-stringly-typed-discriminants": "error",
   "strict-fp/no-train-wreck-navigation": "error",
+} as const satisfies TSESLint.FlatConfig.Rules;
+
+export const fpDiscoveryRules = {
+  "strict-fp/no-structural-skeleton-duplication": "error",
+  "strict-fp/prefer-catamorphism-over-recursive-adt-walk": "error",
+  "strict-fp/prefer-reader-over-context-drilling": "error",
 } as const satisfies TSESLint.FlatConfig.Rules;
 
 export const tier1Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(1);
@@ -196,12 +211,18 @@ const boundaryOverrideRules = {
   "strict-fp/no-let-or-var": "off",
   "strict-fp/max-function-lines": "off",
   "strict-fp/no-unnecessary-local-const": "off",
+  "strict-fp/prefer-applicative-over-independent-bind": "off",
   "strict-fp/prefer-fp-ts-array-methods": "off",
   "strict-fp/prefer-function-composition": "off",
+  "strict-fp/prefer-functor-fusion": "off",
+  "strict-fp/prefer-lens-over-nested-spread": "off",
   "strict-fp/prefer-monadic-composition": "off",
   "strict-fp/prefer-monadic-error-handling": "off",
   "strict-fp/no-async-await": "off",
   "strict-fp/prefer-point-free": "off",
+  "strict-fp/prefer-prism-over-guarded-update": "off",
+  "strict-fp/prefer-traversal-over-nested-collection-update": "off",
+  "strict-fp/prefer-traverse-over-map-sequence": "off",
   "strict-fp/single-level-of-abstraction": "off",
   "strict-fp/no-nested-pipe": "off",
   "strict-fp/no-fp-ts-chain": "off",
@@ -237,14 +258,17 @@ const testOverrideRules = {
   "strict-fp/no-data-clumps": "off",
   "strict-fp/no-scattered-validation": "off",
   "strict-fp/no-stringly-typed-discriminants": "off",
+  "strict-fp/no-structural-skeleton-duplication": "off",
   "strict-fp/no-repeated-guard-clauses": "off",
   "strict-fp/no-lifecycle-flag-clusters": "off",
   "strict-fp/no-model-polysemy": "off",
   "strict-fp/no-null-undefined": "off",
   "strict-fp/no-optional-state-bags": "off",
   "strict-fp/parse-dont-validate": "off",
+  "strict-fp/prefer-catamorphism-over-recursive-adt-walk": "off",
   "strict-fp/prefer-exhaustive-record": "off",
   "strict-fp/prefer-nonempty-tuple": "off",
+  "strict-fp/prefer-reader-over-context-drilling": "off",
   "strict-fp/prefer-template-literal-type": "off",
   "strict-fp/prefer-type-level-dispatch": "off",
   "strict-fp/prefer-union-over-boolean": "off",
@@ -312,6 +336,19 @@ export const createDddDiscoveryConfig = (
     ignores: [...defaultStrictFpIgnores],
     plugins: { "strict-fp": plugin },
     rules: dddDiscoveryRules,
+  },
+];
+
+export const createFpDiscoveryConfig = (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options: StrictFpConfigOptions = {},
+) => [
+  {
+    name: "strict-fp/fp-discovery",
+    files: resolveFiles(options),
+    ignores: [...defaultStrictFpIgnores],
+    plugins: { "strict-fp": plugin },
+    rules: fpDiscoveryRules,
   },
 ];
 

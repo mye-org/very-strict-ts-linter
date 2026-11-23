@@ -31,21 +31,30 @@ import { noRepeatedGuardClauses } from "./no-repeated-guard-clauses.js";
 import { noScatteredValidation } from "./no-scattered-validation.js";
 import { noSingleCallerExport } from "./no-single-caller-export.js";
 import { noStringlyTypedDiscriminants } from "./no-stringly-typed-discriminants.js";
+import { noStructuralSkeletonDuplication } from "./no-structural-skeleton-duplication.js";
 import { noThrowOutsideUnsafe } from "./no-throw-outside-unsafe.js";
 import { noTrainWreckNavigation } from "./no-train-wreck-navigation.js";
 import { noUnitSuffixedPrimitives } from "./no-unit-suffixed-primitives.js";
 import { noUnnecessaryLocalConst } from "./no-unnecessary-local-const.js";
 import { parseDontValidate } from "./parse-dont-validate.js";
+import { preferApplicativeOverIndependentBind } from "./prefer-applicative-over-independent-bind.js";
+import { preferCatamorphismOverRecursiveAdtWalk } from "./prefer-catamorphism-over-recursive-adt-walk.js";
 import { preferConstSatisfies } from "./prefer-const-satisfies.js";
 import { preferExhaustiveRecord } from "./prefer-exhaustive-record.js";
 import { preferFpTsArrayMethods } from "./prefer-fp-ts-array-methods.js";
 import { preferFunctionComposition } from "./prefer-function-composition.js";
+import { preferFunctorFusion } from "./prefer-functor-fusion.js";
+import { preferLensOverNestedSpread } from "./prefer-lens-over-nested-spread.js";
 import { preferMonadicComposition } from "./prefer-monadic-composition.js";
 import { preferMonadicErrorHandling } from "./prefer-monadic-error-handling.js";
 import { preferNonemptyTuple } from "./prefer-nonempty-tuple.js";
 import { preferPointFree } from "./prefer-point-free.js";
+import { preferPrismOverGuardedUpdate } from "./prefer-prism-over-guarded-update.js";
+import { preferReaderOverContextDrilling } from "./prefer-reader-over-context-drilling.js";
 import { preferReadonlyCollections } from "./prefer-readonly-collections.js";
 import { preferTemplateLiteralType } from "./prefer-template-literal-type.js";
+import { preferTraversalOverNestedCollectionUpdate } from "./prefer-traversal-over-nested-collection-update.js";
+import { preferTraverseOverMapSequence } from "./prefer-traverse-over-map-sequence.js";
 import { preferTypeLevelDispatch } from "./prefer-type-level-dispatch.js";
 import { preferTypeOverInterface } from "./prefer-type-over-interface.js";
 import { preferUnionOverBoolean } from "./prefer-union-over-boolean.js";
@@ -90,21 +99,30 @@ export const rules = {
   "no-scattered-validation": noScatteredValidation,
   "no-single-caller-export": noSingleCallerExport,
   "no-stringly-typed-discriminants": noStringlyTypedDiscriminants,
+  "no-structural-skeleton-duplication": noStructuralSkeletonDuplication,
   "no-throw-outside-unsafe": noThrowOutsideUnsafe,
   "no-train-wreck-navigation": noTrainWreckNavigation,
   "no-unit-suffixed-primitives": noUnitSuffixedPrimitives,
   "no-unnecessary-local-const": noUnnecessaryLocalConst,
   "parse-dont-validate": parseDontValidate,
+  "prefer-applicative-over-independent-bind": preferApplicativeOverIndependentBind,
+  "prefer-catamorphism-over-recursive-adt-walk": preferCatamorphismOverRecursiveAdtWalk,
   "prefer-const-satisfies": preferConstSatisfies,
   "prefer-exhaustive-record": preferExhaustiveRecord,
   "prefer-fp-ts-array-methods": preferFpTsArrayMethods,
   "prefer-function-composition": preferFunctionComposition,
+  "prefer-functor-fusion": preferFunctorFusion,
+  "prefer-lens-over-nested-spread": preferLensOverNestedSpread,
   "prefer-monadic-composition": preferMonadicComposition,
   "prefer-monadic-error-handling": preferMonadicErrorHandling,
   "prefer-nonempty-tuple": preferNonemptyTuple,
   "prefer-point-free": preferPointFree,
+  "prefer-prism-over-guarded-update": preferPrismOverGuardedUpdate,
+  "prefer-reader-over-context-drilling": preferReaderOverContextDrilling,
   "prefer-readonly-collections": preferReadonlyCollections,
   "prefer-template-literal-type": preferTemplateLiteralType,
+  "prefer-traversal-over-nested-collection-update": preferTraversalOverNestedCollectionUpdate,
+  "prefer-traverse-over-map-sequence": preferTraverseOverMapSequence,
   "prefer-type-level-dispatch": preferTypeLevelDispatch,
   "prefer-type-over-interface": preferTypeOverInterface,
   "prefer-union-over-boolean": preferUnionOverBoolean,

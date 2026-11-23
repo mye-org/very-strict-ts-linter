@@ -40,9 +40,9 @@ npx strict-fp-lint
 
 Running raw `eslint .` evaluates all 3 tiers at once, which can drown out structural and type-safety issues in style diagnostics. `strict-fp-lint` runs ESLint in **phased tiers**, stopping at the first tier with errors:
 
-1. **Tier 1 (Architecture & DDD)** — Domain layer purity, functional core / imperative shell boundaries (`functional-core-boundary`), module cohesion (`module-cohesion`), encapsulation (`no-single-caller-export`), common reuse cohesion (`common-reuse-cohesion`), aggregate boundaries, value objects, ubiquitous language, and discovery rules.
+1. **Tier 1 (Architecture & DDD)** — Domain layer purity, functional core / imperative shell boundaries (`functional-core-boundary`), module cohesion (`module-cohesion`), encapsulation (`no-single-caller-export`), common reuse cohesion (`common-reuse-cohesion`), aggregate boundaries, value objects, ubiquitous language, DDD discovery rules, and FP abstraction discovery rules (`prefer-reader-over-context-drilling`, `no-structural-skeleton-duplication`, `prefer-catamorphism-over-recursive-adt-walk`).
 2. **Tier 2 (Type Safety & Correctness)** — No `any`/`unknown`, no `null`/`undefined`, exhaustive matching, readonly collections, `@typescript-eslint/strict-type-checked`.
-3. **Tier 3 (FP & Style)** — `fp-ts` conventions, no `let`/`var`, no imperative loops, no `if`/`else`/`switch`, point-free & monadic composition, max function lines.
+3. **Tier 3 (FP & Style)** — `fp-ts` conventions, no `let`/`var`, no imperative loops, no `if`/`else`/`switch`, point-free & monadic composition, `monocle-ts` optics (`prefer-lens-over-nested-spread`, `prefer-prism-over-guarded-update`, `prefer-traversal-over-nested-collection-update`), algebraic laws (`prefer-applicative-over-independent-bind`, `prefer-traverse-over-map-sequence`, `prefer-functor-fusion`), and max function lines.
 
 ## CLI Reference
 

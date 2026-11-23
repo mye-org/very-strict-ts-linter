@@ -3,9 +3,12 @@ import { pipe } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { listAggregateOwnershipEdges } from "./aggregate-graph-analyzer.js";
+import { analyzeCatamorphisms, CatamorphismFinding } from "./catamorphism-analyzer.js";
+import { analyzeContextDrilling, ContextDrillingFinding } from "./context-drilling-analyzer.js";
 import { analyzeDataClumps, ClumpFinding } from "./data-clump-analyzer.js";
 import { analyzeGuardClauses, GuardCluster } from "./guard-clause-analyzer.js";
 import { analyzePolysemy, PolysemyFinding } from "./polysemy-analyzer.js";
+import { analyzeSkeletonDuplications, SkeletonCluster } from "./skeleton-duplication-analyzer.js";
 import { analyzeStringlyTypedDiscriminants, DiscriminantCluster } from "./stringly-typed-analyzer.js";
 
 export type DiscoveryRadarReport = Readonly<{
@@ -16,6 +19,9 @@ export type DiscoveryRadarReport = Readonly<{
   readonly aggregateChildren: ReadonlyArray<
     Readonly<Record<"child", string> & { readonly parents: ReadonlyArray<string> }>
   >;
+  readonly contextDrillingChains: ReadonlyArray<ContextDrillingFinding>;
+  readonly skeletonDuplications: ReadonlyArray<SkeletonCluster>;
+  readonly catamorphismCandidates: ReadonlyArray<CatamorphismFinding>;
 }>;
 
 export const buildDiscoveryRadarReport = (program: ts.Program) => ({
@@ -24,6 +30,9 @@ export const buildDiscoveryRadarReport = (program: ts.Program) => ({
   repeatedGuards: analyzeGuardClauses(program).clusters,
   stringlyTypedDiscriminants: analyzeStringlyTypedDiscriminants(program).clusters,
   aggregateChildren: listAggregateOwnershipEdges(program),
+  contextDrillingChains: analyzeContextDrilling(program).chains,
+  skeletonDuplications: analyzeSkeletonDuplications(program).groups,
+  catamorphismCandidates: analyzeCatamorphisms(program).candidates,
 });
 
 const formatLocations = (locs: ReadonlyArray<Readonly<Record<"file", string> & Record<"line", number>>>) =>
@@ -89,6 +98,45 @@ const formatAggregatesSection = (
         RA.map((e) => `- **${e.child}** owned by [${e.parents.join(", ")}]`),
       ).join("\n");
 
+const formatContextDrillingSection = (chains: ReadonlyArray<ContextDrillingFinding>) =>
+  chains.length === 0
+    ? "- None detected."
+    : pipe(
+        chains,
+        RA.map(
+          (c) =>
+            `- **${c.paramName}: ${c.typeName}** drilled across ${String(c.depth)} hops (${c.chain.join(" -> ")}) at ${c.rootLocation.file}:${String(c.rootLocation.line)}`,
+        ),
+      ).join("\n");
+
+const formatSiteLocations = (sites: SkeletonCluster["sites"]) =>
+  formatLocations(pipe(sites, RA.map((site) => site.location)));
+
+const formatSkeletonSection = (clusters: ReadonlyArray<SkeletonCluster>) =>
+  clusters.length === 0
+    ? "- None detected."
+    : pipe(
+        clusters,
+        RA.map(
+          (s) =>
+            `- \`${s.preview}\` (${String(s.sites.length)} sites: ${formatSiteLocations(s.sites)})`,
+        ),
+      ).join("\n");
+
+const formatWalkerNames = (walkers: CatamorphismFinding["walkers"]) =>
+  pipe(walkers, RA.map((w) => w.functionName)).join(", ");
+
+const formatCatamorphismSection = (findings: ReadonlyArray<CatamorphismFinding>) =>
+  findings.length === 0
+    ? "- None detected."
+    : pipe(
+        findings,
+        RA.map(
+          (f) =>
+            `- **${f.adtName}** → suggest \`fold${f.adtName}\` (${String(f.walkers.length)} recursive walkers: ${formatWalkerNames(f.walkers)})`,
+        ),
+      ).join("\n");
+
 const formatMarkdownReport = (report: DiscoveryRadarReport) =>
   [
     "# DDD Concept Discovery Radar",
@@ -96,7 +144,11 @@ const formatMarkdownReport = (report: DiscoveryRadarReport) =>
     `\n## 2. Model Polysemy (Bounded Context Splits)\n${formatPolysemySection(report.polysemyModels)}`,
     `\n## 3. Repeated Guard Clauses (Missing Specifications)\n${formatGuardsSection(report.repeatedGuards)}`,
     `\n## 4. Stringly-Typed Discriminants (Missing Unions / Enums)\n${formatDiscriminantsSection(report.stringlyTypedDiscriminants)}`,
-    `\n## 5. Aggregate Child Entity Ownership\n${formatAggregatesSection(report.aggregateChildren)}\n`,
+    `\n## 5. Aggregate Child Entity Ownership\n${formatAggregatesSection(report.aggregateChildren)}`,
+    "\n# FP Abstraction Discovery Radar",
+    `\n## 6. Context Drilling Chains (Missing Reader / ReaderTaskEither)\n${formatContextDrillingSection(report.contextDrillingChains)}`,
+    `\n## 7. Structural Skeleton Duplication (Missing Higher-Order Combinators)\n${formatSkeletonSection(report.skeletonDuplications)}`,
+    `\n## 8. Recursive ADT Walkers (Missing Catamorphisms / fold)\n${formatCatamorphismSection(report.catamorphismCandidates)}\n`,
   ].join("\n");
 
 export const formatDiscoveryReport = (

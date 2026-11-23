@@ -59,3 +59,55 @@ export const isTsEntityProperty = (member: ts.TypeElement | ts.ClassElement) =>
   ts.isPropertySignature(member) || ts.isPropertyDeclaration(member);
 
 export const makeLocationKey = (loc: TsLocation) => `${loc.file}:${String(loc.line)}`;
+
+export type NamedTsFunction = Readonly<
+  Record<"name", string> & {
+    readonly locNode: ts.Node;
+    readonly paramNodes: ts.NodeArray<ts.ParameterDeclaration>;
+    readonly fnBody: ts.Node;
+  }
+>;
+
+const extractFunctionDeclInfo = (fn: ts.FunctionDeclaration) =>
+  pipe(
+    O.Do,
+    O.apS("id", O.fromNullable(fn.name)),
+    O.apS("fnBody", O.fromNullable(fn.body)),
+    O.map(({ id, fnBody }) => ({
+      name: id.text,
+      locNode: fn,
+      paramNodes: fn.parameters,
+      fnBody,
+    })),
+  );
+
+const isFunctionLikeInit = (
+  expr: ts.Expression,
+): expr is ts.ArrowFunction | ts.FunctionExpression =>
+  ts.isArrowFunction(expr) || ts.isFunctionExpression(expr);
+
+const getFunctionLikeInit = (decl: ts.VariableDeclaration) =>
+  pipe(O.fromNullable(decl.initializer), O.filter(isFunctionLikeInit));
+
+const extractVarDeclFnInfo = (decl: ts.VariableDeclaration) =>
+  pipe(
+    O.Do,
+    O.apS("id", O.fromPredicate(ts.isIdentifier)(decl.name)),
+    O.apS("fn", getFunctionLikeInit(decl)),
+    O.map(({ id, fn }) => ({
+      name: id.text,
+      locNode: decl,
+      paramNodes: fn.parameters,
+      fnBody: fn.body,
+    })),
+  );
+
+const tryExtractVarDeclFn = (node: ts.Node) =>
+  pipe(O.fromPredicate(ts.isVariableDeclaration)(node), O.flatMap(extractVarDeclFnInfo));
+
+export const extractNamedTsFunction = (node: ts.Node) =>
+  pipe(
+    O.fromPredicate(ts.isFunctionDeclaration)(node),
+    O.flatMap(extractFunctionDeclInfo),
+    O.altW(() => tryExtractVarDeclFn(node)),
+  );
