@@ -10,7 +10,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { pipe } from "fp-ts/lib/function.js";
 import * as S from "fp-ts/lib/string.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import strictFp, {
   configs,
   createTieredConfig,
@@ -222,9 +222,7 @@ describe("tiered configs and React/Expo exclusions", () => {
 });
 
 describe("strict-fp-lint CLI helpers and phased runner", () => {
-  afterEach(() => {
-    clearCaches();
-  });
+  afterAll(clearCaches);
 
   it("filters rules accurately per tier", () => {
     const t0Filter = createTierRuleFilter(0);
@@ -287,7 +285,7 @@ describe("strict-fp-lint CLI helpers and phased runner", () => {
     try {
       const distEntry = path.resolve(import.meta.dirname, "../dist/index.js");
       const tsconfigJson = JSON.stringify({
-        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true },
+        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", lib: ["ES2022"], types: [], strict: true, skipLibCheck: true },
         include: ["**/*.ts"],
       });
       fs.writeFileSync(path.join(tmpDir, "tsconfig.json"), tsconfigJson);
@@ -328,7 +326,7 @@ export default [
       expect(cliRun.stderr).toContain("TS2322");
 
       const customTsconfig = JSON.stringify({
-        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true },
+        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", lib: ["ES2022"], types: [], strict: true, skipLibCheck: true },
         include: ["valid.ts"],
       });
       fs.writeFileSync(path.join(tmpDir, "tsconfig.valid.json"), customTsconfig);
@@ -358,7 +356,7 @@ export default [
     try {
       const distEntry = path.resolve(import.meta.dirname, "../dist/index.js");
       const tsconfigJson = JSON.stringify({
-        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, jsx: "preserve" },
+        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", lib: ["ES2022"], types: [], strict: true, skipLibCheck: true, jsx: "preserve" },
         include: ["**/*.ts", "**/*.tsx", "**/*.d.ts"],
       });
       fs.writeFileSync(path.join(tmpDir, "tsconfig.json"), tsconfigJson);
@@ -559,7 +557,7 @@ export default [
     try {
       const distEntry = path.resolve(import.meta.dirname, "../dist/index.js");
       const tsconfigJson = JSON.stringify({
-        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true },
+        compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", lib: ["ES2022"], types: [], strict: true, skipLibCheck: true },
         include: ["**/*.ts"],
       });
       fs.writeFileSync(path.join(tmpDir, "tsconfig.json"), tsconfigJson);
@@ -671,7 +669,7 @@ export default [
       fs.writeFileSync(
         path.join(tmpDir, "tsconfig.json"),
         JSON.stringify({
-          compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true },
+          compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", lib: ["ES2022"], types: [], strict: true, skipLibCheck: true },
           include: ["warn-and-t2.ts"],
         }),
       );
@@ -682,7 +680,7 @@ const tsParser = strictFp.configs.react[1].languageOptions.parser;
 export default [
   {
     files: ["**/*.ts"],
-    languageOptions: { parser: tsParser },
+    languageOptions: { parser: tsParser, parserOptions: { tsconfigRootDir: import.meta.dirname } },
     plugins: { "strict-fp": strictFp },
     rules: {
       "strict-fp/no-any-or-unknown": "warn",
@@ -752,7 +750,7 @@ export default [
       fs.writeFileSync(
         path.join(tmpDir, "tsconfig.json"),
         JSON.stringify({
-          compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true },
+          compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", lib: ["ES2022"], types: [], strict: true, skipLibCheck: true },
           include: ["**/*.ts"],
         }),
       );
@@ -799,7 +797,7 @@ const customRules = {
 export default [
   {
     files: ["**/*.ts"],
-    languageOptions: { parser: tsParser },
+    languageOptions: { parser: tsParser, parserOptions: { tsconfigRootDir: import.meta.dirname } },
     plugins: { "strict-fp": { ...strictFp, rules: { ...strictFp.rules, ...customRules } } },
     rules: {
       "strict-fp/no-any-or-unknown": "error",

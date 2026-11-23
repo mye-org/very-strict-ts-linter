@@ -8,5 +8,9 @@ export default defineConfig({
     exclude: ["tests/ts-unit-sample/**", "tests/test-scope-sample/**"],
     pool: "threads",
     isolate: false,
+    maxWorkers: 4,
+    experimental: {
+      fsModuleCache: true,
+    },
   },
 });

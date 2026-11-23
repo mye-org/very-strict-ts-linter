@@ -51,7 +51,15 @@ describe("discovery-radar analyzer & report", () => {
       fs.writeFileSync(
         path.join(tmpDir, "tsconfig.json"),
         JSON.stringify({
-          compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true },
+          compilerOptions: {
+            target: "ES2022",
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            lib: ["ES2022"],
+            types: [],
+            strict: true,
+            skipLibCheck: true,
+          },
           include: ["*.ts"],
         }),
       );
