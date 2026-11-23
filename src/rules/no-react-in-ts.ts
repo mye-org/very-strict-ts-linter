@@ -68,8 +68,6 @@ const checkExportNamed = (
   })(O.fromNullable(node.source));
 };
 
-const isTsxFile = (filename: string) => filename.endsWith(".tsx");
-
 const buildListeners = (
   bannedSources: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
@@ -112,9 +110,7 @@ export const noReactInTs = createRule<Options, MessageIds>({
     defaultOptions: [{ bannedSources: DEFAULT_BANNED_SOURCES }],
   },
   create: (context, [options]) =>
-    isTsxFile(context.filename)
-      ? {}
-      : buildListeners(options.bannedSources, (d) => {
-          context.report(d);
-        }),
+    buildListeners(options.bannedSources, (d) => {
+      context.report(d);
+    }),
 });

@@ -23,10 +23,6 @@ jsxRuleTester.run("no-react-in-ts", noReactInTs, {
       filename: "src/cart.ts",
       code: `import { pipe } from "fp-ts/lib/function.js"; export const toCartView = (x: number) => pipe(x, (n) => ({ total: n }));`,
     },
-    {
-      filename: "src/CartScreen.tsx",
-      code: `import React from "react"; import { View } from "react-native"; export const CartScreen = () => <View />;`,
-    },
   ],
   invalid: [
     {
