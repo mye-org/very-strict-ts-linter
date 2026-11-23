@@ -44,6 +44,7 @@ import { preferApplicativeOverIndependentBind } from "./prefer-applicative-over-
 import { preferCatamorphismOverRecursiveAdtWalk } from "./prefer-catamorphism-over-recursive-adt-walk.js";
 import { preferConstSatisfies } from "./prefer-const-satisfies.js";
 import { preferExhaustiveRecord } from "./prefer-exhaustive-record.js";
+import { preferExpressiveTsPattern } from "./prefer-expressive-ts-pattern.js";
 import { preferFpTsArrayMethods } from "./prefer-fp-ts-array-methods.js";
 import { preferFunctionComposition } from "./prefer-function-composition.js";
 import { preferFunctorFusion } from "./prefer-functor-fusion.js";
@@ -118,6 +119,7 @@ export const rules = {
   "prefer-catamorphism-over-recursive-adt-walk": preferCatamorphismOverRecursiveAdtWalk,
   "prefer-const-satisfies": preferConstSatisfies,
   "prefer-exhaustive-record": preferExhaustiveRecord,
+  "prefer-expressive-ts-pattern": preferExpressiveTsPattern,
   "prefer-fp-ts-array-methods": preferFpTsArrayMethods,
   "prefer-function-composition": preferFunctionComposition,
   "prefer-functor-fusion": preferFunctorFusion,
