@@ -75,13 +75,19 @@ Options:
 - `--tsconfig <path>`, `--project <path>`, `-p <path>` — Path to `tsconfig.json` passed to `tsc --noEmit` in Tier 0
 - `--fix` — Automatically fix fixable issues
 - `--format <name>` — ESLint formatter name (default: `stylish`)
+- `--no-cache` — Disable incremental `.tsbuildinfo` and content-hashed project caching (caching is enabled by default)
+- `--cache-location <dir>`, `--cache-dir <dir>` — Custom directory for `.tsbuildinfo` and content-hashed cache artifacts (default: `node_modules/.cache/strict-fp`)
+- `--eslint-cache` — Opt-in to ESLint's built-in content cache (`--cache --cache-strategy content`) for syntax-only workflows
+- `--daemon` — Route linting through a persistent workspace daemon that keeps an incremental TypeScript `BuilderProgram` (Tier 0) and warm `ESLint` Project Service (Tiers 1–3) in memory across runs
+- `--daemon-status` — Print status of the workspace daemon
+- `--daemon-stop` — Stop the running workspace daemon
 
 ### `strict-fp-radar`
 
-Scans a TypeScript project and reports DDD and FP refactoring opportunities.
+Scans a TypeScript project and reports DDD and FP refactoring opportunities using TypeScript's incremental builder (`ts.createIncrementalProgram`) and content-hashed report caching.
 
 ```bash
-npx strict-fp-radar [--tsconfig tsconfig.json] [--format markdown|json]
+npx strict-fp-radar [--tsconfig tsconfig.json] [--format markdown|json] [--no-cache] [--cache-location <dir>]
 ```
 
 ## Configuration (`eslint.config.ts`)

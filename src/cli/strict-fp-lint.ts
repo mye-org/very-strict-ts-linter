@@ -12,6 +12,20 @@ import {
   type PluginRuleName,
   type PluginRuleTier,
 } from "../configs/recommended.js";
+import {
+  computeProjectFingerprint,
+  loadParsedTsConfig,
+  readCachedArtifact,
+  resolveCacheDir,
+  resolveTsBuildInfoPath,
+  resolveTsConfigPath,
+  writeCachedArtifact,
+} from "./incremental-cache.js";
+import {
+  requestDaemonStatus,
+  runLintViaDaemon,
+  stopWorkspaceDaemon,
+} from "./strict-fp-daemon.js";
 
 export type PhasedLintOptions = {
   readonly targets: ReadonlyArray<string>;
@@ -21,6 +35,12 @@ export type PhasedLintOptions = {
   readonly onlyTier?: LintTier;
   readonly tsconfig?: string;
   readonly cwd?: string;
+  readonly cache?: boolean;
+  readonly cacheLocation?: string;
+  readonly eslintCache?: boolean;
+  readonly daemon?: boolean;
+  readonly daemonStop?: boolean;
+  readonly daemonStatus?: boolean;
 };
 
 export type PhasedLintDependencies = {
@@ -38,6 +58,7 @@ export type PhasedLintResult = {
   readonly passed: boolean;
   readonly failedTier?: LintTier;
   readonly summaries: ReadonlyArray<TierRunSummary>;
+  readonly cacheHit?: boolean;
 };
 
 const tierLabels: Record<LintTier, string> = {
@@ -91,11 +112,32 @@ export const parseCliArgs = (args: ReadonlyArray<string>) => {
   let maxTier: LintTier = 3;
   let onlyTier: LintTier | undefined;
   let tsconfig: string | undefined;
+  let cache: boolean | undefined;
+  let cacheLocation: string | undefined;
+  let eslintCache: boolean | undefined;
+  let daemon: boolean | undefined;
+  let daemonStop: boolean | undefined;
+  let daemonStatus: boolean | undefined;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--fix") {
       fix = true;
+    } else if (arg === "--cache") {
+      cache = true;
+    } else if (arg === "--no-cache") {
+      cache = false;
+    } else if ((arg === "--cache-location" || arg === "--cache-dir") && args[i + 1]) {
+      cacheLocation = args[i + 1];
+      i += 1;
+    } else if (arg === "--eslint-cache") {
+      eslintCache = true;
+    } else if (arg === "--daemon") {
+      daemon = true;
+    } else if (arg === "--daemon-stop") {
+      daemonStop = true;
+    } else if (arg === "--daemon-status") {
+      daemonStatus = true;
     } else if (arg === "--format" && args[i + 1]) {
       format = args[i + 1] ?? "stylish";
       i += 1;
@@ -120,6 +162,12 @@ export const parseCliArgs = (args: ReadonlyArray<string>) => {
     maxTier,
     ...(onlyTier !== undefined ? { onlyTier } : {}),
     ...(tsconfig !== undefined ? { tsconfig } : {}),
+    ...(cache !== undefined ? { cache } : {}),
+    ...(cacheLocation !== undefined ? { cacheLocation } : {}),
+    ...(eslintCache !== undefined ? { eslintCache } : {}),
+    ...(daemon !== undefined ? { daemon } : {}),
+    ...(daemonStop !== undefined ? { daemonStop } : {}),
+    ...(daemonStatus !== undefined ? { daemonStatus } : {}),
   } satisfies PhasedLintOptions;
 };
 
@@ -167,10 +215,40 @@ const countTscErrors = (output: string) => {
   return matches && matches.length > 0 ? matches.length : 1;
 };
 
-const runTypeCheck = (cwd: string, tsconfig: string | undefined) =>
+const buildIncrementalTscArgs = (
+  cwd: string,
+  tsconfig: string | undefined,
+  cacheDir: string | undefined,
+) => {
+  if (!cacheDir) {
+    return ["--incremental", "false"] as ReadonlyArray<string>;
+  }
+  const tsconfigPath = resolveTsConfigPath(cwd, tsconfig);
+  if (!tsconfigPath || !fs.existsSync(tsconfigPath)) {
+    return [] as ReadonlyArray<string>;
+  }
+  const parsed = loadParsedTsConfig(tsconfigPath);
+  if (parsed?.options.composite === true) {
+    return [] as ReadonlyArray<string>;
+  }
+  const tsBuildInfoPath = resolveTsBuildInfoPath(cacheDir, "tsc", tsconfigPath);
+  return ["--incremental", "--tsBuildInfoFile", tsBuildInfoPath] as ReadonlyArray<string>;
+};
+
+const runTypeCheck = (
+  cwd: string,
+  tsconfig: string | undefined,
+  cacheDir: string | undefined,
+) =>
   new Promise<TierRunSummary>((resolve) => {
     const { command, prefixArgs } = resolveTscCommand(cwd);
-    const tscArgs = [...prefixArgs, "--noEmit", ...(tsconfig ? ["-p", tsconfig] : [])];
+    const incrementalArgs = buildIncrementalTscArgs(cwd, tsconfig, cacheDir);
+    const tscArgs = [
+      ...prefixArgs,
+      "--noEmit",
+      ...(tsconfig ? ["-p", tsconfig] : []),
+      ...incrementalArgs,
+    ];
 
     execFile(
       command,
@@ -266,12 +344,48 @@ const buildTierSummary = async (
   return { tier, errorCount, warningCount, output };
 };
 
+const buildLintCacheScopeKey = (options: PhasedLintOptions) =>
+  JSON.stringify({
+    targets: options.targets,
+    format: options.format,
+    maxTier: options.maxTier,
+    onlyTier: options.onlyTier ?? null,
+    tsconfig: options.tsconfig ?? null,
+    eslintCache: options.eslintCache === true,
+  });
+
 const runNonFixPhased = async (
   tiers: ReadonlyArray<LintTier>,
   options: PhasedLintOptions,
   cwd: string,
   EslintCtor: typeof ESLint,
 ): Promise<PhasedLintResult> => {
+  const useCache = options.cache !== false;
+  const cacheDir = useCache ? resolveCacheDir(cwd, options.cacheLocation) : undefined;
+  const tsconfigPath = resolveTsConfigPath(cwd, options.tsconfig);
+  const scopeKey = buildLintCacheScopeKey(options);
+  const projectFingerprint = useCache
+    ? computeProjectFingerprint({
+        cwd,
+        kind: "lint",
+        ...(tsconfigPath !== undefined ? { tsconfigPath } : {}),
+        targets: options.targets,
+        scopeKey,
+      })
+    : undefined;
+
+  if (cacheDir && projectFingerprint) {
+    const cached = readCachedArtifact<PhasedLintResult>(
+      cacheDir,
+      "lint",
+      scopeKey,
+      projectFingerprint,
+    );
+    if (cached) {
+      return { ...cached, cacheHit: true };
+    }
+  }
+
   let singlePass:
     | {
         readonly results: Array<ESLint.LintResult>;
@@ -285,7 +399,19 @@ const runNonFixPhased = async (
         options.onlyTier !== undefined
           ? createExactTierRuleFilter(options.onlyTier)
           : createTierRuleFilter(options.maxTier);
-      const eslint = new EslintCtor({ cwd, fix: false, ruleFilter });
+      const eslintOptions: ESLint.Options = {
+        cwd,
+        fix: false,
+        ruleFilter,
+        ...(options.eslintCache === true && cacheDir
+          ? {
+              cache: true,
+              cacheStrategy: "content" as const,
+              cacheLocation: path.join(cacheDir, "eslint-cache.json"),
+            }
+          : {}),
+      };
+      const eslint = new EslintCtor(eslintOptions);
       const results = await eslint.lintFiles([...options.targets]);
       const formatter = await eslint.loadFormatter(options.format);
       singlePass = { results, formatter };
@@ -297,7 +423,7 @@ const runNonFixPhased = async (
   for (const tier of tiers) {
     let summary: TierRunSummary;
     if (tier === 0) {
-      summary = await runTypeCheck(cwd, options.tsconfig);
+      summary = await runTypeCheck(cwd, options.tsconfig, cacheDir);
     } else {
       const pass = await getSinglePass();
       const tierResults =
@@ -307,11 +433,19 @@ const runNonFixPhased = async (
 
     summaries = [...summaries, summary];
     if (summary.errorCount > 0) {
-      return { passed: false, failedTier: tier, summaries };
+      const failedResult: PhasedLintResult = { passed: false, failedTier: tier, summaries };
+      if (cacheDir && projectFingerprint) {
+        writeCachedArtifact(cacheDir, "lint", scopeKey, projectFingerprint, failedResult);
+      }
+      return failedResult;
     }
   }
 
-  return { passed: true, summaries };
+  const passedResult: PhasedLintResult = { passed: true, summaries };
+  if (cacheDir && projectFingerprint) {
+    writeCachedArtifact(cacheDir, "lint", scopeKey, projectFingerprint, passedResult);
+  }
+  return passedResult;
 };
 
 const runTierForFix = async (
@@ -321,7 +455,9 @@ const runTierForFix = async (
   EslintCtor: typeof ESLint,
 ): Promise<{ readonly summary: TierRunSummary; readonly didMutate: boolean }> => {
   if (tier === 0) {
-    return { summary: await runTypeCheck(cwd, options.tsconfig), didMutate: false };
+    const cacheDir =
+      options.cache !== false ? resolveCacheDir(cwd, options.cacheLocation) : undefined;
+    return { summary: await runTypeCheck(cwd, options.tsconfig, cacheDir), didMutate: false };
   }
 
   const eslint = new EslintCtor({
@@ -384,6 +520,10 @@ export const runPhasedLint = async (
   const cwd = options.cwd ?? process.cwd();
   const EslintCtor = deps?.ESLintClass ?? ESLint;
 
+  if (options.daemon === true && !options.fix && !deps?.ESLintClass) {
+    return runLintViaDaemon({ ...options, cwd });
+  }
+
   return options.fix
     ? runFixPhased(tiers, options, cwd, EslintCtor)
     : runNonFixPhased(tiers, options, cwd, EslintCtor);
@@ -391,6 +531,30 @@ export const runPhasedLint = async (
 
 const runCli = async () => {
   const options = parseCliArgs(process.argv.slice(2));
+  const cwd = process.cwd();
+
+  if (options.daemonStop === true) {
+    const stopped = await stopWorkspaceDaemon(cwd);
+    console.log(
+      stopped
+        ? "[strict-fp-lint] Stopped workspace daemon."
+        : "[strict-fp-lint] No running workspace daemon found.",
+    );
+    return;
+  }
+
+  if (options.daemonStatus === true) {
+    const status = await requestDaemonStatus(cwd);
+    if (status.running) {
+      console.log(
+        `[strict-fp-lint] Daemon running (pid=${String(status.pid)}, uptime=${String(status.uptimeMs)}ms, requests=${String(status.requestsServed)})`,
+      );
+    } else {
+      console.log("[strict-fp-lint] Daemon is not running.");
+    }
+    return;
+  }
+
   const result = await runPhasedLint(options);
 
   for (const summary of result.summaries) {

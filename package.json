@@ -14,7 +14,8 @@
   "bin": {
     "strict-fp-init": "./dist/cli/strict-fp-init.js",
     "strict-fp-radar": "./dist/cli/discovery-radar.js",
-    "strict-fp-lint": "./dist/cli/strict-fp-lint.js"
+    "strict-fp-lint": "./dist/cli/strict-fp-lint.js",
+    "strict-fp-daemon": "./dist/cli/strict-fp-daemon.js"
   },
   "files": [
     "dist",
@@ -29,6 +30,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "lint:phased": "node dist/cli/strict-fp-lint.js",
+    "lint:daemon": "node dist/cli/strict-fp-lint.js --daemon",
     "radar": "node dist/cli/discovery-radar.js"
   },
   "dependencies": {
