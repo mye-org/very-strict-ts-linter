@@ -9,7 +9,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { DEFAULT_UBIQUITOUS_TYPES } from "../analyzers/module-cohesion-analyzer.js";
-import { DEFAULT_TEST_PATTERNS } from "../analyzers/module-symbol-graph.js";
+import { DEFAULT_TEST_PATTERNS, isBarrelFile } from "../analyzers/module-symbol-graph.js";
 import {
   analyzeProgramPurity,
   DEFAULT_EFFECT_TYPES,
@@ -23,7 +23,7 @@ import {
 } from "../analyzers/reuse-cohesion-analyzer.js";
 import { memoizeByProgramAndKey } from "../lib/program-memo.js";
 import { createRule } from "../lib/rule-factory.js";
-import { normalizeFilePath } from "../lib/source-paths.js";
+import { isMatchingAnyPattern, normalizeFilePath } from "../lib/source-paths.js";
 
 // eslint-disable-next-line strict-fp/prefer-union-over-boolean -- ESLint rule JSON schema boolean option
 type RespectPurityFlag = boolean;
@@ -113,11 +113,6 @@ const resolveAnalyzerOptions = (options: Options[0]) => ({
   },
 });
 
-const resolveProgramFileName = (
-  programNode: TSESTree.Program,
-  services: ParserServicesWithTypeInformation,
-) => normalizeFilePath(services.esTreeNodeToTSNodeMap.get(programNode).fileName);
-
 const singleCallerCache = new WeakMap<
   ts.Program,
   Readonly<Record<string, SingleCallerAnalysis>>
@@ -144,7 +139,7 @@ const serializeSingleCallerOptions = (options: SingleCallerOptions) =>
 const computeSingleCaller = (program: ts.Program, resolved: SingleCallerOptions) =>
   analyzeSingleCallerExports(
     program,
-    analyzeProgramPurity(program, resolved.purityOptions),
+    () => analyzeProgramPurity(program, resolved.purityOptions),
     resolved,
   );
 
@@ -159,6 +154,27 @@ const runCachedSingleCallerAnalysis = (
     (p) => computeSingleCaller(p, resolved),
   );
 
+const isEligibleTargetFile = (
+  sf: ts.SourceFile,
+  fileName: string,
+  resolved: SingleCallerOptions,
+) =>
+  !isBarrelFile(sf) &&
+  !isMatchingAnyPattern(fileName, resolved.testPatterns) &&
+  !isMatchingAnyPattern(fileName, resolved.entryPoints);
+
+const reportFileFindings = (
+  fileName: string,
+  resolved: SingleCallerOptions,
+  cwd: string,
+  services: ParserServicesWithTypeInformation,
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => {
+  RA.map((finding: EncapsulationFinding) => {
+    reportEncapsulationFinding(cwd, finding, report);
+  })(runCachedSingleCallerAnalysis(services.program, resolved).byFile[fileName] ?? []);
+};
+
 const checkProgram = (
   programNode: TSESTree.Program,
   options: Options[0],
@@ -166,13 +182,15 @@ const checkProgram = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  RA.map((finding: EncapsulationFinding) => {
-    reportEncapsulationFinding(cwd, finding, report);
-  })(
-    runCachedSingleCallerAnalysis(services.program, resolveAnalyzerOptions(options)).byFile[
-      resolveProgramFileName(programNode, services)
-    ] ?? [],
-  );
+  const sf = services.esTreeNodeToTSNodeMap.get(programNode);
+  const fileName = normalizeFilePath(sf.fileName);
+  const resolved = resolveAnalyzerOptions(options);
+  match(isEligibleTargetFile(sf, fileName, resolved))
+    .with(true, () => {
+      reportFileFindings(fileName, resolved, cwd, services, report);
+    })
+    .with(false, () => {})
+    .exhaustive();
 };
 
 const buildSingleCallerListeners = (

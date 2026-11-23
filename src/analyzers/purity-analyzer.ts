@@ -668,15 +668,8 @@ const inspectExternalCallReturn = (
   );
 };
 
-const isProjectCalleeExpr = (callee: ts.Expression, checker: ts.TypeChecker) =>
-  flow(
-    lookupNodeSymbol(checker),
-    O.map((s) => resolveCanonicalSymbol(s, checker)),
-    O.exists(isDeclaredInProjectSource),
-  )(callee);
-
-const isExternalCalleeExpr = (callee: ts.Expression, checker: ts.TypeChecker) =>
-  !isProjectCalleeExpr(callee, checker);
+const isExternalCanonicalCallee = (canonicalCallee: O.Option<ts.Symbol>) =>
+  !O.exists(isDeclaredInProjectSource)(canonicalCallee);
 
 const matchDirectRuntimeCall =
   (callee: ts.Expression, checker: ts.TypeChecker) => (options: PurityOptions) =>
@@ -689,13 +682,14 @@ const matchDirectRuntimeCall =
 
 const matchImpureRuntimeCall = (
   call: ts.CallExpression,
+  canonicalCallee: O.Option<ts.Symbol>,
   checker: ts.TypeChecker,
   effectSet: ReadonlySet<string>,
 ) =>
   flow(
     matchDirectRuntimeCall(call.expression, checker),
     O.alt(() =>
-      isExternalCalleeExpr(call.expression, checker)
+      isExternalCanonicalCallee(canonicalCallee)
         ? inspectExternalCallReturn(call, checker, effectSet)
         : O.none,
     ),
@@ -772,11 +766,16 @@ const resolveCanonicalCallee = (expr: ts.Expression, checker: ts.TypeChecker) =>
   )(expr);
 
 const inspectCallDirectReasons =
-  (call: ts.CallExpression, checker: ts.TypeChecker, effectSet: ReadonlySet<string>) =>
+  (
+    call: ts.CallExpression,
+    canonicalCallee: O.Option<ts.Symbol>,
+    checker: ts.TypeChecker,
+    effectSet: ReadonlySet<string>,
+  ) =>
   (options: PurityOptions) =>
     RA.compact([
       matchCalleeMutableMethod(call, checker),
-      matchImpureRuntimeCall(call, checker, effectSet)(options),
+      matchImpureRuntimeCall(call, canonicalCallee, checker, effectSet)(options),
     ]);
 
 const inspectCallExpressionNode =
@@ -786,7 +785,7 @@ const inspectCallExpressionNode =
     const label = O.getOrElse(() => "anonymous")(calleeName);
     const canonicalCallee = resolveCanonicalCallee(call.expression, checker);
     return {
-      reasons: inspectCallDirectReasons(call, checker, effectSet)(options),
+      reasons: inspectCallDirectReasons(call, canonicalCallee, checker, effectSet)(options),
       callDeps: extractCallDeps(canonicalCallee, label),
       ...collectCallHofArgs(
         call,

@@ -100,10 +100,12 @@ export const DEFAULT_SINGLE_CALLER_OPTIONS: SingleCallerOptions = {
   },
 };
 
+type PurityProvider = ProgramPurityAnalysis | (() => ProgramPurityAnalysis);
+
 type SingleCallerContext = Readonly<{
   readonly checker: ts.TypeChecker;
   readonly symbolGraph: ProgramSymbolGraph;
-  readonly purityAnalysis: ProgramPurityAnalysis;
+  readonly getPurityAnalysis: () => ProgramPurityAnalysis;
   readonly sourceFilesByPath: ReadonlyMap<string, ts.SourceFile>;
   readonly options: SingleCallerOptions;
 }>;
@@ -111,7 +113,6 @@ type SingleCallerContext = Readonly<{
 type ExportEvaluationInput = Readonly<{
   readonly context: SingleCallerContext;
   readonly fileGraph: FileModuleGraph;
-  readonly filePurity: O.Option<FilePuritySummary>;
   readonly runtimeExport: RuntimeExport;
 }>;
 
@@ -193,12 +194,20 @@ const isImpureStatus = (status: ModulePurityStatus) => status === "impure";
 const isPurityBoundaryRespected = (context: SingleCallerContext) =>
   context.options.respectPurityBoundary;
 
+const isPureExportConsumedByImpureModule = (
+  input: ExportEvaluationInput,
+  soleConsumer: string,
+  purityAnalysis: ProgramPurityAnalysis,
+) =>
+  resolveExportPurity(
+    input.runtimeExport,
+    O.fromNullable(purityAnalysis.files[input.fileGraph.fileName]),
+  ) === "pure" &&
+  O.exists(isImpureStatus)(lookupConsumerModulePurity(purityAnalysis, soleConsumer));
+
 const isBlockedByPurityBoundary = (input: ExportEvaluationInput, soleConsumer: string) =>
   isPurityBoundaryRespected(input.context) &&
-  resolveExportPurity(input.runtimeExport, input.filePurity) === "pure" &&
-  O.exists(isImpureStatus)(
-    lookupConsumerModulePurity(input.context.purityAnalysis, soleConsumer),
-  );
+  isPureExportConsumedByImpureModule(input, soleConsumer, input.context.getPurityAnalysis());
 
 const lookupConsumerLineCount = (symbolGraph: ProgramSymbolGraph, consumerFile: string) =>
   flow(
@@ -221,9 +230,9 @@ const isBlockedByViewModelBoundary = (sourceFileName: string, consumerFile: stri
   !isTsxPath(sourceFileName) && isTsxPath(consumerFile);
 
 const isBlockedByStaticGuards = (input: ExportEvaluationInput, soleConsumer: string) =>
-  isBlockedByPurityBoundary(input, soleConsumer) ||
   isBlockedByMergedSize(input, soleConsumer) ||
-  isBlockedByViewModelBoundary(input.fileGraph.fileName, soleConsumer);
+  isBlockedByViewModelBoundary(input.fileGraph.fileName, soleConsumer) ||
+  isBlockedByPurityBoundary(input, soleConsumer);
 
 const buildTestOnlyFinding = (
   exp: RuntimeExport,
@@ -293,9 +302,6 @@ const evaluateRuntimeExport = (input: ExportEvaluationInput) =>
 const isEligibleSingleCallerFile = (fileGraph: FileModuleGraph) =>
   !fileGraph.isBarrel && !fileGraph.isTest && !fileGraph.isEntryPoint;
 
-const lookupFilePurity = (purityAnalysis: ProgramPurityAnalysis, fileName: string) =>
-  O.fromNullable(purityAnalysis.files[fileName]);
-
 const collectFileCandidateFindings = (
   context: SingleCallerContext,
   fileGraph: FileModuleGraph,
@@ -304,7 +310,6 @@ const collectFileCandidateFindings = (
     evaluateRuntimeExport({
       context,
       fileGraph,
-      filePurity: lookupFilePurity(context.purityAnalysis, fileGraph.fileName),
       runtimeExport,
     }),
   )(fileGraph.runtimeExports);
@@ -388,21 +393,24 @@ const collectAllSingleCallerCandidates = (context: SingleCallerContext) =>
     RA.flatMap((fileGraph) => collectFileCandidateFindings(context, fileGraph)),
   )(context.symbolGraph.files);
 
+const toPurityGetter = (purityAnalysis: PurityProvider) =>
+  typeof purityAnalysis === "function" ? purityAnalysis : () => purityAnalysis;
+
 const buildSingleCallerContext = (
   program: ts.Program,
-  purityAnalysis: ProgramPurityAnalysis,
+  purityAnalysis: PurityProvider,
   options: SingleCallerOptions,
 ) => ({
   checker: program.getTypeChecker(),
   symbolGraph: analyzeModuleSymbolGraph(program, options.entryPoints, options.testPatterns),
-  purityAnalysis,
+  getPurityAnalysis: toPurityGetter(purityAnalysis),
   sourceFilesByPath: indexSourceFilesByPath(program),
   options,
 });
 
 export const analyzeSingleCallerExports = (
   program: ts.Program,
-  purityAnalysis: ProgramPurityAnalysis,
+  purityAnalysis: PurityProvider,
   options: SingleCallerOptions = DEFAULT_SINGLE_CALLER_OPTIONS,
 ) => {
   const context = buildSingleCallerContext(program, purityAnalysis, options);
