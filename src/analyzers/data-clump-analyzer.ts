@@ -144,22 +144,21 @@ const extractMemberFields = flow(
   filterAndSortDefaultFields,
 );
 
-const extractFunctionBag = (node: ts.SignatureDeclarationBase, sf: ts.SourceFile) => {
+const extractFunctionBag = (sf: ts.SourceFile) => (node: ts.SignatureDeclarationBase) => {
   const fields = extractParamFields(node.parameters);
   return fields.length >= 2
-    ? O.some<FieldBag>({ location: resolveTsNodeLocation(node, sf), fields })
+    ? O.some<FieldBag>({ location: resolveTsNodeLocation(sf)(node), fields })
     : O.none;
 };
 
-const extractMemberBag = (
-  node: ts.TypeLiteralNode | ts.InterfaceDeclaration | ts.ClassDeclaration,
-  sf: ts.SourceFile,
-) => {
-  const fields = extractMemberFields(node.members);
-  return fields.length >= 2
-    ? O.some<FieldBag>({ location: resolveTsNodeLocation(node, sf), fields })
-    : O.none;
-};
+const extractMemberBag =
+  (sf: ts.SourceFile) =>
+  (node: ts.TypeLiteralNode | ts.InterfaceDeclaration | ts.ClassDeclaration) => {
+    const fields = extractMemberFields(node.members);
+    return fields.length >= 2
+      ? O.some<FieldBag>({ location: resolveTsNodeLocation(sf)(node), fields })
+      : O.none;
+  };
 
 const isFunctionLikeTs = (node: ts.Node): node is ts.SignatureDeclarationBase =>
   ts.isFunctionDeclaration(node) ||
@@ -173,37 +172,37 @@ const isMemberContainerTs = (
 ): node is ts.TypeLiteralNode | ts.InterfaceDeclaration | ts.ClassDeclaration =>
   ts.isTypeLiteralNode(node) || ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node);
 
-const extractMemberBagNode = (node: ts.Node, sf: ts.SourceFile) =>
-  isMemberContainerTs(node) ? extractMemberBag(node, sf) : O.none;
+const extractMemberBagNode = (sf: ts.SourceFile) => (node: ts.Node) =>
+  isMemberContainerTs(node) ? extractMemberBag(sf)(node) : O.none;
 
-const extractNodeBag = (node: ts.Node, sf: ts.SourceFile) =>
-  isFunctionLikeTs(node) ? extractFunctionBag(node, sf) : extractMemberBagNode(node, sf);
+const extractNodeBag = (sf: ts.SourceFile) => (node: ts.Node) =>
+  isFunctionLikeTs(node) ? extractFunctionBag(sf)(node) : extractMemberBagNode(sf)(node);
 
-const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
+const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf)(sf);
 
-const extractFileBags = flow(
-  (sf: ts.SourceFile) => ({ sf, nodes: collectFileNodes(sf) }),
-  ({ sf, nodes }) => RA.filterMap((node: ts.Node) => extractNodeBag(node, sf))(nodes),
-);
+const extractFileBags = (sf: ts.SourceFile) =>
+  RA.filterMap(extractNodeBag(sf))(collectFileNodes(sf));
 
 const collectAllProgramBags = flow(collectProjectSourceFiles, RA.flatMap(extractFileBags));
 
-const collectProgramFieldBags = memoizeByProgram(clumpCache, collectAllProgramBags);
+const collectProgramFieldBags = memoizeByProgram(clumpCache)(collectAllProgramBags);
 
 const prependHead = (head: string) => (rest: ReadonlyArray<string>) => [head, ...rest];
 const tailItems = (items: ReadonlyArray<string>) => items.slice(1);
 
 type CombineInput = Readonly<Record<"items", ReadonlyArray<string>> & Record<"size", number>>;
 
-const combinePrefixed = (head: string, { items, size }: CombineInput) =>
-  RA.map(prependHead(head))(combinations({ items: tailItems(items), size: size - 1 }));
+const combinePrefixed =
+  (head: string) =>
+  ({ items, size }: CombineInput) =>
+    RA.map(prependHead(head))(combinations({ items: tailItems(items), size: size - 1 }));
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive combinations
 const combineWithHead = ({ items, size }: CombineInput): ReadonlyArray<ReadonlyArray<string>> =>
   O.match(
     () => [] satisfies ReadonlyArray<ReadonlyArray<string>>,
     (head: string) => [
-      ...combinePrefixed(head, { items, size }),
+      ...combinePrefixed(head)({ items, size }),
       ...combinations({ items: tailItems(items), size }),
     ],
   )(O.fromNullable(items[0]));
@@ -221,27 +220,29 @@ const combinationsFor = (items: ReadonlyArray<string>) => (size: number) =>
 
 type SizeRange = Readonly<Record<"minSize" | "maxSize", number>>;
 
-const countRangeSteps = (length: number, { minSize, maxSize }: SizeRange) =>
-  Math.max(0, Math.min(maxSize, length) - minSize + 1);
+const countRangeSteps =
+  (length: number) =>
+  ({ minSize, maxSize }: SizeRange) =>
+    Math.max(0, Math.min(maxSize, length) - minSize + 1);
 
-const makeBagSizeRange = (length: number, range: SizeRange) =>
-  RA.makeBy(countRangeSteps(length, range), (i) => i + range.minSize);
+const makeBagSizeRange = (length: number) => (range: SizeRange) =>
+  RA.makeBy(countRangeSteps(length)(range), (i) => i + range.minSize);
 
-const expandSubsetsForLocation = (bounded: ReadonlyArray<string>, location: TsLocation) =>
+const expandSubsetsForLocation = (location: TsLocation) => (bounded: ReadonlyArray<string>) =>
   flow(
     RA.flatMap(combinationsFor(bounded)),
     RA.map((fields: ReadonlyArray<string>) => ({ key: joinComma(fields), fields, location })),
   );
 
-const expandBoundedSubsets = (boundedBag: FieldBag, range: SizeRange) =>
-  expandSubsetsForLocation(boundedBag.fields, boundedBag.location)(
-    makeBagSizeRange(boundedBag.fields.length, range),
+const expandBoundedSubsets = (range: SizeRange) => (boundedBag: FieldBag) =>
+  expandSubsetsForLocation(boundedBag.location)(boundedBag.fields)(
+    makeBagSizeRange(boundedBag.fields.length)(range),
   );
 
 const capFieldList = (fields: ReadonlyArray<string>) => fields.slice(0, 12);
 
-const collectBagSubsets = (bag: FieldBag, range: SizeRange) =>
-  expandBoundedSubsets({ fields: capFieldList(bag.fields), location: bag.location }, range);
+const collectBagSubsets = (range: SizeRange) => (bag: FieldBag) =>
+  expandBoundedSubsets(range)({ fields: capFieldList(bag.fields), location: bag.location });
 
 type KeyedSubsetLocation = Readonly<Record<"key", string> & { readonly location: TsLocation }>;
 
@@ -258,22 +259,21 @@ const uniqueLocations = flow(
   RA.map(([, group]) => RNEA.head(group)),
 );
 
-const hasAllFields = (candidateFields: ReadonlyArray<string>, otherFields: ReadonlyArray<string>) =>
-  RA.every((f: string) => otherFields.includes(f))(candidateFields);
+const hasAllFields =
+  (otherFields: ReadonlyArray<string>) => (candidateFields: ReadonlyArray<string>) =>
+    RA.every((f: string) => otherFields.includes(f))(candidateFields);
 
-const isSubsumedByLargerFinding = (
-  candidate: ClumpFinding,
-  allFindings: ReadonlyArray<ClumpFinding>,
-) =>
-  RA.some(
-    (other: ClumpFinding) =>
-      other.key !== candidate.key &&
-      other.fields.length > candidate.fields.length &&
-      other.locations.length >= candidate.locations.length &&
-      hasAllFields(candidate.fields, other.fields),
-  )(allFindings);
+const isSubsumedByLargerFinding =
+  (allFindings: ReadonlyArray<ClumpFinding>) => (candidate: ClumpFinding) =>
+    RA.some(
+      (other: ClumpFinding) =>
+        other.key !== candidate.key &&
+        other.fields.length > candidate.fields.length &&
+        other.locations.length >= candidate.locations.length &&
+        hasAllFields(other.fields)(candidate.fields),
+    )(allFindings);
 
-const buildClumpFinding = (key: string, locations: ReadonlyArray<TsLocation>) => {
+const buildClumpFinding = (locations: ReadonlyArray<TsLocation>) => (key: string) => {
   const fields = splitComma(key);
   return {
     key,
@@ -283,15 +283,14 @@ const buildClumpFinding = (key: string, locations: ReadonlyArray<TsLocation>) =>
   };
 };
 
-const toClumpFinding = (
-  [key, locs]: readonly [string, ReadonlyArray<TsLocation>],
-  minOccurrences: number,
-) => {
-  const deduped = uniqueLocations(locs);
-  return deduped.length >= minOccurrences
-    ? O.some<ClumpFinding>(buildClumpFinding(key, deduped))
-    : O.none;
-};
+const toClumpFinding =
+  (minOccurrences: number) =>
+  ([key, locs]: readonly [string, ReadonlyArray<TsLocation>]) => {
+    const deduped = uniqueLocations(locs);
+    return deduped.length >= minOccurrences
+      ? O.some<ClumpFinding>(buildClumpFinding(deduped)(key))
+      : O.none;
+  };
 
 export type ClumpThresholds = Readonly<Record<"minSize" | "minOccurrences", number>>;
 
@@ -302,20 +301,20 @@ const DEFAULT_CLUMP_THRESHOLDS: ClumpThresholds = {
 
 const resolveMaxClumpSize = (minSize: number) => Math.max(3, minSize);
 
-const collectBagSubsetsForMinSize = (bag: FieldBag, minSize: number) =>
-  collectBagSubsets(bag, { minSize, maxSize: resolveMaxClumpSize(minSize) });
+const collectBagSubsetsForMinSize = (minSize: number) => (bag: FieldBag) =>
+  collectBagSubsets({ minSize, maxSize: resolveMaxClumpSize(minSize) })(bag);
 
 const collectRawFindingsForThresholds = (thresholds: ClumpThresholds) =>
   flow(
     collectProgramFieldBags,
-    RA.flatMap((bag: FieldBag) => collectBagSubsetsForMinSize(bag, thresholds.minSize)),
+    RA.flatMap(collectBagSubsetsForMinSize(thresholds.minSize)),
     groupSubsetsByKey,
     RR.toEntries,
-    RA.filterMap((entry) => toClumpFinding(entry, thresholds.minOccurrences)),
+    RA.filterMap(toClumpFinding(thresholds.minOccurrences)),
   );
 
 const filterSubsumed = (rawFindings: ReadonlyArray<ClumpFinding>) =>
-  RA.filter((f: ClumpFinding) => !isSubsumedByLargerFinding(f, rawFindings))(rawFindings);
+  RA.filter((f: ClumpFinding) => !isSubsumedByLargerFinding(rawFindings)(f))(rawFindings);
 
 const clumpIndexCache = new WeakMap<ts.Program, Readonly<Record<string, ClumpIndex>>>();
 
@@ -341,13 +340,12 @@ const computeClumpIndexForThresholds = (thresholds: ClumpThresholds) =>
 const makeClumpCacheKey = (thresholds: ClumpThresholds) =>
   `${String(thresholds.minSize)}:${String(thresholds.minOccurrences)}`;
 
-export const analyzeDataClumps = ((
+export const analyzeDataClumps = ((program: ts.Program) =>
+  (thresholds: Partial<ClumpThresholds> = {}) => {
+    const resolved: ClumpThresholds = { ...DEFAULT_CLUMP_THRESHOLDS, ...thresholds };
+    return memoizeByProgramAndKey(clumpIndexCache)(
+      computeClumpIndexForThresholds(resolved),
+    )(program)(makeClumpCacheKey(resolved));
+  }) satisfies (
   program: ts.Program,
-  thresholds: Partial<ClumpThresholds> = {},
-) => {
-  const resolved: ClumpThresholds = { ...DEFAULT_CLUMP_THRESHOLDS, ...thresholds };
-  return memoizeByProgramAndKey(
-    clumpIndexCache,
-    computeClumpIndexForThresholds(resolved),
-  )(program, makeClumpCacheKey(resolved));
-}) satisfies (program: ts.Program, thresholds?: Partial<ClumpThresholds>) => ClumpIndex;
+) => (thresholds?: Partial<ClumpThresholds>) => ClumpIndex;

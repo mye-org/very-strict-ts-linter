@@ -178,8 +178,7 @@ export const domainLayerPurity = createRule<Options, MessageIds>({
     ],
   },
   create: (context, [options]) =>
-    shouldLintDomainFile(
-      options.enforceEverywhere ? "everywhere" : "domain-only",
+    shouldLintDomainFile(options.enforceEverywhere ? "everywhere" : "domain-only")(
       options.domainPatterns,
     )(context.filename)
       ? buildPurityListeners(options.forbiddenImports, (d) => { context.report(d); })

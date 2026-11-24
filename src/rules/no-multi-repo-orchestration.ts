@@ -44,7 +44,7 @@ const collectCallsInBody = (
     : [
         ...(node.type === AST_NODE_TYPES.CallExpression ? [node] : []),
         ...RA.flatMap((child: TSESTree.Node) => collectCallsInBody(child, visitorKeys))(
-          collectEstreeChildNodes(node, visitorKeys),
+          collectEstreeChildNodes(visitorKeys)(node),
         ),
       ];
 

@@ -97,7 +97,7 @@ const resolveMemberTsType = (
 const resolveMemberContainerTypes = (
   member: MemberNode,
   services: ParserServicesWithTypeInformation,
-) => unwrapContainerTsTypes(resolveMemberTsType(member, services), services.program.getTypeChecker());
+) => unwrapContainerTsTypes(services.program.getTypeChecker())(resolveMemberTsType(member, services));
 
 const checkPropertyMember = (
   env: AggregateCheckEnv,

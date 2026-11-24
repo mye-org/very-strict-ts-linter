@@ -1,4 +1,5 @@
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
@@ -53,8 +54,7 @@ const isDirectOptionSymbol = flow(
   isOptionSymbol,
 );
 
-const hasOptionTypeName = (type: ts.Type) =>
-  isAliasOptionSymbol(type) || isDirectOptionSymbol(type);
+const hasOptionTypeName = Pred.or(isAliasOptionSymbol)(isDirectOptionSymbol);
 
 const hasBothOptionTags = (types: ReadonlyArray<ts.Type>) => {
   const tags = RA.filterMap(resolveOptionMemberTag)(types);

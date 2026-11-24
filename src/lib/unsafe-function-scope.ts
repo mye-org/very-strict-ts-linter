@@ -1,12 +1,18 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 
 const UNSAFE_SUFFIX_RE = /[a-z0-9]Unsafe$/;
 const MUST_PREFIX_RE = /^must[A-Z]/;
 
-export const isUnsafeOrMustName = ((name: string) =>
-  UNSAFE_SUFFIX_RE.test(name) || MUST_PREFIX_RE.test(name)) satisfies (name: string) => boolean;
+const hasUnsafeSuffix = (name: string) => UNSAFE_SUFFIX_RE.test(name);
+const hasMustPrefix = (name: string) => MUST_PREFIX_RE.test(name);
+
+export const isUnsafeOrMustName = Pred.or(hasUnsafeSuffix)(hasMustPrefix) satisfies (
+  name: string,
+) => boolean;
 
 const resolveNamedParentKey = (gp: TSESTree.Node) =>
   match(gp.type === AST_NODE_TYPES.TSSatisfiesExpression ? gp.parent : gp)
@@ -33,22 +39,28 @@ export const resolveDirectFunctionName = ((node: TSESTree.Node) =>
     .with(P._, () => O.none)
     .exhaustive()) satisfies (node: TSESTree.Node) => O.Option<string>;
 
-const isMatchingDirectOrAncestor: (
-  parent: TSESTree.Node,
-  predicate: (name: string) => boolean,
-) => boolean = (parent, predicate) =>
-  O.exists(predicate)(resolveDirectFunctionName(parent)) ||
-  hasMatchingEnclosingFunctionName(parent, predicate);
+type NodePredicate = (node: TSESTree.Node) => boolean;
 
-export const hasMatchingEnclosingFunctionName = ((
-  node: TSESTree.Node,
-  predicate: (name: string) => boolean,
-) =>
-  O.exists((parent: TSESTree.Node) => isMatchingDirectOrAncestor(parent, predicate))(
-    O.fromNullable(node.parent),
-  )) satisfies (node: TSESTree.Node, predicate: (name: string) => boolean) => boolean;
+const isMatchingDirectOrAncestor = (predicate: (name: string) => boolean) => {
+  const isMatch: NodePredicate = (parent) =>
+    O.exists(predicate)(resolveDirectFunctionName(parent)) ||
+    hasMatchingEnclosingFunctionName(predicate)(parent);
+  return isMatch;
+};
 
-export const isInsideUnsafeOrMustFunction = ((node: TSESTree.Node) =>
-  hasMatchingEnclosingFunctionName(node, isUnsafeOrMustName)) satisfies (
-  node: TSESTree.Node,
-) => boolean;
+const hasMatchingEnclosingFunctionNameImpl: (
+  predicate: (name: string) => boolean,
+) => NodePredicate = (predicate) =>
+  flow(
+    (node: TSESTree.Node) => node.parent,
+    O.fromNullable,
+    O.exists(isMatchingDirectOrAncestor(predicate)),
+  );
+
+export const hasMatchingEnclosingFunctionName = hasMatchingEnclosingFunctionNameImpl satisfies (
+  predicate: (name: string) => boolean,
+) => NodePredicate;
+
+export const isInsideUnsafeOrMustFunction = hasMatchingEnclosingFunctionName(
+  isUnsafeOrMustName,
+) satisfies NodePredicate;

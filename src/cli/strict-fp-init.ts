@@ -2,6 +2,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import * as E from "fp-ts/lib/Either.js";
+import * as IOE from "fp-ts/lib/IOEither.js";
 import type { LintTier } from "../configs/recommended.js";
 
 export type InitCliOptions = {
@@ -33,37 +35,35 @@ const parseTier = (raw: string | undefined) => {
   return undefined;
 };
 
-export const parseInitArgs = ((
-  args: ReadonlyArray<string>,
-  defaultCwd = process.cwd(),
-) => {
-  let cwd = defaultCwd;
-  let force = false;
-  let maxTier: LintTier = DEFAULT_MAX_TIER;
-  let help = false;
+export const parseInitArgs = ((defaultCwd = process.cwd()) =>
+  (args: ReadonlyArray<string>) => {
+    let cwd = defaultCwd;
+    let force = false;
+    let maxTier: LintTier = DEFAULT_MAX_TIER;
+    let help = false;
 
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "--force" || arg === "-f") {
-      force = true;
-    } else if (arg === "--help" || arg === "-h") {
-      help = true;
-    } else if ((arg === "--max-tier" || arg === "--tier") && args[i + 1]) {
-      maxTier = parseTier(args[i + 1]) ?? DEFAULT_MAX_TIER;
-      i += 1;
-    } else if (arg === "--cwd" && args[i + 1]) {
-      cwd = path.resolve(defaultCwd, args[i + 1] ?? defaultCwd);
-      i += 1;
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i];
+      if (arg === "--force" || arg === "-f") {
+        force = true;
+      } else if (arg === "--help" || arg === "-h") {
+        help = true;
+      } else if ((arg === "--max-tier" || arg === "--tier") && args[i + 1]) {
+        maxTier = parseTier(args[i + 1]) ?? DEFAULT_MAX_TIER;
+        i += 1;
+      } else if (arg === "--cwd" && args[i + 1]) {
+        cwd = path.resolve(defaultCwd, args[i + 1] ?? defaultCwd);
+        i += 1;
+      }
     }
-  }
 
-  return {
-    cwd,
-    force,
-    maxTier,
-    help,
-  } satisfies InitCliOptions;
-}) satisfies (args: ReadonlyArray<string>, defaultCwd?: string) => InitCliOptions;
+    return {
+      cwd,
+      force,
+      maxTier,
+      help,
+    } satisfies InitCliOptions;
+  }) satisfies (defaultCwd?: string) => (args: ReadonlyArray<string>) => InitCliOptions;
 
 export const buildEslintConfigTemplate = ((maxTier: LintTier) => {
   const tierLine = maxTier < DEFAULT_MAX_TIER ? `\n    maxTier: ${String(maxTier)},` : "";
@@ -174,7 +174,7 @@ Options:
 };
 
 const runCli = () => {
-  const options = parseInitArgs(process.argv.slice(2));
+  const options = parseInitArgs()(process.argv.slice(2));
   if (options.help) {
     printHelp();
     return;
@@ -214,10 +214,14 @@ const runCli = () => {
 
 const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 if (import.meta.url === entryUrl) {
-  try {
-    runCli();
-  } catch (err: unknown) {
-    console.error(err);
+  const outcome = IOE.tryCatch(
+    () => {
+      runCli();
+    },
+    (err: unknown) => err,
+  )();
+  if (E.isLeft(outcome)) {
+    console.error(outcome.left);
     process.exit(1);
   }
 }

@@ -109,10 +109,9 @@ const serializeCommonReuseOptions = (options: CommonReuseOptions) =>
 const analyzeByFile =
   (program: ts.Program) =>
   (resolved: CommonReuseOptions) =>
-    memoizeByProgramAndKey(
-      commonReuseCache,
-      (p) => analyzeCommonReuseCohesion(p, resolved),
-    )(program, serializeCommonReuseOptions(resolved)).byFile;
+    memoizeByProgramAndKey(commonReuseCache)((p) =>
+      analyzeCommonReuseCohesion(p, resolved),
+    )(program)(serializeCommonReuseOptions(resolved)).byFile;
 
 const lookupByFileName =
   (fileName: string) => (byFile: Readonly<Record<string, CommonReuseFinding>>) =>

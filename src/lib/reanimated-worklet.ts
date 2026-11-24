@@ -1,5 +1,6 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
@@ -114,10 +115,9 @@ const isWorkletObjectHookProperty = flow(
   O.exists((name) => WORKLET_OBJECT_HOOK_NAMES.has(name)),
 );
 
-export const isWorkletFunction = ((node: FunctionNode) =>
-  hasWorkletDirective(node) ||
-  isWorkletCallArg(node) ||
-  isWorkletObjectHookProperty(node)) satisfies (node: FunctionNode) => boolean;
+export const isWorkletFunction = Pred.or(hasWorkletDirective)(
+  Pred.or(isWorkletCallArg)(isWorkletObjectHookProperty),
+) satisfies (node: FunctionNode) => boolean;
 
 const hasScheduleOnRnCallee = flow(
   resolveCalleeName,

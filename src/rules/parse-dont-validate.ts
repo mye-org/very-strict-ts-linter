@@ -126,9 +126,8 @@ const isValidateWithoutParse = (
 const isShotgunEligibleContext = (node: TSESTree.Node) =>
   !isInsideUnsafeOrMustFunction(node) &&
   !hasMatchingEnclosingFunctionName(
-    node,
     (name) => isUnsafeOrMustName(name) || isExemptDomainFnName(name),
-  );
+  )(node);
 
 const isTsParamNode = (n: ts.Node, checker: ts.TypeChecker) => {
   const check = flow(

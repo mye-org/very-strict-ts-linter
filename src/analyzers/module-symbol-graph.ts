@@ -300,7 +300,7 @@ const buildExportLocationFields = (
   { declaration, exportName }: Readonly<Record<"exportName", string> & { readonly declaration: ts.Node }>,
 ) => {
   const fileName = normalizeFilePath(sf.fileName);
-  const loc = resolveTsNodeLocation(declaration, sf);
+  const loc = resolveTsNodeLocation(sf)(declaration);
   return {
     key: formatExportKey(fileName, exportName),
     fileName,
@@ -1227,7 +1227,7 @@ const collectEntryPointFileKeys = (
 ];
 
 const isMatchingEntryPointFile = (sf: ts.SourceFile, patterns: ReadonlyArray<string>) =>
-  isMatchingAnyPattern(normalizeFilePath(sf.fileName), patterns);
+  isMatchingAnyPattern(patterns)(normalizeFilePath(sf.fileName));
 
 const collectMatchedEntryPointKeys = (env: EntryPointKeyEnv) =>
   flow(
@@ -1328,10 +1328,10 @@ const groupConsumersByExportKey = (edges: ReadonlyArray<RawImportEdge>) =>
   });
 
 const isTestConsumerEdge = (edge: RawImportEdge, patterns: ReadonlyArray<string>) =>
-  isMatchingAnyPattern(edge.consumerFile, patterns);
+  isMatchingAnyPattern(patterns)(edge.consumerFile);
 
 const isProdConsumerEdge = (edge: RawImportEdge, patterns: ReadonlyArray<string>) =>
-  !isMatchingAnyPattern(edge.consumerFile, patterns);
+  !isMatchingAnyPattern(patterns)(edge.consumerFile);
 
 const buildEdgeIndexBundle = (
   catalog: ProgramSymbolCatalog,
@@ -1360,8 +1360,8 @@ type FileGraphBuildContext = Readonly<{
 const buildFileModuleFlags = (filePath: string, { catalog, scope }: FileGraphBuildContext) => ({
   fileName: filePath,
   isBarrel: catalog.barrelFiles.has(filePath),
-  isTest: isMatchingAnyPattern(filePath, scope.testFilePatterns),
-  isEntryPoint: isMatchingAnyPattern(filePath, scope.entryPointPatterns),
+  isTest: isMatchingAnyPattern(scope.testFilePatterns)(filePath),
+  isEntryPoint: isMatchingAnyPattern(scope.entryPointPatterns)(filePath),
   lineCount: O.getOrElse(() => 0)(RR.lookup(filePath, catalog.lineCounts)),
 });
 

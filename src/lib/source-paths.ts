@@ -41,29 +41,28 @@ const compileGlobPattern = flow(
   buildAnchoredRegex,
 );
 
-const isRegexMatch = (re: RegExp, target: string) => re.test(target);
-
-const isMatchingPattern = (filePath: string, pattern: string) =>
-  isRegexMatch(compileGlobPattern(pattern), normalizeFilePath(filePath));
-
-export const isMatchingAnyPattern = ((
-  filePath: string,
-  patterns: ReadonlyArray<string>,
-) => RA.some((pattern: string) => isMatchingPattern(filePath, pattern))(patterns)) satisfies (
-  filePath: string,
-  patterns: ReadonlyArray<string>,
-) => boolean;
-
 type FilePathPredicate = (filePath: string) => boolean;
 
-export const shouldLintDomainFile = ((
+const isRegexMatch = (target: string) => {
+  const isMatch = (re: RegExp) => re.test(target);
+  return isMatch;
+};
+
+const isMatchingPattern = (filePath: string) => {
+  const isMatch = flow(compileGlobPattern, isRegexMatch(normalizeFilePath(filePath)));
+  return isMatch;
+};
+
+export const isMatchingAnyPattern = ((patterns: ReadonlyArray<string>) => {
+  const isMatch = (filePath: string) => RA.some(isMatchingPattern(filePath))(patterns);
+  return isMatch;
+}) satisfies (patterns: ReadonlyArray<string>) => FilePathPredicate;
+
+export const shouldLintDomainFile = ((scope: "everywhere" | "domain-only") =>
+  (domainPatterns: ReadonlyArray<string>) => {
+    const isIncludedFile = (filePath: string) =>
+      scope === "everywhere" || isMatchingAnyPattern(domainPatterns)(filePath);
+    return isIncludedFile;
+  }) satisfies (
   scope: "everywhere" | "domain-only",
-  domainPatterns: ReadonlyArray<string>,
-) => {
-  const isIncludedFile = (filePath: string) =>
-    scope === "everywhere" || isMatchingAnyPattern(filePath, domainPatterns);
-  return isIncludedFile;
-}) satisfies (
-  scope: "everywhere" | "domain-only",
-  domainPatterns: ReadonlyArray<string>,
-) => FilePathPredicate;
+) => (domainPatterns: ReadonlyArray<string>) => FilePathPredicate;

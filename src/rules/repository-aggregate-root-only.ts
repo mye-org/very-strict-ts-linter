@@ -51,7 +51,7 @@ const resolvePropCallSigs = (prop: ts.Symbol, checker: ts.TypeChecker) => {
 const resolveDeclTypes = (param: ts.Symbol, checker: ts.TypeChecker) =>
   flow(
     (decl: ts.Declaration) => checker.getTypeOfSymbolAtLocation(param, decl),
-    (t) => unwrapContainerTsTypes(t, checker),
+    unwrapContainerTsTypes(checker),
   );
 
 const resolveSingleParamTypes = (checker: ts.TypeChecker) => (p: ts.Symbol) => {
@@ -76,7 +76,7 @@ const extractEntityNamesFromDecl = (
     (tsNode: ts.Node) => checker.getTypeAtLocation(tsNode).getProperties(),
     RA.flatMap((prop) => resolvePropCallSigs(prop, checker)),
     RA.flatMap((sig) => [
-      ...unwrapContainerTsTypes(checker.getReturnTypeOfSignature(sig), checker),
+      ...unwrapContainerTsTypes(checker)(checker.getReturnTypeOfSignature(sig)),
       ...extractParamTypesFromSig(sig, checker),
     ]),
     RA.filterMap(resolveTsTypeName),

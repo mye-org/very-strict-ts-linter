@@ -8,11 +8,14 @@ const resolveFirstDeclaration = flow(
   O.flatMap(RA.head),
 );
 
-const resolveAliasSymbol = flow((t: ts.Type) => t.aliasSymbol, O.fromNullable);
 const resolveDirectSymbol = flow((t: ts.Type) => t.getSymbol(), O.fromNullable);
 
 const resolveTypeSymbolFor = (type: ts.Type) =>
-  flow(resolveAliasSymbol, O.alt(() => resolveDirectSymbol(type)));
+  flow(
+    (t: ts.Type) => t.aliasSymbol,
+    O.fromNullable,
+    O.alt(() => resolveDirectSymbol(type)),
+  );
 
 const resolveTypeSymbol = (type: ts.Type) => resolveTypeSymbolFor(type)(type);
 

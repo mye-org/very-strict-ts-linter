@@ -89,7 +89,7 @@ const collectAssignmentsInBlock = (
     : [
         ...extractDirectMemberAssignment(node),
         ...RA.flatMap((child: TSESTree.Node) => collectAssignmentsInBlock(child, visitorKeys))(
-          collectEstreeChildNodes(node, visitorKeys),
+          collectEstreeChildNodes(visitorKeys)(node),
         ),
       ];
 

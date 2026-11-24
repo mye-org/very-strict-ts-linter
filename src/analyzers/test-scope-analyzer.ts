@@ -649,7 +649,7 @@ const resolveComponentName = (id: string, components: ComponentMap) =>
   lookupComponentName(id)(components);
 
 const isSourceFileMatchingPatterns = (sf: ts.SourceFile, patterns: ReadonlyArray<string>) =>
-  isMatchingAnyPattern(normalizeFilePath(sf.fileName), patterns);
+  isMatchingAnyPattern(patterns)(normalizeFilePath(sf.fileName));
 
 // ---------------------------------------------------------------------------
 // Shared AST Predicates & Symbol Resolution
@@ -706,7 +706,7 @@ const isOwnBodyNode = (node: ts.Node, boundary: ts.Node): boolean =>
       O.exists((parent: ts.Node) => isOwnBodyNode(parent, boundary))(resolveNodeParent(node));
 
 const collectOwnBodyNodes = (body: ts.Node, sf: ts.SourceFile) =>
-  RA.filter((node: ts.Node) => isOwnBodyNode(node, body))(collectTsNodes(body, sf));
+  RA.filter((node: ts.Node) => isOwnBodyNode(node, body))(collectTsNodes(sf)(body));
 
 const lookupCanonicalComponentId = (
   checker: ts.TypeChecker,
@@ -817,7 +817,7 @@ const makeRawProductionFn = (
     id: makeComponentId(ctx.fileName, name),
     name,
     fileName: ctx.fileName,
-    line: resolveTsNodeLocation(reportNode, ctx.sf).line,
+    line: resolveTsNodeLocation(ctx.sf)(reportNode).line,
     visibility,
     symbol: sym,
     fnNode: fn,
@@ -1884,7 +1884,7 @@ const collectDirectCallTargets = (
   resolveExpr: (expr: ts.Expression) => O.Option<string>,
 ) =>
   flow(
-    (body: ts.ConciseBody) => collectTsNodes(body, sf),
+    collectTsNodes(sf),
     RA.filter(ts.isCallExpression),
     RA.filterMap((call: ts.CallExpression) => resolveExpr(call.expression)),
     RA.uniq(S.Eq),
@@ -1906,7 +1906,7 @@ type WrapperExpandEnv = Readonly<{
 
 const collectSecondHopTargets = ({ sf, checker, directByWrapper }: WrapperExpandEnv) =>
   flow(
-    (body: ts.ConciseBody) => collectTsNodes(body, sf),
+    collectTsNodes(sf),
     RA.filter(ts.isCallExpression),
     RA.map((call: ts.CallExpression) => call.expression),
     RA.filter(ts.isIdentifier),
@@ -2204,7 +2204,7 @@ const collectExprRefContributions = (ctx: TestTraceEnv) =>
 const collectReferencedComponentsInExpr = (
   expr: ts.Node,
   { sf, ctx }: Readonly<{ sf: ts.SourceFile; ctx: TestTraceEnv }>,
-) => collectExprRefContributions(ctx)(collectTsNodes(expr, sf));
+) => collectExprRefContributions(ctx)(collectTsNodes(sf)(expr));
 
 const stepExpectPropertyAccess = (
   prop: ts.PropertyAccessExpression,
@@ -2659,7 +2659,7 @@ const extractBodyAssertions = (
   )(nodes);
 
 const extractTestBodyAnalysis = (body: ts.Node, fileEnv: TestFileEnv) => {
-  const nodes = collectTsNodes(body, fileEnv.sf);
+  const nodes = collectTsNodes(fileEnv.sf)(body);
   const pass1 = RA.reduce<ts.Node, TestPass1State>(
     { directTargets: EMPTY_STRINGS, localBindings: new Map(), dataflowEdges: [] },
     (acc, node) => stepPass1Node(acc, { node, fileEnv }),
@@ -2762,7 +2762,7 @@ const resolveCombinedTestMocks = (
   sortStringSet(
     toReadonlySet([
       ...scopeMocks,
-      ...resolveMockedComponentsInNodes(collectTsNodes(body, fileEnv.sf), {
+      ...resolveMockedComponentsInNodes(collectTsNodes(fileEnv.sf)(body), {
         sf: fileEnv.sf,
         checker: fileEnv.checker,
         graph: fileEnv.graph,
@@ -2775,7 +2775,7 @@ const assembleExtractedTestCase = (
   { body, walkCtx }: Readonly<{ body: ts.ConciseBody; walkCtx: ScopeWalkContext }>,
 ) => {
   const { fileEnv, describeStack } = walkCtx;
-  const loc = resolveTsNodeLocation(callNode, fileEnv.sf);
+  const loc = resolveTsNodeLocation(fileEnv.sf)(callNode);
   return {
     id: formatTestId(fileEnv.fileName, formatNodeStart(callNode, fileEnv.sf)),
     name,
@@ -3986,7 +3986,6 @@ export const analyzeTestScope = ((
   program: ts.Program,
   options: TestScopeOptions = DEFAULT_TEST_SCOPE_OPTIONS,
 ) =>
-  memoizeByProgramAndKey(analysisCache, (p) => computeTestScopeAnalysis(p, options))(
-    program,
+  memoizeByProgramAndKey(analysisCache)((p) => computeTestScopeAnalysis(p, options))(program)(
     serializeOptionsKey(options),
   )) satisfies (program: ts.Program, options?: TestScopeOptions) => TestScopeAnalysis;

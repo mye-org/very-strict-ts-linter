@@ -1,10 +1,17 @@
 import { AST_NODE_TYPES, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import { flow } from "fp-ts/lib/function.js";
 
-export const isEsTreeAnonymousFunctionNode = ((node: TSESTree.Node) =>
-  node.type === AST_NODE_TYPES.ArrowFunctionExpression ||
-  node.type === AST_NODE_TYPES.FunctionExpression) satisfies (node: TSESTree.Node) => boolean;
+const isArrowFunctionNode = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.ArrowFunctionExpression;
+
+const isFunctionExprNode = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.FunctionExpression;
+
+export const isEsTreeAnonymousFunctionNode = Pred.or(isArrowFunctionNode)(
+  isFunctionExprNode,
+) satisfies (node: TSESTree.Node) => boolean;
 
 export const isEsTreeFunctionNode = ((node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.FunctionDeclaration ||

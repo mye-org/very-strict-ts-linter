@@ -29,12 +29,11 @@ const toRegexEntry = (node: ts.Node) =>
     : O.none;
 
 const collectFileRegexes = flow(
-  (sf: ts.SourceFile) => collectTsNodes(sf, sf),
+  (sf: ts.SourceFile) => collectTsNodes(sf)(sf),
   RA.filterMap(toRegexEntry),
 );
 
-const resolveProgramRegexes = memoizeByProgram(
-  regexCountCache,
+const resolveProgramRegexes = memoizeByProgram(regexCountCache)(
   flow(collectProjectSourceFiles, RA.flatMap(collectFileRegexes)),
 );
 
@@ -45,7 +44,7 @@ const collectMatchingRegexFiles = (
   env: ValidationEnv,
 ) =>
   RA.filterMap((entry: Readonly<Record<"text" | "file", string>>) =>
-    entry.text === pattern && !isMatchingAnyPattern(entry.file, env.voPatterns)
+    entry.text === pattern && !isMatchingAnyPattern(env.voPatterns)(entry.file)
       ? O.some(entry.file)
       : O.none,
   )(resolveProgramRegexes(env.services.program));
@@ -76,7 +75,7 @@ const isConstructorMethod = (fn: TSESTree.Node) =>
 
 const isBrandedOrContainsBranded = (retType: ts.Type, checker: ts.TypeChecker) =>
   isBrandedOrNewtypeTsType(retType) ||
-  RA.some(isBrandedOrNewtypeTsType)(unwrapContainerTsTypes(retType, checker));
+  RA.some(isBrandedOrNewtypeTsType)(unwrapContainerTsTypes(checker)(retType));
 
 const isBrandedSignature = (sig: ts.Signature, checker: ts.TypeChecker) =>
   isBrandedOrContainsBranded(checker.getReturnTypeOfSignature(sig), checker);
@@ -131,7 +130,7 @@ type ValidationEnv = Readonly<{
 }>;
 
 const isInsideVoFactory = (node: TSESTree.Node, env: ValidationEnv) =>
-  isMatchingAnyPattern(env.sourceFile.fileName, env.voPatterns) || hasVoFactoryAncestor(node, env.services);
+  isMatchingAnyPattern(env.voPatterns)(env.sourceFile.fileName) || hasVoFactoryAncestor(node, env.services);
 
 const hasMemberPropertyIn = (
   member: TSESTree.MemberExpression,

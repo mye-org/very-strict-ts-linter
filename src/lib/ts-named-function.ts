@@ -1,6 +1,7 @@
 import * as Apply from "fp-ts/lib/Apply.js";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as Ref from "fp-ts/lib/Refinement.js";
 import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
 
@@ -27,10 +28,7 @@ const extractFunctionDeclSignature = flow(
   })),
 );
 
-const isFunctionLikeInit = (
-  expr: ts.Expression,
-): expr is ts.ArrowFunction | ts.FunctionExpression =>
-  ts.isArrowFunction(expr) || ts.isFunctionExpression(expr);
+const isFunctionLikeInit = Ref.or(ts.isFunctionExpression)(ts.isArrowFunction);
 
 const resolveFunctionLikeInit = flow(
   (decl: ts.VariableDeclaration) => decl.initializer,

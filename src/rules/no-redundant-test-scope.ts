@@ -131,7 +131,7 @@ const resolveMatchingTestFile = (
 ) =>
   flow(
     (programNode: TSESTree.Program) => resolveProgramFileName(programNode, services),
-    O.fromPredicate((name: string) => isMatchingAnyPattern(name, testPatterns)),
+    O.fromPredicate(isMatchingAnyPattern(testPatterns)),
   );
 
 const checkProgram = (env: TestScopeEnv) => (programNode: TSESTree.Program) => {

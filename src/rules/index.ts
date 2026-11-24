@@ -33,6 +33,7 @@ import { noRedundantTestScope } from "./no-redundant-test-scope.js";
 import { noRepeatedGuardClauses } from "./no-repeated-guard-clauses.js";
 import { noScatteredValidation } from "./no-scattered-validation.js";
 import { noSingleCallerExport } from "./no-single-caller-export.js";
+import { noSingleUseMicroFlow } from "./no-single-use-micro-flow.js";
 import { noStringlyTypedDiscriminants } from "./no-stringly-typed-discriminants.js";
 import { noStructuralSkeletonDuplication } from "./no-structural-skeleton-duplication.js";
 import { noThrowOutsideUnsafe } from "./no-throw-outside-unsafe.js";
@@ -40,24 +41,33 @@ import { noTrainWreckNavigation } from "./no-train-wreck-navigation.js";
 import { noUnitSuffixedPrimitives } from "./no-unit-suffixed-primitives.js";
 import { noUnnecessaryLocalConst } from "./no-unnecessary-local-const.js";
 import { noUnsafeReactHooks } from "./no-unsafe-react-hooks.js";
+import { noWrapperLambdaInFlow } from "./no-wrapper-lambda-in-flow.js";
 import { parseDontValidate } from "./parse-dont-validate.js";
 import { preferApplicativeOverIndependentBind } from "./prefer-applicative-over-independent-bind.js";
 import { preferCatamorphismOverRecursiveAdtWalk } from "./prefer-catamorphism-over-recursive-adt-walk.js";
 import { preferConstSatisfies } from "./prefer-const-satisfies.js";
+import { preferCurriedFunctions } from "./prefer-curried-functions.js";
+import { preferDoNotation } from "./prefer-do-notation.js";
 import { preferExhaustiveRecord } from "./prefer-exhaustive-record.js";
 import { preferExpressiveTsPattern } from "./prefer-expressive-ts-pattern.js";
 import { preferFpTsArrayMethods } from "./prefer-fp-ts-array-methods.js";
 import { preferFunctionComposition } from "./prefer-function-composition.js";
 import { preferFunctorFusion } from "./prefer-functor-fusion.js";
+import { preferIoEitherOverTryCatch } from "./prefer-io-either-over-try-catch.js";
+import { preferIoOverVoidCallback } from "./prefer-io-over-void-callback.js";
 import { preferLensOverNestedSpread } from "./prefer-lens-over-nested-spread.js";
 import { preferLowestTestLevel } from "./prefer-lowest-test-level.js";
 import { preferMonadicComposition } from "./prefer-monadic-composition.js";
 import { preferMonadicErrorHandling } from "./prefer-monadic-error-handling.js";
+import { preferMonoidFold } from "./prefer-monoid-fold.js";
 import { preferNonemptyTuple } from "./prefer-nonempty-tuple.js";
 import { preferPointFree } from "./prefer-point-free.js";
+import { preferPredicateCombinators } from "./prefer-predicate-combinators.js";
 import { preferPrismOverGuardedUpdate } from "./prefer-prism-over-guarded-update.js";
 import { preferReaderOverContextDrilling } from "./prefer-reader-over-context-drilling.js";
 import { preferReadonlyCollections } from "./prefer-readonly-collections.js";
+import { preferStateMonadForTraversal } from "./prefer-state-monad-for-traversal.js";
+import { preferTaskEitherOverPromise } from "./prefer-task-either-over-promise.js";
 import { preferTemplateLiteralType } from "./prefer-template-literal-type.js";
 import { preferTraversalOverNestedCollectionUpdate } from "./prefer-traversal-over-nested-collection-update.js";
 import { preferTraverseOverMapSequence } from "./prefer-traverse-over-map-sequence.js";
@@ -109,6 +119,7 @@ export const rules = {
   "no-repeated-guard-clauses": noRepeatedGuardClauses,
   "no-scattered-validation": noScatteredValidation,
   "no-single-caller-export": noSingleCallerExport,
+  "no-single-use-micro-flow": noSingleUseMicroFlow,
   "no-stringly-typed-discriminants": noStringlyTypedDiscriminants,
   "no-structural-skeleton-duplication": noStructuralSkeletonDuplication,
   "no-throw-outside-unsafe": noThrowOutsideUnsafe,
@@ -116,24 +127,33 @@ export const rules = {
   "no-unit-suffixed-primitives": noUnitSuffixedPrimitives,
   "no-unnecessary-local-const": noUnnecessaryLocalConst,
   "no-unsafe-react-hooks": noUnsafeReactHooks,
+  "no-wrapper-lambda-in-flow": noWrapperLambdaInFlow,
   "parse-dont-validate": parseDontValidate,
   "prefer-applicative-over-independent-bind": preferApplicativeOverIndependentBind,
   "prefer-catamorphism-over-recursive-adt-walk": preferCatamorphismOverRecursiveAdtWalk,
   "prefer-const-satisfies": preferConstSatisfies,
+  "prefer-curried-functions": preferCurriedFunctions,
+  "prefer-do-notation": preferDoNotation,
   "prefer-exhaustive-record": preferExhaustiveRecord,
   "prefer-expressive-ts-pattern": preferExpressiveTsPattern,
   "prefer-fp-ts-array-methods": preferFpTsArrayMethods,
   "prefer-function-composition": preferFunctionComposition,
   "prefer-functor-fusion": preferFunctorFusion,
+  "prefer-io-either-over-try-catch": preferIoEitherOverTryCatch,
+  "prefer-io-over-void-callback": preferIoOverVoidCallback,
   "prefer-lens-over-nested-spread": preferLensOverNestedSpread,
   "prefer-lowest-test-level": preferLowestTestLevel,
   "prefer-monadic-composition": preferMonadicComposition,
   "prefer-monadic-error-handling": preferMonadicErrorHandling,
+  "prefer-monoid-fold": preferMonoidFold,
   "prefer-nonempty-tuple": preferNonemptyTuple,
   "prefer-point-free": preferPointFree,
+  "prefer-predicate-combinators": preferPredicateCombinators,
   "prefer-prism-over-guarded-update": preferPrismOverGuardedUpdate,
   "prefer-reader-over-context-drilling": preferReaderOverContextDrilling,
   "prefer-readonly-collections": preferReadonlyCollections,
+  "prefer-state-monad-for-traversal": preferStateMonadForTraversal,
+  "prefer-task-either-over-promise": preferTaskEitherOverPromise,
   "prefer-template-literal-type": preferTemplateLiteralType,
   "prefer-traversal-over-nested-collection-update": preferTraversalOverNestedCollectionUpdate,
   "prefer-traverse-over-map-sequence": preferTraverseOverMapSequence,

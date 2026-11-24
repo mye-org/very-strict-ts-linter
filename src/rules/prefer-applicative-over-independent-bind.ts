@@ -78,7 +78,7 @@ const hasReferenceToAny = ({
   node.type === AST_NODE_TYPES.Identifier
     ? names.has(node.name) && !isNonReferenceIdentifier(node)
     : RA.some((child: TSESTree.Node) => hasReferenceToAny({ node: child, names, visitorKeys }))(
-        collectEstreeChildNodes(node, visitorKeys),
+        collectEstreeChildNodes(visitorKeys)(node),
       );
 
 const isParamUsedInFn = ({

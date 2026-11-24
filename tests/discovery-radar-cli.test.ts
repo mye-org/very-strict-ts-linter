@@ -4,7 +4,7 @@ import path from "node:path";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { pipe } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { formatDiscoveryReport } from "../src/analyzers/radar-report.js";
 import { buildDiscoveryRadarReport } from "../src/cli/discovery-radar.js";
 
@@ -54,35 +54,37 @@ describe("discovery-radar analyzer & report", () => {
       (dir) => path.join(dir, "strict-fp-radar-"),
       (prefix) => fs.mkdtempSync(prefix),
     );
-    try {
-      fs.writeFileSync(
-        path.join(tmpDir, "tsconfig.json"),
-        JSON.stringify({
-          compilerOptions: {
-            target: "ES2022",
-            module: "NodeNext",
-            moduleResolution: "NodeNext",
-            lib: ["ES2022"],
-            types: [],
-            strict: true,
-            skipLibCheck: true,
-          },
-          include: ["*.ts"],
-        }),
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "drilling.ts"),
-        `
+    onTestFinished(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          lib: ["ES2022"],
+          types: [],
+          strict: true,
+          skipLibCheck: true,
+        },
+        include: ["*.ts"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "drilling.ts"),
+      `
           export type AppEnv = { readonly apiUrl: string; readonly timeoutMs: number };
           export const leaf = (env: AppEnv) => env.apiUrl;
           export const layer3 = (env: AppEnv) => leaf(env);
           export const layer2 = (env: AppEnv) => layer3(env);
           export const layer1 = (env: AppEnv) => layer2(env);
         `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "skeletons.ts"),
-        `
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "skeletons.ts"),
+      `
           declare const pipe: (...args: ReadonlyArray<unknown>) => unknown;
           declare const TE: {
             tryCatch: (a: unknown, b: unknown) => unknown;
@@ -95,10 +97,10 @@ describe("discovery-radar analyzer & report", () => {
           export const loadInvoice = (id: string) =>
             pipe(TE.tryCatch(() => id, (e: unknown) => e), TE.flatMap((x: unknown) => x), TE.map((x: unknown) => x), TE.mapLeft((e: unknown) => e));
         `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "expr.ts"),
-        `
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "expr.ts"),
+      `
           export type Expr =
             | { readonly _tag: "Lit"; readonly value: number }
             | { readonly _tag: "Add"; readonly left: Expr; readonly right: Expr };
@@ -107,24 +109,21 @@ describe("discovery-radar analyzer & report", () => {
           export const showExpr = (e: Expr): string =>
             e._tag === "Lit" ? String(e.value) : showExpr(e.left) + "+" + showExpr(e.right);
         `,
-      );
+    );
 
-      const fpReport = pipe(
-        path.join(tmpDir, "tsconfig.json"),
-        loadSampleProgram,
-        buildDiscoveryRadarReport,
-      );
+    const fpReport = pipe(
+      path.join(tmpDir, "tsconfig.json"),
+      loadSampleProgram,
+      buildDiscoveryRadarReport,
+    );
 
-      expect(pipe(fpReport.contextDrillingChains, RA.some((c) => c.typeName === "AppEnv" && c.depth === 3))).toBe(true);
-      expect(fpReport.skeletonDuplications.length).toBeGreaterThanOrEqual(1);
-      expect(pipe(fpReport.catamorphismCandidates, RA.some((c) => c.adtName === "Expr" && c.walkers.length === 2))).toBe(true);
+    expect(pipe(fpReport.contextDrillingChains, RA.some((c) => c.typeName === "AppEnv" && c.depth === 3))).toBe(true);
+    expect(fpReport.skeletonDuplications.length).toBeGreaterThanOrEqual(1);
+    expect(pipe(fpReport.catamorphismCandidates, RA.some((c) => c.adtName === "Expr" && c.walkers.length === 2))).toBe(true);
 
-      const md = formatDiscoveryReport(fpReport, "markdown");
-      expect(md).toContain("AppEnv");
-      expect(md).toContain("foldExpr");
-      expect(md).toContain("TE.tryCatch(2)");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    const md = formatDiscoveryReport(fpReport, "markdown");
+    expect(md).toContain("AppEnv");
+    expect(md).toContain("foldExpr");
+    expect(md).toContain("TE.tryCatch(2)");
   });
 });

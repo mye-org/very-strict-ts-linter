@@ -1,4 +1,5 @@
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RNEA from "fp-ts/lib/ReadonlyNonEmptyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
@@ -91,29 +92,27 @@ const resolveValueDecl = flow(
   O.fromNullable,
 );
 
-const resolveSymbolDecl = flow(
-  (sym: ts.Symbol) => ({ sym, valueDecl: resolveValueDecl(sym) }),
-  ({ sym, valueDecl }) => O.alt(() => resolveFirstSymbolDecl(sym))(valueDecl),
-);
+const resolveSymbolDecl = (sym: ts.Symbol) =>
+  O.alt(() => resolveFirstSymbolDecl(sym))(resolveValueDecl(sym));
 
-const resolveUnwrappedAtDecl = (sym: ts.Symbol, checker: ts.TypeChecker) =>
+const resolveUnwrappedAtDecl = (checker: ts.TypeChecker) => (sym: ts.Symbol) =>
   flow(
     (decl: ts.Declaration) => checker.getTypeOfSymbolAtLocation(sym, decl),
-    (t) => unwrapContainerTsTypes(t, checker),
+    unwrapContainerTsTypes(checker),
   );
 
-const resolveSymbolUnwrappedTypesFor = (sym: ts.Symbol, checker: ts.TypeChecker) =>
+const resolveSymbolUnwrappedTypesFor = (checker: ts.TypeChecker) => (sym: ts.Symbol) =>
   flow(
     resolveSymbolDecl,
-    O.map(resolveUnwrappedAtDecl(sym, checker)),
+    O.map(resolveUnwrappedAtDecl(checker)(sym)),
     O.getOrElseW(() => []),
   );
 
-const resolveSymbolUnwrappedTypes = (sym: ts.Symbol, checker: ts.TypeChecker) =>
-  resolveSymbolUnwrappedTypesFor(sym, checker)(sym);
+const resolveSymbolUnwrappedTypes = (checker: ts.TypeChecker) => (sym: ts.Symbol) =>
+  resolveSymbolUnwrappedTypesFor(checker)(sym)(sym);
 
-const collectPropUnwrappedNames = (prop: ts.Symbol, checker: ts.TypeChecker) =>
-  extractComplexEntityNames(resolveSymbolUnwrappedTypes(prop, checker));
+const collectPropUnwrappedNames = (checker: ts.TypeChecker) => (prop: ts.Symbol) =>
+  extractComplexEntityNames(resolveSymbolUnwrappedTypes(checker)(prop));
 
 type NodeAndFile = Readonly<{ node: ts.Node; sf: ts.SourceFile }>;
 
@@ -123,55 +122,52 @@ const hasNodeAggregateSuffix = flow(
   O.exists((name) => hasAggregateSuffix(name.text)),
 );
 
-const classifyCandidateOrigin = (
-  node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration,
-  fileName: string,
-) =>
-  hasNodeAggregateSuffix(node) ||
-  hasAggregateJsDoc(node) ||
-  isMatchingAnyPattern(fileName, DEFAULT_AGGREGATE_PATHS)
-    ? ("explicit" as const)
-    : ("inferred" as const);
+const classifyCandidateOrigin =
+  (fileName: string) =>
+  (node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration) =>
+    hasNodeAggregateSuffix(node) ||
+    hasAggregateJsDoc(node) ||
+    isMatchingAnyPattern(DEFAULT_AGGREGATE_PATHS)(fileName)
+      ? ("explicit" as const)
+      : ("inferred" as const);
 
 const extractPropNamesForNode = (checker: ts.TypeChecker) =>
   flow(
     (node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration) =>
       checker.getTypeAtLocation(node).getProperties(),
-    RA.flatMap((prop: ts.Symbol) => collectPropUnwrappedNames(prop, checker)),
+    RA.flatMap(collectPropUnwrappedNames(checker)),
     RA.uniq(S.Eq),
   );
 
-const collectReferencedTypes = (
-  node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration,
-  checker: ts.TypeChecker,
-) => extractPropNamesForNode(checker)(node);
+const collectReferencedTypes =
+  (checker: ts.TypeChecker) =>
+  (node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration) =>
+    extractPropNamesForNode(checker)(node);
 
 const buildAggregateCandidate =
   (checker: ts.TypeChecker) =>
-  (
-    name: string,
-    {
-      node,
-      sf,
-    }: Readonly<{
-      node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration;
-      sf: ts.SourceFile;
-    }>,
-  ) => ({
+  (name: string) =>
+  ({
+    node,
+    sf,
+  }: Readonly<{
+    node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration;
+    sf: ts.SourceFile;
+  }>) => ({
     name,
     fileName: sf.fileName,
-    origin: classifyCandidateOrigin(node, sf.fileName),
-    referencedTypes: collectReferencedTypes(node, checker),
+    origin: classifyCandidateOrigin(sf.fileName)(node),
+    referencedTypes: collectReferencedTypes(checker)(node),
   });
 
 const extractCandidate =
   (checker: ts.TypeChecker) =>
   ({ node, sf }: NodeAndFile) =>
     isEntityDecl(node) && node.name && !hasRepoSuffix(node.name.text)
-      ? O.some<AggregateCandidate>(buildAggregateCandidate(checker)(node.name.text, { node, sf }))
+      ? O.some<AggregateCandidate>(buildAggregateCandidate(checker)(node.name.text)({ node, sf }))
       : O.none;
 
-const extractCallSignaturesForProp = (prop: ts.Symbol, checker: ts.TypeChecker) =>
+const extractCallSignaturesForProp = (checker: ts.TypeChecker) => (prop: ts.Symbol) =>
   flow(
     resolveSymbolDecl,
     O.map((decl: ts.Declaration) =>
@@ -180,27 +176,27 @@ const extractCallSignaturesForProp = (prop: ts.Symbol, checker: ts.TypeChecker) 
     O.getOrElseW(() => []),
   );
 
-const collectSymbolCallSignatures = (prop: ts.Symbol, checker: ts.TypeChecker) =>
-  extractCallSignaturesForProp(prop, checker)(prop);
+const collectSymbolCallSignatures = (checker: ts.TypeChecker) => (prop: ts.Symbol) =>
+  extractCallSignaturesForProp(checker)(prop)(prop);
 
-const collectSigParamUnwrappedTypes = (sig: ts.Signature, checker: ts.TypeChecker) =>
-  RA.flatMap((p: ts.Symbol) => resolveSymbolUnwrappedTypes(p, checker))(sig.getParameters());
+const collectSigParamUnwrappedTypes = (checker: ts.TypeChecker) => (sig: ts.Signature) =>
+  RA.flatMap(resolveSymbolUnwrappedTypes(checker))(sig.getParameters());
 
-const collectSignatureDomainTypes = (sig: ts.Signature, checker: ts.TypeChecker) => [
-  ...unwrapContainerTsTypes(checker.getReturnTypeOfSignature(sig), checker),
-  ...collectSigParamUnwrappedTypes(sig, checker),
+const collectSignatureDomainTypes = (checker: ts.TypeChecker) => (sig: ts.Signature) => [
+  ...unwrapContainerTsTypes(checker)(checker.getReturnTypeOfSignature(sig)),
+  ...collectSigParamUnwrappedTypes(checker)(sig),
 ];
 
 const filterRepoEntities = (checker: ts.TypeChecker) =>
   flow(
-    RA.flatMap((prop: ts.Symbol) => collectSymbolCallSignatures(prop, checker)),
-    RA.flatMap((sig: ts.Signature) => collectSignatureDomainTypes(sig, checker)),
+    RA.flatMap(collectSymbolCallSignatures(checker)),
+    RA.flatMap(collectSignatureDomainTypes(checker)),
     extractComplexEntityNames,
     RA.filter((name) => !hasRepoSuffix(name)),
     RA.uniq(S.Eq),
   );
 
-const extractRepoSignatureEntities = (type: ts.Type, checker: ts.TypeChecker) =>
+const extractRepoSignatureEntities = (checker: ts.TypeChecker) => (type: ts.Type) =>
   filterRepoEntities(checker)(type.getProperties());
 
 const extractRepoCandidate =
@@ -210,16 +206,14 @@ const extractRepoCandidate =
       ? O.some<RepoCandidate>({
           repoName: node.name.text,
           fileName: sf.fileName,
-          entityTypes: extractRepoSignatureEntities(checker.getTypeAtLocation(node), checker),
+          entityTypes: extractRepoSignatureEntities(checker)(checker.getTypeAtLocation(node)),
         })
       : O.none;
 
-const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
+const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf)(sf);
 
-const pairFileNodes = flow(
-  (sf: ts.SourceFile) => ({ sf, nodes: collectFileNodes(sf) }),
-  ({ sf, nodes }) => RA.map((node: ts.Node) => ({ node, sf }))(nodes),
-);
+const pairFileNodes = (sf: ts.SourceFile) =>
+  RA.map((node: ts.Node) => ({ node, sf }))(collectFileNodes(sf));
 
 const collectNodesAndFiles = flow(collectProjectSourceFiles, RA.flatMap(pairFileNodes));
 
@@ -232,16 +226,15 @@ const collectAggregateGraph = (program: ts.Program) => {
   };
 };
 
-const resolveProgramGraph = memoizeByProgram(aggregateGraphCache, collectAggregateGraph);
+const resolveProgramGraph = memoizeByProgram(aggregateGraphCache)(collectAggregateGraph);
 
 const toOwnedChildPair =
-  (aggName: string, aggregateRoots: ReadonlySet<string>) => (child: string) =>
+  (aggregateRoots: ReadonlySet<string>) => (aggName: string) => (child: string) =>
     child !== aggName && !aggregateRoots.has(child) ? O.some([child, aggName] as const) : O.none;
 
-const extractAggregateChildPairs = (
-  agg: AggregateCandidate,
-  aggregateRoots: ReadonlySet<string>,
-) => RA.filterMap(toOwnedChildPair(agg.name, aggregateRoots))(agg.referencedTypes);
+const extractAggregateChildPairs =
+  (aggregateRoots: ReadonlySet<string>) => (agg: AggregateCandidate) =>
+    RA.filterMap(toOwnedChildPair(aggregateRoots)(agg.name))(agg.referencedTypes);
 
 const extractUniqueParents = flow(
   RA.map(([, parent]: readonly [string, string]) => parent),
@@ -251,94 +244,84 @@ const extractUniqueParents = flow(
 const groupChildParents = (aggregateRoots: ReadonlySet<string>) =>
   flow(
     RA.filter((c: AggregateCandidate) => aggregateRoots.has(c.name)),
-    RA.flatMap((agg: AggregateCandidate) => extractAggregateChildPairs(agg, aggregateRoots)),
+    RA.flatMap(extractAggregateChildPairs(aggregateRoots)),
     RNEA.groupBy(([child]) => child),
     RR.map(extractUniqueParents),
   );
 
-const computeChildOwnership = (
-  candidates: ReadonlyArray<AggregateCandidate>,
-  aggregateRoots: ReadonlySet<string>,
-) => groupChildParents(aggregateRoots)(candidates);
+const computeChildOwnership =
+  (aggregateRoots: ReadonlySet<string>) => (candidates: ReadonlyArray<AggregateCandidate>) =>
+    groupChildParents(aggregateRoots)(candidates);
 
 type RootResolutionConfig = Readonly<{
   readonly explicitOptionRoots: ReadonlyArray<string>;
   readonly aggregatePathPatterns: ReadonlyArray<string>;
 }>;
 
-const isExplicitCandidate = (
-  c: AggregateCandidate,
-  aggregatePathPatterns: ReadonlyArray<string>,
-) =>
-  c.origin === "explicit" ||
-  (aggregatePathPatterns.length > 0 && isMatchingAnyPattern(c.fileName, aggregatePathPatterns));
+const isExplicitCandidate =
+  (aggregatePathPatterns: ReadonlyArray<string>) => (c: AggregateCandidate) =>
+    c.origin === "explicit" ||
+    (aggregatePathPatterns.length > 0 && isMatchingAnyPattern(aggregatePathPatterns)(c.fileName));
 
 const extractExplicitCandidateName =
   (aggregatePathPatterns: ReadonlyArray<string>) => (c: AggregateCandidate) =>
-    isExplicitCandidate(c, aggregatePathPatterns) ? O.some(c.name) : O.none;
+    isExplicitCandidate(aggregatePathPatterns)(c) ? O.some(c.name) : O.none;
 
-const collectExplicitRootSet = (
-  candidates: ReadonlyArray<AggregateCandidate>,
-  { explicitOptionRoots, aggregatePathPatterns }: RootResolutionConfig,
-) =>
-  new Set([
-    ...explicitOptionRoots,
-    ...RA.filterMap(extractExplicitCandidateName(aggregatePathPatterns))(candidates),
-  ]);
+const collectExplicitRootSet =
+  ({ explicitOptionRoots, aggregatePathPatterns }: RootResolutionConfig) =>
+  (candidates: ReadonlyArray<AggregateCandidate>) =>
+    new Set([
+      ...explicitOptionRoots,
+      ...RA.filterMap(extractExplicitCandidateName(aggregatePathPatterns))(candidates),
+    ]);
 
-const collectOwnedByExplicitSet = (
-  candidates: ReadonlyArray<AggregateCandidate>,
-  explicitSet: ReadonlySet<string>,
-) =>
-  new Set(
-    RA.flatMap((c: AggregateCandidate) => c.referencedTypes)(
-      RA.filter((c: AggregateCandidate) => explicitSet.has(c.name))(candidates),
-    ),
-  );
+const collectOwnedByExplicitSet =
+  (explicitSet: ReadonlySet<string>) => (candidates: ReadonlyArray<AggregateCandidate>) =>
+    new Set(
+      RA.flatMap((c: AggregateCandidate) => c.referencedTypes)(
+        RA.filter((c: AggregateCandidate) => explicitSet.has(c.name))(candidates),
+      ),
+    );
 
-const isInferredRepoRoot = (name: string, ownedByExplicit: ReadonlySet<string>) =>
+const isInferredRepoRoot = (ownedByExplicit: ReadonlySet<string>) => (name: string) =>
   !ownedByExplicit.has(name) && !hasIdSuffix(name);
 
-const collectInferredRepoRoots = (
-  repos: ReadonlyArray<RepoCandidate>,
-  ownedByExplicit: ReadonlySet<string>,
-) =>
-  RA.filter((name: string) => isInferredRepoRoot(name, ownedByExplicit))(
-    RA.flatMap((r: RepoCandidate) => r.entityTypes)(repos),
-  );
+const collectInferredRepoRoots =
+  (ownedByExplicit: ReadonlySet<string>) => (repos: ReadonlyArray<RepoCandidate>) =>
+    RA.filter(isInferredRepoRoot(ownedByExplicit))(
+      RA.flatMap((r: RepoCandidate) => r.entityTypes)(repos),
+    );
 
-const resolveAggregateRoots = (
-  graph: ProgramAggregateGraph,
-  config: RootResolutionConfig,
-) => {
-  const explicitSet = collectExplicitRootSet(graph.candidates, config);
-  return new Set([
-    ...explicitSet,
-    ...collectInferredRepoRoots(graph.repos, collectOwnedByExplicitSet(graph.candidates, explicitSet)),
-  ]);
-};
+const resolveAggregateRoots =
+  (config: RootResolutionConfig) => (graph: ProgramAggregateGraph) => {
+    const explicitSet = collectExplicitRootSet(config)(graph.candidates);
+    return new Set([
+      ...explicitSet,
+      ...collectInferredRepoRoots(collectOwnedByExplicitSet(explicitSet)(graph.candidates))(
+        graph.repos,
+      ),
+    ]);
+  };
 
 const indexCandidates = flow(
   RA.map((c: AggregateCandidate) => [c.name, c] as const),
   RR.fromEntries,
 );
 
-const buildGraphSummary = (
-  graph: ProgramAggregateGraph,
-  aggregateRoots: ReadonlySet<string>,
-) => {
-  const childOwnership = computeChildOwnership(graph.candidates, aggregateRoots);
-  return {
-    aggregateRoots,
-    childToParentAggregates: childOwnership,
-    repos: graph.repos,
-    isChildEntity: flow(
-      (name: string) => O.fromNullable(childOwnership[name]),
-      O.filter((parents) => parents.length > 0),
-    ),
-    candidateMap: indexCandidates(graph.candidates),
+const buildGraphSummary =
+  (aggregateRoots: ReadonlySet<string>) => (graph: ProgramAggregateGraph) => {
+    const childOwnership = computeChildOwnership(aggregateRoots)(graph.candidates);
+    return {
+      aggregateRoots,
+      childToParentAggregates: childOwnership,
+      repos: graph.repos,
+      isChildEntity: flow(
+        (name: string) => O.fromNullable(childOwnership[name]),
+        O.filter((parents) => parents.length > 0),
+      ),
+      candidateMap: indexCandidates(graph.candidates),
+    };
   };
-};
 
 type AggregateGraphSummary = ReturnType<typeof buildGraphSummary>;
 
@@ -347,32 +330,25 @@ const aggregateSummaryCache = new WeakMap<
   Readonly<Record<string, AggregateGraphSummary>>
 >();
 
-const summarizeWithConfig = (config: RootResolutionConfig) =>
-  flow(
-    (graph: ProgramAggregateGraph) => ({ graph, roots: resolveAggregateRoots(graph, config) }),
-    ({ graph, roots }) => buildGraphSummary(graph, roots),
-  );
+const summarizeWithConfig = (config: RootResolutionConfig) => (graph: ProgramAggregateGraph) =>
+  buildGraphSummary(resolveAggregateRoots(config)(graph))(graph);
 
 const makeAggregateCacheKey = (config: RootResolutionConfig) =>
   `${config.explicitOptionRoots.join(",")}|${config.aggregatePathPatterns.join(",")}`;
 
-export const analyzeAggregateGraph = ((
+export const analyzeAggregateGraph = ((program: ts.Program) =>
+  (config: Partial<RootResolutionConfig> = {}) => {
+    const resolved: RootResolutionConfig = {
+      explicitOptionRoots: O.getOrElseW(() => [])(O.fromNullable(config.explicitOptionRoots)),
+      aggregatePathPatterns: O.getOrElseW(() => DEFAULT_AGGREGATE_PATHS)(
+        O.fromNullable(config.aggregatePathPatterns),
+      ),
+    };
+    return memoizeByProgramAndKey(aggregateSummaryCache)(
+      flow(resolveProgramGraph, summarizeWithConfig(resolved)),
+    )(program)(makeAggregateCacheKey(resolved));
+  }) satisfies (
   program: ts.Program,
-  config: Partial<RootResolutionConfig> = {},
-) => {
-  const resolved: RootResolutionConfig = {
-    explicitOptionRoots: O.getOrElseW(() => [])(O.fromNullable(config.explicitOptionRoots)),
-    aggregatePathPatterns: O.getOrElseW(() => DEFAULT_AGGREGATE_PATHS)(
-      O.fromNullable(config.aggregatePathPatterns),
-    ),
-  };
-  return memoizeByProgramAndKey(
-    aggregateSummaryCache,
-    flow(resolveProgramGraph, summarizeWithConfig(resolved)),
-  )(program, makeAggregateCacheKey(resolved));
-}) satisfies (
-  program: ts.Program,
-  config?: Partial<RootResolutionConfig>,
-) => AggregateGraphSummary;
+) => (config?: Partial<RootResolutionConfig>) => AggregateGraphSummary;
 
 

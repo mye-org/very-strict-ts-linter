@@ -102,9 +102,8 @@ const isInsideCollectionCallback = flow(
 const isExemptEnclosingFunction = (node: TSESTree.Node) =>
   isInsideUnsafeOrMustFunction(node) ||
   hasMatchingEnclosingFunctionName(
-    node,
     (name) => isUnsafeOrMustName(name) || isExemptPrefixName(name),
-  ) ||
+  )(node) ||
   isInsideCollectionCallback(node);
 
 const isStringTsType = (type: ts.Type) => (type.flags & ts.TypeFlags.String) !== 0;

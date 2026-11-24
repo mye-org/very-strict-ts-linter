@@ -92,7 +92,7 @@ const checkProgram =
     scopeOptions: ReturnType<typeof resolveScopeOptions>,
   ) => {
     const check = flow(
-      O.fromPredicate((fileName: string) => isMatchingAnyPattern(fileName, scopeOptions.testPatterns)),
+      O.fromPredicate(isMatchingAnyPattern(scopeOptions.testPatterns)),
       O.map((fileName) => {
         reportLowestLevelFindings(services, report)(fileName, scopeOptions);
       }),

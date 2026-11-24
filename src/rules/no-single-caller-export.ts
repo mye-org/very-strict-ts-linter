@@ -159,8 +159,7 @@ const runCachedSingleCallerAnalysis = (
   program: ts.Program,
   resolved: SingleCallerOptions,
 ) =>
-  memoizeByProgramAndKey(singleCallerCache, (p) => computeSingleCaller(p, resolved))(
-    program,
+  memoizeByProgramAndKey(singleCallerCache)((p) => computeSingleCaller(p, resolved))(program)(
     serializeSingleCallerOptions(resolved),
   );
 
@@ -171,8 +170,8 @@ const isEligibleTargetFile = (
   const fileName = normalizeFilePath(sf.fileName);
   return (
     !isBarrelFile(sf) &&
-    !isMatchingAnyPattern(fileName, resolved.testPatterns) &&
-    !isMatchingAnyPattern(fileName, resolved.entryPoints)
+    !isMatchingAnyPattern(resolved.testPatterns)(fileName) &&
+    !isMatchingAnyPattern(resolved.entryPoints)(fileName)
   );
 };
 

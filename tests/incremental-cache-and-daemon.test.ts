@@ -5,7 +5,7 @@ import { clearCaches } from "@typescript-eslint/parser";
 import { ESLint } from "eslint";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { runDiscoveryRadar } from "../src/cli/discovery-radar.js";
 import {
   requestDaemonStatus,
@@ -19,10 +19,9 @@ import {
 
 const tmpRoot = os.tmpdir();
 
-const createTempWorkspace = flow(
-  (prefix: string) => path.join(tmpRoot, prefix),
-  (prefixPath) => fs.mkdtempSync(prefixPath),
-);
+const joinTmpRoot = (prefix: string) => path.join(tmpRoot, prefix);
+
+const createTempWorkspace = flow(joinTmpRoot, fs.mkdtempSync);
 
 const extractSummaryTiers = RA.map((s: TierRunSummary) => s.tier);
 
@@ -221,65 +220,64 @@ describe("incremental caching, tsbuildinfo reuse, and workspace daemon", () => {
   it("uses ts.createIncrementalProgram with .tsbuildinfo and content-hashed report caching in discovery-radar", () => {
     const tmpDir = createTempWorkspace("strict-fp-radar-inc-");
     const cacheDir = path.join(tmpDir, ".radar-cache");
-    try {
-      fs.writeFileSync(
-        path.join(tmpDir, "tsconfig.json"),
-        JSON.stringify({
-          compilerOptions: {
-            target: "ES2022",
-            module: "NodeNext",
-            moduleResolution: "NodeNext",
-            strict: true,
-          },
-          include: ["*.ts"],
-        }),
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "drilling.ts"),
-        `
+    onTestFinished(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+        },
+        include: ["*.ts"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "drilling.ts"),
+      `
           export type AppEnv = { readonly apiUrl: string; readonly timeoutMs: number };
           export const leaf = (env: AppEnv) => env.apiUrl;
           export const layer3 = (env: AppEnv) => leaf(env);
           export const layer2 = (env: AppEnv) => layer3(env);
           export const layer1 = (env: AppEnv) => layer2(env);
         `,
-      );
+    );
 
-      // 1. Cold run persists .tsbuildinfo and cached report
-      const first = runDiscoveryRadar({
-        cwd: tmpDir,
-        tsconfig: "tsconfig.json",
-        format: "json",
-        cacheLocation: cacheDir,
-      });
-      expect(first.cacheHit).toBe(false);
-      expect(first.tsBuildInfoPath).toBeDefined();
-      expect(first.tsBuildInfoPath && fs.existsSync(first.tsBuildInfoPath)).toBe(true);
-      expect(first.report.contextDrillingChains.length).toBeGreaterThanOrEqual(1);
+    // 1. Cold run persists .tsbuildinfo and cached report
+    const first = runDiscoveryRadar({
+      cwd: tmpDir,
+      tsconfig: "tsconfig.json",
+      format: "json",
+      cacheLocation: cacheDir,
+    });
+    expect(first.cacheHit).toBe(false);
+    expect(first.tsBuildInfoPath).toBeDefined();
+    expect(first.tsBuildInfoPath && fs.existsSync(first.tsBuildInfoPath)).toBe(true);
+    expect(first.report.contextDrillingChains.length).toBeGreaterThanOrEqual(1);
 
-      // 2. Unchanged run hits cached report
-      const second = runDiscoveryRadar({
-        cwd: tmpDir,
-        tsconfig: "tsconfig.json",
-        format: "json",
-        cacheLocation: cacheDir,
-      });
-      expect(second.cacheHit).toBe(true);
-      expect(second.report).toEqual(first.report);
+    // 2. Unchanged run hits cached report
+    const second = runDiscoveryRadar({
+      cwd: tmpDir,
+      tsconfig: "tsconfig.json",
+      format: "json",
+      cacheLocation: cacheDir,
+    });
+    expect(second.cacheHit).toBe(true);
+    expect(second.report).toEqual(first.report);
 
-      // 3. Editing source invalidates report cache and updates findings via incremental program
-      fs.writeFileSync(path.join(tmpDir, "drilling.ts"), "export const simple = 42;\n");
-      const third = runDiscoveryRadar({
-        cwd: tmpDir,
-        tsconfig: "tsconfig.json",
-        format: "json",
-        cacheLocation: cacheDir,
-      });
-      expect(third.cacheHit).toBe(false);
-      expect(third.report.contextDrillingChains).toHaveLength(0);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    // 3. Editing source invalidates report cache and updates findings via incremental program
+    fs.writeFileSync(path.join(tmpDir, "drilling.ts"), "export const simple = 42;\n");
+    const third = runDiscoveryRadar({
+      cwd: tmpDir,
+      tsconfig: "tsconfig.json",
+      format: "json",
+      cacheLocation: cacheDir,
+    });
+    expect(third.cacheHit).toBe(false);
+    expect(third.report.contextDrillingChains).toHaveLength(0);
   }, 30_000);
 
   it("keeps Tier 0 BuilderProgram and ESLint warm in a workspace daemon across edits", async () => {

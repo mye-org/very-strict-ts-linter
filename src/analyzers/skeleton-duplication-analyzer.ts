@@ -152,12 +152,12 @@ const toPipelineOccurrence = (call: ts.CallExpression, sf: ts.SourceFile) => {
         functionName: findEnclosingFunctionName(call),
         stepCount: steps.length,
         distinctCombinators: countDistinctCombinators(parsedSteps),
-        location: resolveTsNodeLocation(call, sf),
+        location: resolveTsNodeLocation(sf)(call),
       })
     : O.none;
 };
 
-const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
+const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf)(sf);
 
 const collectPipeOrFlowCalls = flow(collectFileNodes, RA.filter(isPipeOrFlowCall));
 
@@ -168,7 +168,7 @@ const extractFilePipelines = flow(
 
 const collectAllProgramPipelines = flow(collectProjectSourceFiles, RA.flatMap(extractFilePipelines));
 
-const collectProgramPipelines = memoizeByProgram(occurrenceCache, collectAllProgramPipelines);
+const collectProgramPipelines = memoizeByProgram(occurrenceCache)(collectAllProgramPipelines);
 
 const groupBySignature = RNEA.groupBy((occ: PipelineOccurrence) => occ.signature);
 
@@ -247,10 +247,9 @@ export const analyzeSkeletonDuplications = ((
   thresholds: Partial<SkeletonThresholds> = {},
 ) => {
   const resolved: SkeletonThresholds = { ...DEFAULT_SKELETON_THRESHOLDS, ...thresholds };
-  return memoizeByProgramAndKey(
-    analysisCache,
+  return memoizeByProgramAndKey(analysisCache)(
     computeSkeletonDuplicationsForThresholds(resolved),
-  )(program, makeSkeletonCacheKey(resolved));
+  )(program)(makeSkeletonCacheKey(resolved));
 }) satisfies (
   program: ts.Program,
   thresholds?: Partial<SkeletonThresholds>,

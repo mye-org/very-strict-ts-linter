@@ -5,7 +5,7 @@ import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { analyzeTestScope, DEFAULT_TEST_SCOPE_OPTIONS } from "../src/analyzers/test-scope-analyzer.js";
 import { noRedundantTestScope } from "../src/rules/no-redundant-test-scope.js";
 import { preferLowestTestLevel } from "../src/rules/prefer-lowest-test-level.js";
@@ -22,10 +22,9 @@ const readSample = (...parts: ReadonlyArray<string>) =>
 
 const tmpRoot = os.tmpdir();
 
-const makeTmpDir = flow(
-  (prefix: string) => path.join(tmpRoot, prefix),
-  (dirPath) => fs.mkdtempSync(dirPath),
-);
+const joinTmpRoot = (prefix: string) => path.join(tmpRoot, prefix);
+
+const makeTmpDir = flow(joinTmpRoot, fs.mkdtempSync);
 
 const loadProgram = (tsconfigPath: string) => {
   const parsed = ts.parseJsonConfigFileContent(
@@ -77,183 +76,183 @@ describe("TestScope analyzer — classifications & static dependency analysis", 
 
   it("flags repeated parsing cases in a single higher-level test even without a separate composition test", () => {
     const tmpDir = makeTmpDir("test-scope-repeated-");
-    try {
-      fs.writeFileSync(
-        path.join(tmpDir, "tsconfig.json"),
-        JSON.stringify({
-          compilerOptions: {
-            target: "ES2022",
-            module: "NodeNext",
-            moduleResolution: "NodeNext",
-            lib: ["ES2022"],
-            types: [],
-            strict: true,
-            skipLibCheck: true,
-          },
-          include: ["./**/*.ts"],
-        }),
-      );
-      fs.writeFileSync(path.join(tmpDir, "test-env.d.ts"), readSample("test-env.d.ts"));
-      fs.writeFileSync(
-        path.join(tmpDir, "parser.ts"),
-        `export const parseAmount = (raw: string): number => Number(raw.slice(1));\n`,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "service.ts"),
-        `import { parseAmount } from "./parser.js";
+    onTestFinished(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          lib: ["ES2022"],
+          types: [],
+          strict: true,
+          skipLibCheck: true,
+        },
+        include: ["./**/*.ts"],
+      }),
+    );
+    fs.writeFileSync(path.join(tmpDir, "test-env.d.ts"), readSample("test-env.d.ts"));
+    fs.writeFileSync(
+      path.join(tmpDir, "parser.ts"),
+      `export const parseAmount = (raw: string): number => Number(raw.slice(1));\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "service.ts"),
+      `import { parseAmount } from "./parser.js";
 export const runOrder = (raw: string) => {
   const amount = parseAmount(raw);
   return { amount, ok: amount > 0 };
 };
 `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "parser.test.ts"),
-        `import { parseAmount } from "./parser.js";
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "parser.test.ts"),
+      `import { parseAmount } from "./parser.js";
 it("parses dollar string", () => {
   expect(parseAmount("$10")).toBe(10);
 });
 `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "service.test.ts"),
-        `import { runOrder } from "./service.js";
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "service.test.ts"),
+      `import { runOrder } from "./service.js";
 it("repeats parsing cases through runOrder", () => {
   expect(runOrder("$10").amount).toBe(10);
   expect(runOrder("$20").amount).toBe(20);
 });
 `,
-      );
+    );
 
-      const prog = loadProgram(path.join(tmpDir, "tsconfig.json"));
-      const result = analyzeTestScope(prog, DEFAULT_TEST_SCOPE_OPTIONS);
-      const serviceTestFile = path.join(tmpDir, "service.test.ts").replace(/\\/g, "/");
-      const findings = result.redundancyByFile[serviceTestFile] ?? [];
-      expect(findings).toHaveLength(1);
-      expect(findings[0]?.kind).toBe("redundantCrossLevelTest");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    const prog = loadProgram(path.join(tmpDir, "tsconfig.json"));
+    const result = analyzeTestScope(prog, DEFAULT_TEST_SCOPE_OPTIONS);
+    const serviceTestFile = path.join(tmpDir, "service.test.ts").replace(/\\/g, "/");
+    const findings = result.redundancyByFile[serviceTestFile] ?? [];
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.kind).toBe("redundantCrossLevelTest");
   });
 
   it("supports vi.mock module-level mocking boundary exemption", () => {
     const tmpDir = makeTmpDir("test-scope-vimock-");
-    try {
-      fs.writeFileSync(
-        path.join(tmpDir, "tsconfig.json"),
-        JSON.stringify({
-          compilerOptions: {
-            target: "ES2022",
-            module: "NodeNext",
-            moduleResolution: "NodeNext",
-            lib: ["ES2022"],
-            types: [],
-            strict: true,
-            skipLibCheck: true,
-          },
-          include: ["./**/*.ts"],
-        }),
-      );
-      fs.writeFileSync(path.join(tmpDir, "test-env.d.ts"), readSample("test-env.d.ts"));
-      fs.writeFileSync(
-        path.join(tmpDir, "parser.ts"),
-        `export const parseAmount = (raw: string): number => Number(raw.slice(1));\n`,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "service.ts"),
-        `import { parseAmount } from "./parser.js";
+    onTestFinished(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          lib: ["ES2022"],
+          types: [],
+          strict: true,
+          skipLibCheck: true,
+        },
+        include: ["./**/*.ts"],
+      }),
+    );
+    fs.writeFileSync(path.join(tmpDir, "test-env.d.ts"), readSample("test-env.d.ts"));
+    fs.writeFileSync(
+      path.join(tmpDir, "parser.ts"),
+      `export const parseAmount = (raw: string): number => Number(raw.slice(1));\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "service.ts"),
+      `import { parseAmount } from "./parser.js";
 export const runOrder = (raw: string) => {
   const amount = parseAmount(raw);
   return { amount, ok: amount > 0 };
 };
 `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "parser.test.ts"),
-        `import { parseAmount } from "./parser.js";
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "parser.test.ts"),
+      `import { parseAmount } from "./parser.js";
 it("parses dollar string", () => {
   expect(parseAmount("$10")).toBe(10);
 });
 `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "service.test.ts"),
-        `import { runOrder } from "./service.js";
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "service.test.ts"),
+      `import { runOrder } from "./service.js";
 vi.mock("./parser.js");
 it("returns mocked parser amount", () => {
   expect(runOrder("$10").amount).toBe(10);
   expect(runOrder("$20").amount).toBe(20);
 });
 `,
-      );
+    );
 
-      const prog = loadProgram(path.join(tmpDir, "tsconfig.json"));
-      const result = analyzeTestScope(prog, DEFAULT_TEST_SCOPE_OPTIONS);
-      const serviceTestFile = path.join(tmpDir, "service.test.ts").replace(/\\/g, "/");
-      expect(result.redundancyByFile[serviceTestFile] ?? []).toHaveLength(0);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    const prog = loadProgram(path.join(tmpDir, "tsconfig.json"));
+    const result = analyzeTestScope(prog, DEFAULT_TEST_SCOPE_OPTIONS);
+    const serviceTestFile = path.join(tmpDir, "service.test.ts").replace(/\\/g, "/");
+    expect(result.redundancyByFile[serviceTestFile] ?? []).toHaveLength(0);
   });
 
   it("detects it.each repeated delegated cases and fp-ts Either Left delegated errors", () => {
     const tmpDir = makeTmpDir("test-scope-each-fp-");
-    try {
-      fs.writeFileSync(
-        path.join(tmpDir, "tsconfig.json"),
-        JSON.stringify({
-          compilerOptions: {
-            target: "ES2022",
-            module: "NodeNext",
-            moduleResolution: "NodeNext",
-            lib: ["ES2022"],
-            types: [],
-            strict: true,
-            skipLibCheck: true,
-          },
-          include: ["./**/*.ts"],
-        }),
-      );
-      fs.writeFileSync(path.join(tmpDir, "test-env.d.ts"), readSample("test-env.d.ts"));
-      fs.writeFileSync(
-        path.join(tmpDir, "either.ts"),
-        `export type Either<E, A> = { readonly _tag: "Left"; readonly left: E } | { readonly _tag: "Right"; readonly right: A };
+    onTestFinished(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          lib: ["ES2022"],
+          types: [],
+          strict: true,
+          skipLibCheck: true,
+        },
+        include: ["./**/*.ts"],
+      }),
+    );
+    fs.writeFileSync(path.join(tmpDir, "test-env.d.ts"), readSample("test-env.d.ts"));
+    fs.writeFileSync(
+      path.join(tmpDir, "either.ts"),
+      `export type Either<E, A> = { readonly _tag: "Left"; readonly left: E } | { readonly _tag: "Right"; readonly right: A };
 export const E = {
   left: <E>(left: E): Either<E, never> => ({ _tag: "Left", left }),
   right: <A>(right: A): Either<never, A> => ({ _tag: "Right", right }),
   isLeft: <E, A>(ma: Either<E, A>): boolean => ma._tag === "Left",
 };
 `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "parser.ts"),
-        `import { E, type Either } from "./either.js";
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "parser.ts"),
+      `import { E, type Either } from "./either.js";
 export const safeParsePrice = (raw: string): Either<string, number> =>
   raw.startsWith("$") ? E.right(Number(raw.slice(1))) : E.left("Invalid price");
 `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "workflow.ts"),
-        `import { safeParsePrice } from "./parser.js";
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "workflow.ts"),
+      `import { safeParsePrice } from "./parser.js";
 export const runWorkflow = (raw: string) => {
   const parsed = safeParsePrice(raw);
   return { parsed };
 };
 export const validateOrder = (raw: string) => safeParsePrice(raw);
 `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "parser.test.ts"),
-        `import { E } from "./either.js";
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "parser.test.ts"),
+      `import { E } from "./either.js";
 import { safeParsePrice } from "./parser.js";
 it("returns Left on invalid input", () => {
   expect(E.isLeft(safeParsePrice("bad"))).toBe(true);
 });
 `,
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "workflow.test.ts"),
-        `import { E } from "./either.js";
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "workflow.test.ts"),
+      `import { E } from "./either.js";
 import { runWorkflow, validateOrder } from "./workflow.js";
 it.each([["$10", 10], ["$20", 20]])("repeats parsing through workflow %s", (raw: string, expected: number) => {
   expect(runWorkflow(raw).parsed).toEqual({ _tag: "Right", right: expected });
@@ -265,25 +264,22 @@ it("delegates Left check again through validateOrder", () => {
   expect(E.isLeft(validateOrder("bad"))).toBe(true);
 });
 `,
-      );
+    );
 
-      const prog = loadProgram(path.join(tmpDir, "tsconfig.json"));
-      const result = analyzeTestScope(prog, DEFAULT_TEST_SCOPE_OPTIONS);
-      const workflowTestFile = path.join(tmpDir, "workflow.test.ts").replace(/\\/g, "/");
-      const findings = result.redundancyByFile[workflowTestFile] ?? [];
-      expect(
-        RA.some((f: (typeof findings)[number]) =>
-          f.testName.includes("repeats parsing through workflow"),
-        )(findings),
-      ).toBe(true);
-      expect(
-        RA.some((f: (typeof findings)[number]) =>
-          f.testName.includes("delegates Left check again"),
-        )(findings),
-      ).toBe(true);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    const prog = loadProgram(path.join(tmpDir, "tsconfig.json"));
+    const result = analyzeTestScope(prog, DEFAULT_TEST_SCOPE_OPTIONS);
+    const workflowTestFile = path.join(tmpDir, "workflow.test.ts").replace(/\\/g, "/");
+    const findings = result.redundancyByFile[workflowTestFile] ?? [];
+    expect(
+      RA.some((f: (typeof findings)[number]) =>
+        f.testName.includes("repeats parsing through workflow"),
+      )(findings),
+    ).toBe(true);
+    expect(
+      RA.some((f: (typeof findings)[number]) =>
+        f.testName.includes("delegates Left check again"),
+      )(findings),
+    ).toBe(true);
   });
 });
 

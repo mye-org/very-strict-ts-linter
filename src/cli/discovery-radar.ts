@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import * as E from "fp-ts/lib/Either.js";
+import * as IOE from "fp-ts/lib/IOEither.js";
 import * as ts from "typescript";
 import { analyzeAggregateGraph } from "../analyzers/aggregate-graph-analyzer.js";
 import { analyzeCatamorphisms } from "../analyzers/catamorphism-analyzer.js";
@@ -101,10 +103,10 @@ export const runDiscoveryRadar = ((options: RadarRunOptions = {}) => {
   const format = options.format ?? "markdown";
   const useCache = options.cache !== false;
   const tsconfigPath =
-    resolveTsConfigPath(cwd, options.tsconfig) ??
+    resolveTsConfigPath(cwd)(options.tsconfig) ??
     path.resolve(cwd, options.tsconfig ?? "tsconfig.json");
 
-  const cacheDir = useCache ? resolveCacheDir(cwd, options.cacheLocation) : undefined;
+  const cacheDir = useCache ? resolveCacheDir(cwd)(options.cacheLocation) : undefined;
   const scopeKey = JSON.stringify({ tsconfig: tsconfigPath });
   const fingerprint = useCache
     ? computeProjectFingerprint({
@@ -116,15 +118,11 @@ export const runDiscoveryRadar = ((options: RadarRunOptions = {}) => {
     : undefined;
 
   const tsBuildInfoPath = cacheDir
-    ? resolveTsBuildInfoPath(cacheDir, "radar", tsconfigPath)
+    ? resolveTsBuildInfoPath(cacheDir)("radar")(tsconfigPath)
     : undefined;
 
   if (cacheDir && fingerprint) {
-    const cachedReport = readCachedArtifact<DiscoveryRadarReport>(
-      cacheDir,
-      "radar",
-      scopeKey,
-      fingerprint,
+    const cachedReport = readCachedArtifact(cacheDir)("radar")(scopeKey)(fingerprint)(
       isDiscoveryRadarReport,
     );
     if (cachedReport) {
@@ -168,13 +166,14 @@ export const runDiscoveryRadar = ((options: RadarRunOptions = {}) => {
     });
     program = builderProgram.getProgram();
     const report = buildDiscoveryRadarReport(program);
-    try {
-      builderProgram.emit();
-    } catch {
-      // Best-effort .tsbuildinfo persistence.
-    }
+    IOE.tryCatch(
+      () => {
+        builderProgram.emit();
+      },
+      () => undefined,
+    )();
     if (cacheDir && fingerprint) {
-      writeCachedArtifact(cacheDir, "radar", scopeKey, fingerprint, report);
+      writeCachedArtifact(cacheDir)("radar")(scopeKey)(fingerprint)(report);
     }
     const incrementalResult: RadarRunResult = {
       report,
@@ -203,10 +202,14 @@ const runRadarCli = () => {
 
 const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 if (import.meta.url === entryUrl) {
-  try {
-    runRadarCli();
-  } catch (err: unknown) {
-    console.error(err instanceof Error ? err.message : String(err));
+  const outcome = IOE.tryCatch(
+    () => {
+      runRadarCli();
+    },
+    (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  )();
+  if (E.isLeft(outcome)) {
+    console.error(outcome.left);
     process.exit(1);
   }
 }

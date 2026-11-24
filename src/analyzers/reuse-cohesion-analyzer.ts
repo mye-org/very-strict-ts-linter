@@ -1,6 +1,7 @@
 /* eslint-disable strict-fp/functional-core-boundary -- both exports are pure program analyzers; collectTsNodes uses an internal O(n) accumulator */
 import * as O from "fp-ts/lib/Option.js";
 import * as Ord from "fp-ts/lib/Ord.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RNEA from "fp-ts/lib/ReadonlyNonEmptyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
@@ -139,21 +140,13 @@ const readRecordValues = <T>(record: Readonly<Record<string, T>>) => Object.valu
 
 const clampAtLeastOne = (span: number) => Math.max(1, span);
 
-const measureNodeLineSpan = (sf: ts.SourceFile, decl: ts.Node) =>
+const measureNodeLineSpan = (sf: ts.SourceFile) => (decl: ts.Node) =>
   sf.getLineAndCharacterOfPosition(decl.getEnd()).line -
   sf.getLineAndCharacterOfPosition(decl.getStart(sf)).line +
   1;
 
-const pairDeclWithSourceFile = (exp: RuntimeExport) => ({
-  decl: exp.declaration,
-  sf: exp.declaration.getSourceFile(),
-});
-
-const measureExportDeclarationLines = flow(
-  pairDeclWithSourceFile,
-  ({ sf, decl }) => measureNodeLineSpan(sf, decl),
-  clampAtLeastOne,
-);
+const measureExportDeclarationLines = (exp: RuntimeExport) =>
+  clampAtLeastOne(measureNodeLineSpan(exp.declaration.getSourceFile())(exp.declaration));
 
 const fallbackModulePurity = (filePurity: FilePuritySummary) =>
   match(filePurity.modulePurity)
@@ -161,16 +154,16 @@ const fallbackModulePurity = (filePurity: FilePuritySummary) =>
     .with("pure", "neutral", () => "pure" as const)
     .exhaustive();
 
-const resolveExportPurityByName = (exp: RuntimeExport, filePurity: FilePuritySummary) =>
+const resolveExportPurityByName = (exp: RuntimeExport) => (filePurity: FilePuritySummary) =>
   flow(
     (summary: FilePuritySummary) => O.fromNullable(summary.exportPurityByName[exp.exportName]),
     O.alt(() => O.fromNullable(filePurity.exportPurityByName[exp.localName])),
     O.getOrElseW(() => fallbackModulePurity(filePurity)),
   );
 
-const resolveExportPurity = (exp: RuntimeExport, filePurity: O.Option<FilePuritySummary>) =>
+const resolveExportPurity = (filePurity: O.Option<FilePuritySummary>) => (exp: RuntimeExport) =>
   O.getOrElseW(() => "pure" as const)(
-    O.map((summary: FilePuritySummary) => resolveExportPurityByName(exp, summary)(summary))(
+    O.map((summary: FilePuritySummary) => resolveExportPurityByName(exp)(summary)(summary))(
       filePurity,
     ),
   );
@@ -182,36 +175,31 @@ const indexSourceFilesByPath = (program: ts.Program) =>
     ),
   );
 
-const lookupConsumerModulePurity = (
-  purityAnalysis: ProgramPurityAnalysis,
-  consumerFile: string,
-) =>
-  O.map((summary: FilePuritySummary) => summary.modulePurity)(
-    O.fromNullable(purityAnalysis.files[consumerFile]),
-  );
+const lookupConsumerModulePurity =
+  (purityAnalysis: ProgramPurityAnalysis) => (consumerFile: string) =>
+    O.map((summary: FilePuritySummary) => summary.modulePurity)(
+      O.fromNullable(purityAnalysis.files[consumerFile]),
+    );
 
 const isImpureStatus = (status: ModulePurityStatus) => status === "impure";
 
 const isPurityBoundaryRespected = (context: SingleCallerContext) =>
   context.options.respectPurityBoundary;
 
-const isPureExportConsumedByImpureModule = (
-  input: ExportEvaluationInput,
-  soleConsumer: string,
-) => {
-  const purityAnalysis = input.context.getPurityAnalysis();
-  return (
-    resolveExportPurity(
-      input.runtimeExport,
-      O.fromNullable(purityAnalysis.files[input.fileGraph.fileName]),
-    ) === "pure" &&
-    O.exists(isImpureStatus)(lookupConsumerModulePurity(purityAnalysis, soleConsumer))
-  );
-};
+const isPureExportConsumedByImpureModule =
+  (input: ExportEvaluationInput) => (soleConsumer: string) => {
+    const purityAnalysis = input.context.getPurityAnalysis();
+    return (
+      resolveExportPurity(O.fromNullable(purityAnalysis.files[input.fileGraph.fileName]))(
+        input.runtimeExport,
+      ) === "pure" &&
+      O.exists(isImpureStatus)(lookupConsumerModulePurity(purityAnalysis)(soleConsumer))
+    );
+  };
 
-const isBlockedByPurityBoundary = (input: ExportEvaluationInput, soleConsumer: string) =>
+const isBlockedByPurityBoundary = (input: ExportEvaluationInput) => (soleConsumer: string) =>
   isPurityBoundaryRespected(input.context) &&
-  isPureExportConsumedByImpureModule(input, soleConsumer);
+  isPureExportConsumedByImpureModule(input)(soleConsumer);
 
 const readFileLineCount = (consumerFile: string) =>
   flow(
@@ -220,40 +208,38 @@ const readFileLineCount = (consumerFile: string) =>
     O.getOrElse(() => 0),
   );
 
-const lookupConsumerLineCount = (symbolGraph: ProgramSymbolGraph, consumerFile: string) =>
+const lookupConsumerLineCount = (symbolGraph: ProgramSymbolGraph) => (consumerFile: string) =>
   readFileLineCount(consumerFile)(symbolGraph.files);
 
 const readMaxMergedFileLines = (context: SingleCallerContext) =>
   context.options.maxMergedFileLines;
 
-const isBlockedByMergedSize = (input: ExportEvaluationInput, soleConsumer: string) =>
-  lookupConsumerLineCount(input.context.symbolGraph, soleConsumer) +
+const isBlockedByMergedSize = (input: ExportEvaluationInput) => (soleConsumer: string) =>
+  lookupConsumerLineCount(input.context.symbolGraph)(soleConsumer) +
     measureExportDeclarationLines(input.runtimeExport) >
   readMaxMergedFileLines(input.context);
 
 const isTsxPath = (filePath: string) => filePath.endsWith(".tsx");
 
-const isBlockedByViewModelBoundary = (sourceFileName: string, consumerFile: string) =>
+const isBlockedByViewModelBoundary = (sourceFileName: string) => (consumerFile: string) =>
   !isTsxPath(sourceFileName) && isTsxPath(consumerFile);
 
-const isBlockedByStaticGuards = (input: ExportEvaluationInput, soleConsumer: string) =>
-  isBlockedByMergedSize(input, soleConsumer) ||
-  isBlockedByViewModelBoundary(input.fileGraph.fileName, soleConsumer) ||
-  isBlockedByPurityBoundary(input, soleConsumer);
+const isBlockedByStaticGuards = (input: ExportEvaluationInput) => (soleConsumer: string) =>
+  isBlockedByMergedSize(input)(soleConsumer) ||
+  isBlockedByViewModelBoundary(input.fileGraph.fileName)(soleConsumer) ||
+  isBlockedByPurityBoundary(input)(soleConsumer);
 
-const buildTestOnlyFinding = (
-  exp: RuntimeExport,
-  testConsumers: ReadonlyArray<string>,
-) => ({
-  kind: "testOnlyExport" as const,
-  exportName: exp.exportName,
-  fileName: exp.fileName,
-  line: exp.line,
-  locationKey: exp.locationKey,
-  testConsumers,
-});
+const buildTestOnlyFinding =
+  (exp: RuntimeExport) => (testConsumers: ReadonlyArray<string>) => ({
+    kind: "testOnlyExport" as const,
+    exportName: exp.exportName,
+    fileName: exp.fileName,
+    line: exp.line,
+    locationKey: exp.locationKey,
+    testConsumers,
+  });
 
-const buildSingleCallerFinding = (exp: RuntimeExport, soleConsumer: string) => ({
+const buildSingleCallerFinding = (exp: RuntimeExport) => (soleConsumer: string) => ({
   kind: "singleCallerExport" as const,
   exportName: exp.exportName,
   fileName: exp.fileName,
@@ -262,64 +248,59 @@ const buildSingleCallerFinding = (exp: RuntimeExport, soleConsumer: string) => (
   soleConsumer,
 });
 
-const evaluateSoleConsumerCandidate = (input: ExportEvaluationInput, soleConsumer: string) =>
-  isBlockedByStaticGuards(input, soleConsumer)
+const evaluateSoleConsumerCandidate = (input: ExportEvaluationInput) => (soleConsumer: string) =>
+  isBlockedByStaticGuards(input)(soleConsumer)
     ? O.none
-    : O.some<EncapsulationFinding>(buildSingleCallerFinding(input.runtimeExport, soleConsumer));
+    : O.some<EncapsulationFinding>(buildSingleCallerFinding(input.runtimeExport)(soleConsumer));
 
-const evaluateSingleProdConsumer = (
-  input: ExportEvaluationInput,
-  prodConsumers: ReadonlyArray<string>,
-) =>
-  O.flatMap((soleConsumer: string) => evaluateSoleConsumerCandidate(input, soleConsumer))(
-    RA.head<string>(prodConsumers),
-  );
+const evaluateSingleProdConsumer =
+  (input: ExportEvaluationInput) => (prodConsumers: ReadonlyArray<string>) =>
+    O.flatMap(evaluateSoleConsumerCandidate(input))(RA.head<string>(prodConsumers));
 
-const classifyExportConsumers = (
-  input: ExportEvaluationInput,
-  consumerRec: ModuleConsumerRecord,
-) =>
-  match({
-    prodCount: consumerRec.prodConsumers.length,
-    testCount: consumerRec.testConsumers.length,
-  })
-    .when(
-      ({ prodCount, testCount }) => prodCount === 0 && testCount >= 1,
-      () => O.some<EncapsulationFinding>(buildTestOnlyFinding(input.runtimeExport, consumerRec.testConsumers)),
-    )
-    .when(
-      ({ prodCount }) => prodCount === 1,
-      () => evaluateSingleProdConsumer(input, consumerRec.prodConsumers),
-    )
-    .otherwise(() => O.none);
+const classifyExportConsumers =
+  (input: ExportEvaluationInput) => (consumerRec: ModuleConsumerRecord) =>
+    match({
+      prodCount: consumerRec.prodConsumers.length,
+      testCount: consumerRec.testConsumers.length,
+    })
+      .when(
+        ({ prodCount, testCount }) => prodCount === 0 && testCount >= 1,
+        () =>
+          O.some<EncapsulationFinding>(
+            buildTestOnlyFinding(input.runtimeExport)(consumerRec.testConsumers),
+          ),
+      )
+      .when(
+        ({ prodCount }) => prodCount === 1,
+        () => evaluateSingleProdConsumer(input)(consumerRec.prodConsumers),
+      )
+      .otherwise(() => O.none);
 
-const isPublicEntryPointExport = (symbolGraph: ProgramSymbolGraph, exportKey: string) =>
+const isPublicEntryPointExport = (symbolGraph: ProgramSymbolGraph) => (exportKey: string) =>
   symbolGraph.publicEntryPointExports.has(exportKey);
 
 const evaluateRuntimeExport = ({ context, fileGraph, runtimeExport }: ExportEvaluationInput) =>
-  isPublicEntryPointExport(context.symbolGraph, runtimeExport.key)
+  isPublicEntryPointExport(context.symbolGraph)(runtimeExport.key)
     ? O.none
-    : O.flatMap((consumerRec: ModuleConsumerRecord) =>
-        classifyExportConsumers({ context, fileGraph, runtimeExport }, consumerRec),
-      )(O.fromNullable(fileGraph.consumersByExport[runtimeExport.exportName]));
+    : O.flatMap(classifyExportConsumers({ context, fileGraph, runtimeExport }))(
+        O.fromNullable(fileGraph.consumersByExport[runtimeExport.exportName]),
+      );
 
 const isEligibleSingleCallerFile = (fileGraph: FileModuleGraph) =>
   !fileGraph.isBarrel && !fileGraph.isTest && !fileGraph.isEntryPoint;
 
-const collectFileCandidateFindings = (
-  context: SingleCallerContext,
-  fileGraph: FileModuleGraph,
-) =>
-  RA.filterMap((runtimeExport: RuntimeExport) =>
-    evaluateRuntimeExport({
-      context,
-      fileGraph,
-      runtimeExport,
-    }),
-  )(fileGraph.runtimeExports);
+const collectFileCandidateFindings =
+  (context: SingleCallerContext) => (fileGraph: FileModuleGraph) =>
+    RA.filterMap((runtimeExport: RuntimeExport) =>
+      evaluateRuntimeExport({
+        context,
+        fileGraph,
+        runtimeExport,
+      }),
+    )(fileGraph.runtimeExports);
 
-const isFileNonCohesive = (sf: ts.SourceFile, context: SingleCallerContext) =>
-  !analyzeFileCohesion(sf, {
+const isFileNonCohesive = (context: SingleCallerContext) => (sf: ts.SourceFile) =>
+  !analyzeFileCohesion(sf)({
     checker: context.checker,
     options: O.some(context.options.cohesionOptions),
   }).isCohesive;
@@ -328,7 +309,7 @@ const isConsumerFileCohesive = (context: SingleCallerContext) =>
   flow(
     (consumerFile: string) => context.sourceFilesByPath.get(consumerFile),
     O.fromNullable,
-    O.filter((sf: ts.SourceFile) => isFileNonCohesive(sf, context)),
+    O.filter(isFileNonCohesive(context)),
     O.isNone,
   );
 
@@ -342,66 +323,53 @@ const collectSoleConsumerPaths = flow(
   RA.uniq(S.Eq),
 );
 
-const buildCohesiveConsumerSet = (
-  context: SingleCallerContext,
-  candidates: ReadonlyArray<EncapsulationFinding>,
-) =>
-  new Set(
-    RA.filter(isConsumerFileCohesive(context))(collectSoleConsumerPaths(candidates)),
-  );
+const buildCohesiveConsumerSet =
+  (context: SingleCallerContext) => (candidates: ReadonlyArray<EncapsulationFinding>) =>
+    new Set(
+      RA.filter(isConsumerFileCohesive(context))(collectSoleConsumerPaths(candidates)),
+    );
 
-const isSurvivingFinding = (
-  cohesiveConsumers: ReadonlySet<string>,
-  finding: EncapsulationFinding,
-) =>
-  match(finding)
-    .with({ kind: "testOnlyExport" }, () => true)
-    .with({ kind: "singleCallerExport" }, (f) => cohesiveConsumers.has(f.soleConsumer))
-    .exhaustive();
+const isSurvivingFinding =
+  (cohesiveConsumers: ReadonlySet<string>) => (finding: EncapsulationFinding) =>
+    match(finding)
+      .with({ kind: "testOnlyExport" }, () => true)
+      .with({ kind: "singleCallerExport" }, (f) => cohesiveConsumers.has(f.soleConsumer))
+      .exhaustive();
 
-const lookupFindingsForFile = (
-  fileName: string,
-  acc: Readonly<Record<string, ReadonlyArray<EncapsulationFinding>>>,
-) => O.getOrElseW(() => [])(RR.lookup(fileName, acc));
+const lookupFindingsForFile =
+  (acc: Readonly<Record<string, ReadonlyArray<EncapsulationFinding>>>) => (fileName: string) =>
+    O.getOrElseW(() => [])(RR.lookup(fileName)(acc));
 
-const appendFindingByFile = (
-  acc: Readonly<Record<string, ReadonlyArray<EncapsulationFinding>>>,
-  finding: EncapsulationFinding,
-) => ({
-  ...acc,
-  [finding.fileName]: RA.append(finding)(lookupFindingsForFile(finding.fileName, acc)),
-});
+const appendFindingByFile =
+  (acc: Readonly<Record<string, ReadonlyArray<EncapsulationFinding>>>) =>
+  (finding: EncapsulationFinding) => ({
+    ...acc,
+    [finding.fileName]: RA.append(finding)(lookupFindingsForFile(acc)(finding.fileName)),
+  });
 
-const filterFindingsByCohesion = (
-  cohesiveConsumers: ReadonlySet<string>,
-  candidates: ReadonlyArray<EncapsulationFinding>,
-) =>
-  RA.filter((finding: EncapsulationFinding) => isSurvivingFinding(cohesiveConsumers, finding))(
-    candidates,
-  );
+const filterFindingsByCohesion =
+  (cohesiveConsumers: ReadonlySet<string>) => (candidates: ReadonlyArray<EncapsulationFinding>) =>
+    RA.filter(isSurvivingFinding(cohesiveConsumers))(candidates);
 
-const finalizeSingleCallerAnalysis = (
-  context: SingleCallerContext,
-  candidates: ReadonlyArray<EncapsulationFinding>,
-) => {
-  const findings = filterFindingsByCohesion(
-    buildCohesiveConsumerSet(context, candidates),
-    candidates,
-  );
-  return {
-    findings,
-    byFile: RA.reduce<
-      EncapsulationFinding,
-      Readonly<Record<string, ReadonlyArray<EncapsulationFinding>>>
-    >({}, appendFindingByFile)(findings),
+const finalizeSingleCallerAnalysis =
+  (context: SingleCallerContext) => (candidates: ReadonlyArray<EncapsulationFinding>) => {
+    const findings = filterFindingsByCohesion(
+      buildCohesiveConsumerSet(context)(candidates),
+    )(candidates);
+    return {
+      findings,
+      byFile: RA.reduce<
+        EncapsulationFinding,
+        Readonly<Record<string, ReadonlyArray<EncapsulationFinding>>>
+      >({}, (acc, finding) => appendFindingByFile(acc)(finding))(findings),
+    };
   };
-};
 
 const collectEligibleFileCandidates = (context: SingleCallerContext) =>
   flow(
     readRecordValues<FileModuleGraph>,
     RA.filter(isEligibleSingleCallerFile),
-    RA.flatMap((fileGraph: FileModuleGraph) => collectFileCandidateFindings(context, fileGraph)),
+    RA.flatMap(collectFileCandidateFindings(context)),
   );
 
 const collectAllSingleCallerCandidates = (context: SingleCallerContext) =>
@@ -415,7 +383,7 @@ type SingleCallerConfig = Readonly<{
   options: O.Option<SingleCallerOptions>;
 }>;
 
-const buildSingleCallerContext = (program: ts.Program, config: SingleCallerConfig) => {
+const buildSingleCallerContext = (config: SingleCallerConfig) => (program: ts.Program) => {
   const options = O.getOrElse(() => DEFAULT_SINGLE_CALLER_OPTIONS)(config.options);
   return {
     checker: program.getTypeChecker(),
@@ -430,13 +398,11 @@ const buildSingleCallerContext = (program: ts.Program, config: SingleCallerConfi
 };
 
 // eslint-disable-next-line strict-fp/no-single-caller-export -- analyzer entry point consumed by rule and tests
-export const analyzeSingleCallerExports = ((
-  program: ts.Program,
-  config: SingleCallerConfig,
-) => {
-  const context = buildSingleCallerContext(program, config);
-  return finalizeSingleCallerAnalysis(context, collectAllSingleCallerCandidates(context));
-}) satisfies (program: ts.Program, config: SingleCallerConfig) => SingleCallerAnalysis;
+export const analyzeSingleCallerExports = ((program: ts.Program) =>
+  (config: SingleCallerConfig) => {
+    const context = buildSingleCallerContext(config)(program);
+    return finalizeSingleCallerAnalysis(context)(collectAllSingleCallerCandidates(context));
+  }) satisfies (program: ts.Program) => (config: SingleCallerConfig) => SingleCallerAnalysis;
 
 const readProdConsumersForExport = (exportName: string) =>
   flow(
@@ -446,23 +412,19 @@ const readProdConsumersForExport = (exportName: string) =>
     O.getOrElseW(() => []),
   );
 
-const lookupProdConsumers = (fileGraph: FileModuleGraph, exportName: string) =>
+const lookupProdConsumers = (fileGraph: FileModuleGraph) => (exportName: string) =>
   readProdConsumersForExport(exportName)(fileGraph.consumersByExport);
 
-const collectUsedExports = flow(
-  (fileGraph: FileModuleGraph) => ({
-    fileGraph,
-    names: RA.map((exp: RuntimeExport) => exp.exportName)(fileGraph.runtimeExports),
-  }),
-  ({ fileGraph, names }) =>
-    RA.filter((name: string) => lookupProdConsumers(fileGraph, name).length >= 1)(names),
-);
+const collectUsedExports = (fileGraph: FileModuleGraph) =>
+  RA.filter((name: string) => lookupProdConsumers(fileGraph)(name).length >= 1)(
+    RA.map((exp: RuntimeExport) => exp.exportName)(fileGraph.runtimeExports),
+  );
 
 const dropLeadingNames = (count: number) => (names: ReadonlyArray<string>) =>
   RA.dropLeft(count)(names);
 
 const pairWithLaterNames =
-  (relevantNames: ReadonlyArray<string>) => (idx: number, left: string) =>
+  (relevantNames: ReadonlyArray<string>) => (idx: number) => (left: string) =>
     RA.flatMap((right: string) => [
       [left, right] as const,
       [right, left] as const,
@@ -470,7 +432,9 @@ const pairWithLaterNames =
 
 const collectUndirectedCliqueEdges = flow(
   (relevantNames: ReadonlyArray<string>) =>
-    RA.mapWithIndex(pairWithLaterNames(relevantNames))(relevantNames),
+    RA.mapWithIndex((idx, left: string) => pairWithLaterNames(relevantNames)(idx)(left))(
+      relevantNames,
+    ),
   RA.flatten,
 );
 
@@ -490,85 +454,72 @@ const buildAdjacencyFromConsumerImports = (usedSet: ReadonlySet<string>) =>
     groupAdjacencyEdges,
   );
 
-const buildReuseAdjacency = (
-  fileGraph: FileModuleGraph,
-  usedSet: ReadonlySet<string>,
-) => buildAdjacencyFromConsumerImports(usedSet)(fileGraph.prodImportsByConsumer);
+const buildReuseAdjacency = (fileGraph: FileModuleGraph) => (usedSet: ReadonlySet<string>) =>
+  buildAdjacencyFromConsumerImports(usedSet)(fileGraph.prodImportsByConsumer);
 
 const lookupAdjacentExports = (adjacency: AdjacencyRecord) =>
   flow(
-    (node: string) => RR.lookup(node, adjacency),
+    (node: string) => RR.lookup(node)(adjacency),
     O.getOrElseW(() => []),
   );
 
-const collectUnvisitedFromPending = (seenExports: ReadonlySet<string>, adjacency: AdjacencyRecord) =>
-  flow(
-    RA.flatMap(lookupAdjacentExports(adjacency)),
-    RA.filter((neighbor: string) => !seenExports.has(neighbor)),
-    RA.uniq(S.Eq),
-  );
+const collectUnvisitedFromPending =
+  (seenExports: ReadonlySet<string>) => (adjacency: AdjacencyRecord) =>
+    flow(
+      RA.flatMap(lookupAdjacentExports(adjacency)),
+      RA.filter((neighbor: string) => !seenExports.has(neighbor)),
+      RA.uniq(S.Eq),
+    );
 
-const collectUnvisitedNeighbors = (state: FrontierWalkState, adjacency: AdjacencyRecord) =>
-  collectUnvisitedFromPending(state.seenExports, adjacency)(state.pendingExports);
+const collectUnvisitedNeighbors = (adjacency: AdjacencyRecord) => (state: FrontierWalkState) =>
+  collectUnvisitedFromPending(state.seenExports)(adjacency)(state.pendingExports);
 
-const expandComponentFrontier = (
-  state: FrontierWalkState,
-  adjacency: AdjacencyRecord,
-  // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive graph walk
-): FrontierWalkState =>
-  state.pendingExports.length === 0
-    ? state
-    : stepComponentFrontier(state, adjacency);
+// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive graph walk
+const expandComponentFrontier = (adjacency: AdjacencyRecord) => (state: FrontierWalkState): FrontierWalkState =>
+  state.pendingExports.length === 0 ? state : stepComponentFrontier(adjacency)(state);
 
-const stepComponentFrontier = (
-  state: FrontierWalkState,
-  adjacency: AdjacencyRecord,
-) => {
-  const nextFrontier = collectUnvisitedNeighbors(state, adjacency);
-  return expandComponentFrontier(
-    {
-      pendingExports: nextFrontier,
-      seenExports: new Set([...state.seenExports, ...nextFrontier]),
-      componentExports: [...state.componentExports, ...state.pendingExports],
-    },
-    adjacency,
-  );
+const stepComponentFrontier = (adjacency: AdjacencyRecord) => (state: FrontierWalkState) => {
+  const nextFrontier = collectUnvisitedNeighbors(adjacency)(state);
+  return expandComponentFrontier(adjacency)({
+    pendingExports: nextFrontier,
+    seenExports: new Set([...state.seenExports, ...nextFrontier]),
+    componentExports: [...state.componentExports, ...state.pendingExports],
+  });
 };
 
 const collectSortedProdConsumers = (fileGraph: FileModuleGraph) =>
   flow(
-    RA.flatMap((name: string) => lookupProdConsumers(fileGraph, name)),
+    RA.flatMap(lookupProdConsumers(fileGraph)),
     RA.uniq(S.Eq),
     RA.sort(S.Ord),
   );
 
-const buildConsumerExportGroup = (
-  members: ReadonlyArray<string>,
-  fileGraph: FileModuleGraph,
-) => ({
-  exports: RA.sort(S.Ord)(members),
-  consumers: collectSortedProdConsumers(fileGraph)(members),
-});
+const buildConsumerExportGroup =
+  (fileGraph: FileModuleGraph) => (members: ReadonlyArray<string>) => ({
+    exports: RA.sort(S.Ord)(members),
+    consumers: collectSortedProdConsumers(fileGraph)(members),
+  });
 
 const appendSeededComponent =
-  (graphCtx: ReuseGraphContext) => (acc: PartitionAccumulator, seed: string) => {
-    const walked = expandComponentFrontier(
-      { pendingExports: [seed], seenExports: new Set([...acc.visited, seed]), componentExports: [] },
-      graphCtx.adjacency,
-    );
+  (graphCtx: ReuseGraphContext) => (acc: PartitionAccumulator) => (seed: string) => {
+    const walked = expandComponentFrontier(graphCtx.adjacency)({
+      pendingExports: [seed],
+      seenExports: new Set([...acc.visited, seed]),
+      componentExports: [],
+    });
     return {
       visited: walked.seenExports,
-      groups: RA.append(buildConsumerExportGroup(walked.componentExports, graphCtx.fileGraph))(
+      groups: RA.append(buildConsumerExportGroup(graphCtx.fileGraph)(walked.componentExports))(
         acc.groups,
       ),
     };
   };
 
 const stepComponentPartition =
-  (graphCtx: ReuseGraphContext) => (acc: PartitionAccumulator, exportName: string) =>
+  (graphCtx: ReuseGraphContext) => (acc: PartitionAccumulator) => (exportName: string) =>
     acc.visited.has(exportName)
       ? acc
-      : appendSeededComponent(graphCtx)(acc, exportName);
+      : appendSeededComponent(graphCtx)(acc)(exportName);
 
 const readFirstGroupExport = flow(
   (group: ConsumerExportGroup) => group.exports,
@@ -583,17 +534,18 @@ const partitionUsedExports =
     RA.sort(compareGroupByFirstExport)(
       RA.reduce<string, PartitionAccumulator>(
         { visited: new Set<string>(), groups: [] },
-        stepComponentPartition({
-          fileGraph,
-          adjacency: buildReuseAdjacency(fileGraph, new Set(usedExports)),
-        }),
+        (acc, exportName) =>
+          stepComponentPartition({
+            fileGraph,
+            adjacency: buildReuseAdjacency(fileGraph)(new Set(usedExports)),
+          })(acc)(exportName),
       )(usedExports).groups,
     );
 
-const evaluateFileCommonReuse = (fileGraph: FileModuleGraph, minExports: number) =>
+const evaluateFileCommonReuse = (minExports: number) => (fileGraph: FileModuleGraph) =>
   fileGraph.isBarrel || fileGraph.isTest || fileGraph.runtimeExports.length <= minExports
     ? O.none
-    : evaluateUsedExportGroups(fileGraph, collectUsedExports(fileGraph));
+    : evaluateUsedExportGroups(fileGraph)(collectUsedExports(fileGraph));
 
 const buildCommonReuseFinding = (fileGraph: FileModuleGraph) =>
   flow(
@@ -606,10 +558,9 @@ const buildCommonReuseFinding = (fileGraph: FileModuleGraph) =>
     })),
   );
 
-const evaluateUsedExportGroups = (
-  fileGraph: FileModuleGraph,
-  usedExports: ReadonlyArray<string>,
-) => (RA.size(usedExports) <= 1 ? O.none : buildCommonReuseFinding(fileGraph)(usedExports));
+const evaluateUsedExportGroups =
+  (fileGraph: FileModuleGraph) => (usedExports: ReadonlyArray<string>) =>
+    RA.size(usedExports) <= 1 ? O.none : buildCommonReuseFinding(fileGraph)(usedExports);
 
 const indexCommonReuseByFile = RA.reduce<
   CommonReuseFinding,
@@ -620,25 +571,23 @@ const indexCommonReuseByFile = RA.reduce<
 }));
 
 // eslint-disable-next-line strict-fp/no-single-caller-export -- analyzer entry point consumed by rule and tests
-export const analyzeCommonReuseCohesion = ((
-  program: ts.Program,
-  options: CommonReuseOptions = {
-    minExports: 5,
-    testPatterns: DEFAULT_TEST_PATTERNS,
-  },
-) => {
-  const findings = RA.filterMap((fileGraph: FileModuleGraph) =>
-    evaluateFileCommonReuse(fileGraph, options.minExports),
-  )(
-    readRecordValues(
-      analyzeModuleSymbolGraph(program, {
-        entryPointPatterns: [],
-        testFilePatterns: options.testPatterns,
-      }).files,
-    ),
-  );
-  return {
-    findings,
-    byFile: indexCommonReuseByFile(findings),
-  };
-}) satisfies (program: ts.Program, options?: CommonReuseOptions) => CommonReuseAnalysis;
+export const analyzeCommonReuseCohesion = ((program: ts.Program) =>
+  (
+    options: CommonReuseOptions = {
+      minExports: 5,
+      testPatterns: DEFAULT_TEST_PATTERNS,
+    },
+  ) => {
+    const findings = RA.filterMap(evaluateFileCommonReuse(options.minExports))(
+      readRecordValues(
+        analyzeModuleSymbolGraph(program, {
+          entryPointPatterns: [],
+          testFilePatterns: options.testPatterns,
+        }).files,
+      ),
+    );
+    return {
+      findings,
+      byFile: indexCommonReuseByFile(findings),
+    };
+  }) satisfies (program: ts.Program) => (options?: CommonReuseOptions) => CommonReuseAnalysis;

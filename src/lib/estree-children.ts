@@ -22,9 +22,14 @@ const extractSingleVal = (val: object) =>
 const extractValNodes = (val: object) =>
   isArrayVal(val) ? extractArrayVal(val) : extractSingleVal(val);
 
+const lookupRecordKey =
+  <A>(record: Readonly<Record<string, A>>) =>
+  (k: string) =>
+    RR.lookup(k)(record);
+
 const extractKeyNodes = (node: TSESTree.Node & Readonly<Record<string, object>>) =>
   flow(
-    (k: string) => RR.lookup(k, node),
+    lookupRecordKey(node),
     O.flatMap(O.fromNullable),
     O.match(() => [] satisfies ReadonlyArray<TSESTree.Node>, extractValNodes),
   );
@@ -33,18 +38,17 @@ const EMPTY_VISITOR_KEYS: ReadonlyArray<string> = [];
 
 const lookupVisitorKeys = (nodeType: TSESTree.Node["type"]) =>
   flow(
-    (keys: TSESLint.SourceCode["visitorKeys"]) => RR.lookup(nodeType, keys),
+    RR.lookup(nodeType),
     O.flatMap(O.fromNullable),
     O.getOrElse(() => EMPTY_VISITOR_KEYS),
   );
 
 export const collectEstreeChildNodes = ((
-  node: TSESTree.Node,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) =>
-  isNodeRecord(node)
-    ? RA.flatMap(extractKeyNodes(node))(lookupVisitorKeys(node.type)(visitorKeys))
-    : ([] satisfies ReadonlyArray<TSESTree.Node>)) satisfies (
-  node: TSESTree.Node,
+  (node: TSESTree.Node) =>
+    isNodeRecord(node)
+      ? RA.flatMap(extractKeyNodes(node))(lookupVisitorKeys(node.type)(visitorKeys))
+      : ([] satisfies ReadonlyArray<TSESTree.Node>)) satisfies (
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
-) => ReadonlyArray<TSESTree.Node>;
+) => (node: TSESTree.Node) => ReadonlyArray<TSESTree.Node>;

@@ -5,10 +5,11 @@ import path from "node:path";
 import { clearCaches } from "@typescript-eslint/parser";
 import type { TSESLint } from "@typescript-eslint/utils";
 import { ESLint } from "eslint";
+import * as IO from "fp-ts/lib/IO.js";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
-import { pipe } from "fp-ts/lib/function.js";
+import { flow, pipe } from "fp-ts/lib/function.js";
 import * as S from "fp-ts/lib/string.js";
 import { afterAll, describe, expect, it } from "vitest";
 import strictFp, {
@@ -34,12 +35,13 @@ import {
   type TierRunSummary,
 } from "../src/cli/strict-fp-lint.js";
 
-const findTierBlock = (configList: ReadonlyArray<TSESLint.FlatConfig.Config>, name: string) =>
-  pipe(
-    configList,
-    RA.findFirst((c) => c.name === name),
-    O.toUndefined,
-  );
+const findTierBlock =
+  (configList: ReadonlyArray<TSESLint.FlatConfig.Config>) => (name: string) =>
+    pipe(
+      configList,
+      RA.findFirst((c) => c.name === name),
+      O.toUndefined,
+    );
 
 const tmpRoot = os.tmpdir();
 
@@ -50,8 +52,10 @@ const createTempProjectDir = () =>
     (dirPath) => fs.mkdtempSync(dirPath),
   );
 
-const readProjectFile = (dir: string, name: string) =>
-  fs.readFileSync(path.join(dir, name), "utf8");
+const joinProjectPath = (dir: string) => (name: string) => path.join(dir, name);
+const readUtf8 = (filePath: string) => fs.readFileSync(filePath, "utf8");
+
+const readProjectFile = (dir: string) => flow(joinProjectPath(dir), readUtf8);
 
 const extractSummaryTiers = RA.map((s: TierRunSummary) => s.tier);
 
@@ -93,8 +97,8 @@ describe("tiered configs and React/Expo exclusions", () => {
       description: 'Type soundness — "Does this code obey TypeScript\'s type system?"',
     });
 
-    expect(findTierBlock(configs.tier0, "strict-fp/tier-0")?.rules).toEqual({});
-    expect(findTierBlock(configs.tier0, "strict-fp/react-thin-tsx")).toBeUndefined();
+    expect(findTierBlock(configs.tier0)("strict-fp/tier-0")?.rules).toEqual({});
+    expect(findTierBlock(configs.tier0)("strict-fp/react-thin-tsx")).toBeUndefined();
   });
 
   it("excludes .tsx and *.config.ts from strict .ts rules and includes thin-tsx block in Tier 2+", () => {
@@ -102,11 +106,11 @@ describe("tiered configs and React/Expo exclusions", () => {
     expect(defaultStrictFpIgnores).toEqual(["**/*.tsx", "**/*.config.ts"]);
 
     const tiered1 = createTieredConfig(strictFp, { maxTier: 1 });
-    expect(findTierBlock(tiered1, "strict-fp/react-thin-tsx")).toBeUndefined();
+    expect(findTierBlock(tiered1)("strict-fp/react-thin-tsx")).toBeUndefined();
 
     const tiered2 = createTieredConfig(strictFp, { maxTier: 2 });
-    const mainBlock = findTierBlock(tiered2, "strict-fp/tier-2");
-    const tsxBlock = findTierBlock(tiered2, "strict-fp/react-thin-tsx");
+    const mainBlock = findTierBlock(tiered2)("strict-fp/tier-2");
+    const tsxBlock = findTierBlock(tiered2)("strict-fp/react-thin-tsx");
     expect(mainBlock?.files).toEqual(["**/*.ts"]);
     expect(mainBlock?.ignores).toEqual(["**/*.tsx", "**/*.config.ts"]);
     expect(tsxBlock?.files).toEqual(["**/*.tsx"]);
@@ -119,9 +123,9 @@ describe("tiered configs and React/Expo exclusions", () => {
   });
 
   it("builds cumulative tier1, tier2, and tier3 presets with all plugin rules at error severity and no duplicate consistent-type-definitions", () => {
-    const t1Rules = findTierBlock(configs.tier1, "strict-fp/tier-1")?.rules;
-    const t2Rules = findTierBlock(configs.tier2, "strict-fp/tier-2")?.rules;
-    const t3Rules = findTierBlock(configs.tier3, "strict-fp/tier-3")?.rules;
+    const t1Rules = findTierBlock(configs.tier1)("strict-fp/tier-1")?.rules;
+    const t2Rules = findTierBlock(configs.tier2)("strict-fp/tier-2")?.rules;
+    const t3Rules = findTierBlock(configs.tier3)("strict-fp/tier-3")?.rules;
 
     expect(t1Rules).toBeDefined();
     expect(t2Rules).toBeDefined();
@@ -133,30 +137,30 @@ describe("tiered configs and React/Expo exclusions", () => {
 
     pipe(
       Object.keys(tier1Rules),
-      RA.map((ruleId) => {
+      RA.traverse(IO.Applicative)((ruleId: string) => () => {
         expect(t1Rules?.[ruleId]).toBeDefined();
         expect(t2Rules?.[ruleId]).toBeDefined();
         expect(t3Rules?.[ruleId]).toBeDefined();
       }),
-    );
+    )();
 
     pipe(
       Object.keys(tier2Rules),
-      RA.map((ruleId) => {
+      RA.traverse(IO.Applicative)((ruleId: string) => () => {
         expect(t1Rules?.[ruleId]).toBeUndefined();
         expect(t2Rules?.[ruleId]).toBeDefined();
         expect(t3Rules?.[ruleId]).toBeDefined();
       }),
-    );
+    )();
 
     pipe(
       Object.keys(tier3Rules),
-      RA.map((ruleId) => {
+      RA.traverse(IO.Applicative)((ruleId: string) => () => {
         expect(t1Rules?.[ruleId]).toBeUndefined();
         expect(t2Rules?.[ruleId]).toBeUndefined();
         expect(t3Rules?.[ruleId]).toBeDefined();
       }),
-    );
+    )();
   });
 
   it("maps every plugin rule in ruleTiers to a numeric tier (1 | 2 | 3) with no missing or extra entries", () => {
@@ -168,7 +172,7 @@ describe("tiered configs and React/Expo exclusions", () => {
       ),
     ).toBe(true);
 
-    const fpDiscoveryBlock = findTierBlock(configs.fpDiscovery, "strict-fp/fp-discovery");
+    const fpDiscoveryBlock = findTierBlock(configs.fpDiscovery)("strict-fp/fp-discovery");
     expect(fpDiscoveryBlock?.rules).toEqual({
       "strict-fp/no-structural-skeleton-duplication": "error",
       "strict-fp/prefer-catamorphism-over-recursive-adt-walk": "error",
@@ -183,9 +187,9 @@ describe("tiered configs and React/Expo exclusions", () => {
       boundaryFiles: ["src/cli/**"],
       testFiles: ["tests/**/*.ts"],
     });
-    const mainBlock = findTierBlock(tiered, "strict-fp/tier-2");
-    const boundaryBlock = findTierBlock(tiered, "strict-fp/boundary-overrides");
-    const testBlock = findTierBlock(tiered, "strict-fp/test-overrides");
+    const mainBlock = findTierBlock(tiered)("strict-fp/tier-2");
+    const boundaryBlock = findTierBlock(tiered)("strict-fp/boundary-overrides");
+    const testBlock = findTierBlock(tiered)("strict-fp/test-overrides");
 
     const mainRules = mainBlock?.rules;
     expect(mainRules?.["strict-fp/module-cohesion"]).toBe("error");
@@ -214,9 +218,9 @@ describe("tiered configs and React/Expo exclusions", () => {
       maxTier: 2,
       testFiles: ["tests/**/*.ts"],
     });
-    const mainBlock = findTierBlock(tiered, "strict-fp/tier-2");
-    const testBlock = findTierBlock(tiered, "strict-fp/test-overrides");
-    const testScopeBlock = findTierBlock(configs.testScope, "strict-fp/test-scope");
+    const mainBlock = findTierBlock(tiered)("strict-fp/tier-2");
+    const testBlock = findTierBlock(tiered)("strict-fp/test-overrides");
+    const testScopeBlock = findTierBlock(configs.testScope)("strict-fp/test-scope");
 
     const mainRules = mainBlock?.rules;
     expect(mainRules?.["strict-fp/no-redundant-test-scope"]).toEqual([
@@ -867,7 +871,7 @@ export default [
       expect(extractSummaryTiers(haltResult.summaries)).toEqual([0, 1]);
       expect(haltTracker.ctorCalls).toHaveLength(1);
       // Tier 3 autofix must not have run
-      expect(readProjectFile(tmpDir, "unfixable-t1.ts")).toContain("oldName");
+      expect(readProjectFile(tmpDir)("unfixable-t1.ts")).toContain("oldName");
 
       // 3. Fixable Tier 3 issue writes fix to disk, triggers 1 non-fix re-verification pass for Tiers 1..2
       const mutatePassTracker = createTrackingEslint();
@@ -877,7 +881,7 @@ export default [
       );
       expect(mutatePass.passed).toBe(true);
       expect(extractSummaryTiers(mutatePass.summaries)).toEqual([0, 1, 2, 3]);
-      expect(readProjectFile(tmpDir, "fixable-clean.ts")).toContain("newName");
+      expect(readProjectFile(tmpDir)("fixable-clean.ts")).toContain("newName");
       // 3 fix passes (T1, T2, T3) + 1 read-only re-verification pass after Tier 3 mutated
       expect(mutatePassTracker.ctorCalls).toHaveLength(4);
       expect(extractFixFlags(mutatePassTracker.ctorCalls)).toEqual([true, true, true, false]);
@@ -890,7 +894,7 @@ export default [
       );
       expect(regressResult.passed).toBe(false);
       expect(regressResult.failedTier).toBe(2);
-      expect(readProjectFile(tmpDir, "fixable-regresses-t2.ts")).toContain("orderHelper");
+      expect(readProjectFile(tmpDir)("fixable-regresses-t2.ts")).toContain("orderHelper");
       const lastSummary = regressResult.summaries[regressResult.summaries.length - 1];
       expect(lastSummary?.tier).toBe(2);
       expect(lastSummary?.output).toContain("strict-fp/no-generic-utility-names");
@@ -948,8 +952,8 @@ export default [
           "  O.map(wrapGeneric),",
           ");",
           "",
-          "export const combineScoredBatch = (<L>(values: ReadonlyArray<number>, label: O.Option<L>) =>",
-          "  Ap.sequenceS(O.Applicative)({ batch: incrementAll(values), label })) satisfies <L>(values: ReadonlyArray<number>, label: O.Option<L>) => O.Option<{ readonly batch: { readonly payload: ReadonlyArray<number> }; readonly label: L }>;",
+          "export const combineScoredBatch = (<L>(label: O.Option<L>) => (values: ReadonlyArray<number>) =>",
+          "  Ap.sequenceS(O.Applicative)({ batch: incrementAll(values), label })) satisfies <L>(label: O.Option<L>) => (values: ReadonlyArray<number>) => O.Option<{ readonly batch: { readonly payload: ReadonlyArray<number> }; readonly label: L }>;",
           "",
         ].join("\n"),
       );

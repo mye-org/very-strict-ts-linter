@@ -36,7 +36,7 @@ const isTargetPropAccess = (
       !e.computed &&
       e.property.type === AST_NODE_TYPES.Identifier &&
       e.property.name === target.propName &&
-      isSameEsTreeAccessExpr(e.object, target.outerTarget),
+      isSameEsTreeAccessExpr(e.object)(target.outerTarget),
   )(expr);
 
 const resolveFirstParamName = flow(

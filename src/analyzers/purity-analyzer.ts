@@ -449,7 +449,7 @@ const isVoidOrUndefinedOnly = (type: ts.Type) =>
   hasVoidOrUndefinedFlag(type) ||
   (type.isUnion() && type.types.length > 0 && RA.every(hasVoidOrUndefinedFlag)(type.types));
 
-const collectOwnBodyNodes = (node: ts.Node) => collectTsNodesUntil(node, ts.isFunctionLike);
+const collectOwnBodyNodes = collectTsNodesUntil(ts.isFunctionLike);
 
 const isComplexityIncrementNode = (node: ts.Node) =>
   BRANCHING_SYNTAX_KINDS.has(node.kind) ||
@@ -993,7 +993,7 @@ const extractPropertyNameText = (name: ts.PropertyName) =>
 
 const buildFunctionHeader = (reg: FunctionRegistration, sf: ts.SourceFile) => {
   const filePath = normalizeFilePath(sf.fileName);
-  const loc = resolveTsNodeLocation(reg.placement.reportNode, sf);
+  const loc = resolveTsNodeLocation(sf)(reg.placement.reportNode);
   return {
     id: formatFnId(filePath, reg.fn.getStart(sf)),
     name: reg.name,
@@ -1625,7 +1625,6 @@ export const analyzeProgramPurity = ((
   program: ts.Program,
   options: PurityOptions = DEFAULT_PURITY_OPTIONS,
 ) =>
-  memoizeByProgramAndKey(purityCache, (p) => computeProgramPurity(p, options))(
+  memoizeByProgramAndKey(purityCache)((p) => computeProgramPurity(p, options))(
     program,
-    formatPurityCacheKey(options),
-  )) satisfies (program: ts.Program, options?: PurityOptions) => ProgramPurityAnalysis;
+  )(formatPurityCacheKey(options))) satisfies (program: ts.Program, options?: PurityOptions) => ProgramPurityAnalysis;

@@ -1,4 +1,5 @@
 import * as O from "fp-ts/lib/Option.js";
+import * as Pred from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
@@ -8,30 +9,32 @@ const EXPLICIT_BRAND_PROPS: ReadonlySet<string> = new Set(["__brand", "_brand"])
 const NEWTYPE_URI_PROPS: ReadonlySet<string> = new Set(["_URI"]);
 const NEWTYPE_A_PROPS: ReadonlySet<string> = new Set(["_A"]);
 
-const hasPropMatching = (props: ReadonlyArray<ts.Symbol>, predicate: (name: string) => boolean) =>
-  RA.some((prop: ts.Symbol) => predicate(prop.name))(props);
+const hasPropMatching = (predicate: (name: string) => boolean) =>
+  RA.some((prop: ts.Symbol) => predicate(prop.name));
 
-const hasNewtypeMarkerProps = (props: ReadonlyArray<ts.Symbol>) =>
-  hasPropMatching(props, (n) => NEWTYPE_URI_PROPS.has(n)) &&
-  hasPropMatching(props, (n) => NEWTYPE_A_PROPS.has(n));
+const hasNewtypeMarkerProps = Pred.and(
+  hasPropMatching((n) => NEWTYPE_URI_PROPS.has(n)),
+)(hasPropMatching((n) => NEWTYPE_A_PROPS.has(n)));
 
-const hasDirectBrandProp = (props: ReadonlyArray<ts.Symbol>) =>
-  hasPropMatching(props, (n) => EXPLICIT_BRAND_PROPS.has(n));
+const hasDirectBrandProp = hasPropMatching((n) => EXPLICIT_BRAND_PROPS.has(n));
 
 export const isBrandedOrNewtypeTsType = ((type: ts.Type) => {
   const props = type.getProperties();
   return type.isIntersection()
-    ? hasPropMatching(props, (n) => BRAND_PROP_RE.test(n))
+    ? hasPropMatching((n) => BRAND_PROP_RE.test(n))(props)
     : hasNewtypeMarkerProps(props) || hasDirectBrandProp(props);
 }) satisfies (type: ts.Type) => boolean;
 
-const hasTypeFlag = (type: ts.Type, flag: ts.TypeFlags) => (type.flags & flag) !== 0;
+const hasTypeFlag = (flag: ts.TypeFlags) => {
+  const isFlagSet = (type: ts.Type) => (type.flags & flag) !== 0;
+  return isFlagSet;
+};
 
 export const resolveBarePrimitiveOrLiteralKind = ((type: ts.Type) =>
   match({
     branded: isBrandedOrNewtypeTsType(type),
-    isString: hasTypeFlag(type, ts.TypeFlags.String | ts.TypeFlags.StringLiteral),
-    isNumber: hasTypeFlag(type, ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral),
+    isString: hasTypeFlag(ts.TypeFlags.String | ts.TypeFlags.StringLiteral)(type),
+    isNumber: hasTypeFlag(ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)(type),
   })
     .with({ branded: false, isString: true }, () => O.some("string" as const))
     .with({ branded: false, isNumber: true }, () => O.some("number" as const))

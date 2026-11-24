@@ -257,7 +257,7 @@ const collectWithinBody =
           node,
           ...RA.flatMap((child: TSESTree.Node) =>
             collectWithinBody(visitorKeys)(child, "nested"),
-          )(collectEstreeChildNodes(node, visitorKeys)),
+          )(collectEstreeChildNodes(visitorKeys)(node)),
         ];
 
 const toLowCount = (name: string) => ({ high: [] satisfies ReadonlyArray<string>, low: [`${name}()`] });

@@ -218,7 +218,7 @@ type RefSearchContext = readonly [string, TSESLint.SourceCode["visitorKeys"]];
 
 const hasAnyChildReference = (node: TSESTree.Node, [targetName, visitorKeys]: RefSearchContext) =>
   RA.some((child: TSESTree.Node) => hasIdentifierReference(child, [targetName, visitorKeys]))(
-    collectEstreeChildNodes(node, visitorKeys),
+    collectEstreeChildNodes(visitorKeys)(node),
   );
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
@@ -554,7 +554,7 @@ const isSelectMemberCall = (node: TSESTree.Node) =>
 const hasPSelectDescendant = (node: TSESTree.Node, visitorKeys: TSESLint.SourceCode["visitorKeys"]): boolean =>
   isSelectMemberCall(node) ||
   RA.some((child: TSESTree.Node) => hasPSelectDescendant(child, visitorKeys))(
-    collectEstreeChildNodes(node, visitorKeys),
+    collectEstreeChildNodes(visitorKeys)(node),
   );
 
 const isPlainTwoArgWith = (step: StepKind, visitorKeys: TSESLint.SourceCode["visitorKeys"]) =>

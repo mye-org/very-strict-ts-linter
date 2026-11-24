@@ -51,7 +51,7 @@ const collectNodesInFunction = (
     : [
         node,
         ...RA.flatMap((child: TSESTree.Node) => collectNodesInFunction(child, visitorKeys))(
-          collectEstreeChildNodes(node, visitorKeys),
+          collectEstreeChildNodes(visitorKeys)(node),
         ),
       ];
 
