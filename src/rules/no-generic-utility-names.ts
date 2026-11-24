@@ -51,8 +51,14 @@ const SECONDARY_SUFFIX_RE = /\.(?:d|test|spec|stories|story|mock|fixture)$/i;
 const VIRTUAL_FILENAMES = new Set(["", "<input>", "<text>"]);
 const IGNORED_PATH_SEGMENTS = new Set(["", ".", ".."]);
 
-const splitWordTokens = (raw: string) =>
-  RA.map((token: string) => token.toLowerCase())(raw.match(WORD_TOKEN_RE) ?? []);
+const EMPTY_STRINGS: ReadonlyArray<string> = [];
+
+const splitWordTokens = flow(
+  (raw: string) => raw.match(WORD_TOKEN_RE),
+  O.fromNullable,
+  O.getOrElse(() => EMPTY_STRINGS),
+  RA.map((token: string) => token.toLowerCase()),
+);
 
 const stripFileExtensions = (fileName: string) =>
   fileName.replace(FILE_EXT_RE, "").replace(SECONDARY_SUFFIX_RE, "");

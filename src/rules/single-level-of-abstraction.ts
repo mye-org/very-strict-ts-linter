@@ -376,8 +376,14 @@ const toConfig = (
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
   options?: Options[0],
 ) => ({
-  trivialProjections: options?.ignoreTrivialProjections === false ? ("flag" as const) : ("ignore" as const),
-  pipeSteps: options?.checkPipeSteps === false ? ("skip" as const) : ("check" as const),
+  trivialProjections: O.exists((o: Options[0]) => o.ignoreTrivialProjections === false)(
+    O.fromNullable(options),
+  )
+    ? ("flag" as const)
+    : ("ignore" as const),
+  pipeSteps: O.exists((o: Options[0]) => o.checkPipeSteps === false)(O.fromNullable(options))
+    ? ("skip" as const)
+    : ("check" as const),
   visitorKeys,
 });
 

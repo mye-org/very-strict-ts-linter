@@ -161,8 +161,12 @@ const resolveCalleeSymbol =
 const hasNoUnsafeDeclaration = (decls: ReadonlyArray<ts.Declaration>) =>
   !RA.some(isUnsafeMethodDeclaration)(decls);
 
-const resolveSymbolDeclarations = (checker: ts.TypeChecker) => (sym: ts.Symbol) =>
-  resolveSymbol(sym, checker).getDeclarations() ?? [];
+const resolveSymbolDeclarations = (checker: ts.TypeChecker) =>
+  flow(
+    (sym: ts.Symbol) => resolveSymbol(sym, checker).getDeclarations(),
+    O.fromNullable,
+    O.getOrElse<ReadonlyArray<ts.Declaration>>(() => []),
+  );
 
 const isSafeMemberCallee = ({
   callee,
@@ -183,10 +187,14 @@ const isSafeMemberCallee = ({
     : !callee.optional && !callee.computed && check(callee);
 };
 
-const isRestParamSymbol = (sym: ts.Symbol) =>
-  sym.valueDeclaration !== undefined &&
-  ts.isParameter(sym.valueDeclaration) &&
-  sym.valueDeclaration.dotDotDotToken !== undefined;
+const isRestParameterDecl = (decl: ts.Declaration) =>
+  ts.isParameter(decl) && O.isSome(O.fromNullable(decl.dotDotDotToken));
+
+const isRestParamSymbol = flow(
+  (sym: ts.Symbol) => sym.valueDeclaration,
+  O.fromNullable,
+  O.exists(isRestParameterDecl),
+);
 
 const hasRestParamNode = flow(
   RA.last<TSESTree.Parameter>,
@@ -209,11 +217,13 @@ const isExplicitThisParameter = (param: ts.ParameterDeclaration, checker: ts.Typ
   (checker.getTypeAtLocation(param).flags & ts.TypeFlags.Void) === 0;
 
 const hasNonVoidThisParam = (sig: ts.Signature, checker: ts.TypeChecker) =>
-  sig.declaration !== undefined &&
-  ts.isFunctionLike(sig.declaration) &&
-  RA.some((p: ts.ParameterDeclaration) => isExplicitThisParameter(p, checker))(
-    sig.declaration.parameters,
-  );
+  O.exists(
+    (decl: ts.SignatureDeclaration | ts.JSDocSignature) =>
+      ts.isFunctionLike(decl) &&
+      RA.some((p: ts.ParameterDeclaration) => isExplicitThisParameter(p, checker))(
+        decl.parameters,
+      ),
+  )(O.fromNullable(sig.declaration));
 
 const isVoidReturnCompatible = ({
   kind,
@@ -231,12 +241,12 @@ const isVoidReturnCompatible = ({
 
 const hasParamTypeAnnotation = (param: TSESTree.Parameter) =>
   param.type === AST_NODE_TYPES.Identifier
-    ? param.typeAnnotation !== undefined
-    : param.type === AST_NODE_TYPES.RestElement && param.typeAnnotation !== undefined;
+    ? O.isSome(O.fromNullable(param.typeAnnotation))
+    : param.type === AST_NODE_TYPES.RestElement && O.isSome(O.fromNullable(param.typeAnnotation));
 
 const hasExplicitTypeAnnotation = (node: FunctionNode) =>
-  node.typeParameters !== undefined ||
-  node.returnType !== undefined ||
+  O.isSome(O.fromNullable(node.typeParameters)) ||
+  O.isSome(O.fromNullable(node.returnType)) ||
   RA.some(hasParamTypeAnnotation)(node.params);
 
 const isAnyTsType = (type: ts.Type) => (type.flags & ts.TypeFlags.Any) !== 0;

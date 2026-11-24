@@ -80,7 +80,14 @@ const toCheckerContext = (services: ParserServices) =>
     ? O.some<CheckerContext>({ services, checker: services.program.getTypeChecker() })
     : O.none;
 
-const readSymbolName = (type: ts.Type) => type.getSymbol()?.name ?? "";
+const readSymbolName = flow(
+  (type: ts.Type) => type.getSymbol(),
+  O.fromNullable,
+  O.match(
+    () => "",
+    (symbol) => symbol.name,
+  ),
+);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive composite type check
 const isCompositeTypeMatching = (type: ts.Type, isLeafMatch: (t: ts.Type) => boolean): boolean =>

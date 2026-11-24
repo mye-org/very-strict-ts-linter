@@ -167,6 +167,32 @@ export const tier2Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(2);
 
 export const tier3Rules: TSESLint.FlatConfig.Rules = buildRulesForTier(3);
 
+const DEFAULT_DOMAIN_PATTERNS = [
+  "**/domain/**",
+  "**/domains/**",
+] as const satisfies ReadonlyArray<string>;
+const DEFAULT_APPLICATION_PATTERNS = [
+  "**/application/**",
+] as const satisfies ReadonlyArray<string>;
+
+const resolveDomainPatterns = flow(
+  (options: StrictFpConfigOptions) => options.domainFiles,
+  O.fromNullable,
+  O.getOrElse<ReadonlyArray<string>>(() => DEFAULT_DOMAIN_PATTERNS),
+);
+
+const resolveApplicationPatterns = flow(
+  (options: StrictFpConfigOptions) => options.applicationFiles,
+  O.fromNullable,
+  O.getOrElse<ReadonlyArray<string>>(() => DEFAULT_APPLICATION_PATTERNS),
+);
+
+const resolveMaxTier = flow(
+  (options: StrictFpConfigOptions) => options.maxTier,
+  O.fromNullable,
+  O.getOrElse<LintTier>(() => 3),
+);
+
 const buildUbiquitousOptions = (options: StrictFpConfigOptions) =>
   options.domainFiles || options.applicationFiles
     ? {
@@ -174,8 +200,8 @@ const buildUbiquitousOptions = (options: StrictFpConfigOptions) =>
           "error",
           {
             domainPatterns: [
-              ...(options.domainFiles ?? ["**/domain/**", "**/domains/**"]),
-              ...(options.applicationFiles ?? ["**/application/**"]),
+              ...resolveDomainPatterns(options),
+              ...resolveApplicationPatterns(options),
             ],
           },
         ] satisfies TSESLint.FlatConfig.RuleEntry,
@@ -243,7 +269,7 @@ export const buildTieredRules = ((
 })) satisfies (maxTier: LintTier, options?: StrictFpConfigOptions) => TSESLint.FlatConfig.Rules;
 
 export const strictFpRules = ((options: StrictFpConfigOptions = {}) =>
-  buildTieredRules(options.maxTier ?? 3, options)) satisfies (
+  buildTieredRules(resolveMaxTier(options), options)) satisfies (
   options?: StrictFpConfigOptions,
 ) => TSESLint.FlatConfig.Rules;
 
@@ -445,11 +471,11 @@ const buildTierRuleBlock = (
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions,
 ) => ({
-  name: formatTierName(options.maxTier ?? 3),
+  name: formatTierName(resolveMaxTier(options)),
   files: [...resolveFiles(options)],
   ignores: [...defaultStrictFpIgnores],
   plugins: { "strict-fp": plugin },
-  rules: buildTieredRules(options.maxTier ?? 3, options),
+  rules: buildTieredRules(resolveMaxTier(options), options),
 });
 
 export type StrictReactConfigOptions = Partial<
@@ -505,7 +531,7 @@ export const buildTieredConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
 ) => {
-  const maxTier = options.maxTier ?? 3;
+  const maxTier = resolveMaxTier(options);
   return [
     ...(maxTier >= 1 ? scopeTypeCheckedConfigs(resolveFiles(options)) : []),
     buildTierRuleBlock(plugin, options),
@@ -522,7 +548,7 @@ export const buildStrictFpConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
 ) =>
-  buildTieredConfig(plugin, { ...options, maxTier: options.maxTier ?? 3 })) satisfies (
+  buildTieredConfig(plugin, { ...options, maxTier: resolveMaxTier(options) })) satisfies (
   plugin: TSESLint.FlatConfig.Plugin,
   options?: StrictFpConfigOptions,
 ) => TSESLint.FlatConfig.ConfigArray;

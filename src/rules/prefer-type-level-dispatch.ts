@@ -66,9 +66,14 @@ const isExpandedMonadicUnion = (type: ts.Type, checker: ts.TypeChecker) =>
     type.types.length,
   );
 
+const hasMonadicSymbolName = flow(
+  (sym?: ts.Symbol) => O.fromNullable(sym),
+  O.exists((sym: ts.Symbol) => MONADIC_TYPE_NAMES.has(sym.name)),
+);
+
 const isMonadicWrapperType = (type: ts.Type, checker: ts.TypeChecker) =>
-  MONADIC_TYPE_NAMES.has(type.aliasSymbol?.name ?? "") ||
-  MONADIC_TYPE_NAMES.has(type.getSymbol()?.name ?? "") ||
+  hasMonadicSymbolName(type.aliasSymbol) ||
+  hasMonadicSymbolName(type.getSymbol()) ||
   isExpandedMonadicUnion(type, checker);
 
 const isStringLiteralLike = (type: ts.Type) =>
@@ -123,7 +128,11 @@ const isFiniteNonBooleanUnionParam = (
 const isArgInParamSet = (
   paramNames: ReadonlySet<string>,
   arg?: TSESTree.CallExpressionArgument,
-) => arg?.type === AST_NODE_TYPES.Identifier && paramNames.has(arg.name);
+) =>
+  O.exists(
+    (a: TSESTree.CallExpressionArgument) =>
+      a.type === AST_NODE_TYPES.Identifier && paramNames.has(a.name),
+  )(O.fromNullable(arg));
 
 const isMatchCallOnParam = (
   node: TSESTree.Node,
@@ -163,10 +172,19 @@ const resolveMemberParentCall = (member: TSESTree.MemberExpression, current: TSE
     ? O.some([member.property.name, member.parent] as const)
     : O.none;
 
-const resolveParentMethodCall = (current: TSESTree.Node) =>
-  current.parent?.type === AST_NODE_TYPES.MemberExpression
-    ? resolveMemberParentCall(current.parent, current)
+const resolveMemberParent = (current: TSESTree.Node) => (parent: TSESTree.Node) =>
+  parent.type === AST_NODE_TYPES.MemberExpression
+    ? resolveMemberParentCall(parent, current)
     : O.none;
+
+const resolveParentMethodCall = (current: TSESTree.Node) => {
+  const resolve = flow(
+    (node: TSESTree.Node) => node.parent,
+    O.fromNullable,
+    O.flatMap(resolveMemberParent(current)),
+  );
+  return resolve(current);
+};
 
 const stepMatchBranchCallbacks = (
   parentCall: TSESTree.CallExpression,

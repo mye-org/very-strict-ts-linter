@@ -79,11 +79,15 @@ const extractParentParams = flow(
 );
 
 const isParameterHolder = (node: TSESTree.Node) =>
-  node.parent?.type === AST_NODE_TYPES.AssignmentPattern
-    ? node.parent.left === node && isFunctionLikeType(node.parent.parent)
-    : O.exists((params: ReadonlyArray<TSESTree.Parameter>) => hasParamNode(node, params))(
-        extractParentParams(node),
-      );
+  O.exists(
+    (parent: TSESTree.Node) =>
+      parent.type === AST_NODE_TYPES.AssignmentPattern &&
+      parent.left === node &&
+      isFunctionLikeType(parent.parent),
+  )(O.fromNullable(node.parent)) ||
+  O.exists((params: ReadonlyArray<TSESTree.Parameter>) => hasParamNode(node, params))(
+    extractParentParams(node),
+  );
 
 const isInsideParameterAnnotation: Pred.Predicate<TSESTree.Node> = flow(
   (n: TSESTree.Node) => n.parent,
@@ -104,8 +108,8 @@ const isPredicateRefName = (typeNode: TSESTree.TypeNode) =>
     .exhaustive();
 
 const hasPredicateTypeAnnotation = flow(
-  (id: TSESTree.Identifier) => id.typeAnnotation?.typeAnnotation,
-  O.fromNullable,
+  (id: TSESTree.Identifier) => O.fromNullable(id.typeAnnotation),
+  O.map((ann) => ann.typeAnnotation),
   O.exists(isPredicateRefName),
 );
 
@@ -128,7 +132,7 @@ const unwrapSatisfiesParent = (parent: TSESTree.Node) =>
 
 const resolveEnclosingBindingName = (node: FunctionNode) =>
   node.type === AST_NODE_TYPES.FunctionDeclaration
-    ? O.fromNullable(node.id?.name)
+    ? O.map((id: TSESTree.Identifier) => id.name)(O.fromNullable(node.id))
     : resolveParentBindingName(unwrapSatisfiesParent(node.parent));
 
 const hasPredicateBindingAnnotation = (node: FunctionNode) =>
@@ -163,9 +167,14 @@ const isKnownPredicateMethodCall = (
   argNode: TSESTree.Node,
 ) => isFirstArgNode(call, argNode) && isPredicateMethodCallee(call.callee);
 
+const hasTypePredicate = flow(
+  (sig: ts.Signature, checker: ts.TypeChecker) => checker.getTypePredicateOfSignature(sig),
+  O.fromNullable,
+  O.isSome,
+);
+
 const isPredicateContextualSig = (sig: ts.Signature, checker: ts.TypeChecker) =>
-  checker.getTypePredicateOfSignature(sig) !== undefined ||
-  isBooleanTsType(checker.getReturnTypeOfSignature(sig));
+  hasTypePredicate(sig, checker) || isBooleanTsType(checker.getReturnTypeOfSignature(sig));
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive helper
 const isPredicateType = (type: ts.Type, checker: ts.TypeChecker): boolean =>
@@ -325,8 +334,10 @@ const isInlinePredicateCallback = ({
     .exhaustive() ||
   isBoundAsPredicateCallback({ node, services, checker });
 
-const isTypePredicateAnnotation = (ret?: TSESTree.TSTypeAnnotation) =>
-  ret?.typeAnnotation.type === AST_NODE_TYPES.TSTypePredicate;
+const isTypePredicateAnnotation = flow(
+  (ret?: TSESTree.TSTypeAnnotation) => O.fromNullable(ret),
+  O.exists((r) => r.typeAnnotation.type === AST_NODE_TYPES.TSTypePredicate),
+);
 
 const hasPredicateBindingName = flow(resolveEnclosingBindingName, O.exists(isPredicateName));
 
@@ -451,6 +462,15 @@ const isBooleanNodeType = (
   return check(node);
 };
 
+const resolveReturnReportNode = (node: FunctionNode) => {
+  const resolve = flow(
+    (n: FunctionNode) => n.returnType,
+    O.fromNullable,
+    O.getOrElse<TSESTree.Node>(() => node),
+  );
+  return resolve(node);
+};
+
 const checkFunctionNode =
   (
     services: ParserServicesWithTypeInformation,
@@ -462,7 +482,9 @@ const checkFunctionNode =
       !isExemptedFunction({ node, services, checker }) &&
         hasBooleanReturnType({ node, services, checker }),
     )
-      .with(true, () => { report(node.returnType ?? node, "preferUnionOverBooleanReturn"); })
+      .with(true, () => {
+        report(resolveReturnReportNode(node), "preferUnionOverBooleanReturn");
+      })
       .with(false, () => {})
       .exhaustive();
   };

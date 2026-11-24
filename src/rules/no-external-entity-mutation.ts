@@ -1,6 +1,7 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import * as R from "fp-ts/lib/Record.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
@@ -100,11 +101,16 @@ const toTargetAssignment = (m: TSESTree.MemberExpression) =>
     .with({ _tag: "None" }, () => O.none)
     .exhaustive();
 
+const EMPTY_TARGET_ASSIGNMENTS: ReadonlyArray<TargetAssignment> = [];
+
 const groupMutationsByTarget = flow(
   RA.filterMap(toTargetAssignment),
   RA.reduce({}, (acc: Readonly<Record<string, ReadonlyArray<TargetAssignment>>>, entry) => ({
     ...acc,
-    [entry.targetName]: [...(acc[entry.targetName] ?? []), entry],
+    [entry.targetName]: [
+      ...O.getOrElse(() => EMPTY_TARGET_ASSIGNMENTS)(RR.lookup(entry.targetName)(acc)),
+      entry,
+    ],
   })),
 );
 

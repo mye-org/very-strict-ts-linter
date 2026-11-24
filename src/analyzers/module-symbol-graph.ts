@@ -163,9 +163,15 @@ const extractRecordEntries = <V>(rec: Readonly<Record<string, V>>) =>
 const extractMapValues = <V>(map: ReadonlyMap<string, V>) =>
   Array.from(map.values()) satisfies ReadonlyArray<V>;
 
+const hasNodeModifier = (kind: ts.SyntaxKind) =>
+  flow(
+    ts.getModifiers,
+    O.fromNullable,
+    O.exists(RA.some((m: ts.Modifier) => m.kind === kind)),
+  );
+
 const hasModifierKind = (node: ts.Node, kind: ts.SyntaxKind) =>
-  ts.canHaveModifiers(node) &&
-  RA.some((m: ts.Modifier) => m.kind === kind)(ts.getModifiers(node) ?? []);
+  ts.canHaveModifiers(node) && hasNodeModifier(kind)(node);
 
 const isExportedStmt = (node: ts.Node) => hasModifierKind(node, ts.SyntaxKind.ExportKeyword);
 const isDefaultStmt = (node: ts.Node) => hasModifierKind(node, ts.SyntaxKind.DefaultKeyword);
@@ -270,8 +276,20 @@ const extractPropertyNameText = (name: ts.PropertyName | ts.BindingName) =>
     .with(P._, () => O.none)
     .exhaustive();
 
-const extractPrimaryDeclaration = (sym: ts.Symbol) =>
-  O.fromNullable(sym.valueDeclaration ?? sym.declarations?.[0]);
+const extractFirstDeclaration = flow(
+  (sym: ts.Symbol) => O.fromNullable(sym.declarations),
+  O.flatMap(RA.head),
+);
+
+const extractValueDeclaration = flow(
+  (sym: ts.Symbol) => sym.valueDeclaration,
+  O.fromNullable,
+);
+
+const extractPrimaryDeclaration = flow(
+  (sym: ts.Symbol) => ({ sym, valueDecl: extractValueDeclaration(sym) }),
+  ({ sym, valueDecl }) => O.alt(() => extractFirstDeclaration(sym))(valueDecl),
+);
 
 const extractNodeFilePath = (decl: ts.Node) => normalizeFilePath(decl.getSourceFile().fileName);
 
@@ -366,11 +384,22 @@ const classifyDeclarationNode = (decl: ts.Node) =>
     .when(ts.isVariableDeclaration, classifyVarDeclInitializer)
     .otherwise(() => "value" as const);
 
+const resolveSpecifierLocalIdent = flow(
+  (spec: ts.ExportSpecifier) => ({
+    propName: O.fromNullable(spec.propertyName),
+    fallback: spec.name,
+  }),
+  ({ propName, fallback }) => O.getOrElse(() => fallback)(propName),
+);
+
+const resolveIdentSymbol = (checker: ts.TypeChecker) =>
+  flow((id: ts.ModuleExportName) => checker.getSymbolAtLocation(id), O.fromNullable);
+
+const resolvePropSym = (checker: ts.TypeChecker) =>
+  flow(resolveSpecifierLocalIdent, resolveIdentSymbol(checker));
+
 const resolveSpecifierSymbol = (spec: ts.ExportSpecifier, checker: ts.TypeChecker) =>
-  O.fromNullable(
-    checker.getSymbolAtLocation(spec.propertyName ?? spec.name) ??
-      checker.getSymbolAtLocation(spec.name),
-  );
+  O.alt(() => resolveIdentSymbol(checker)(spec.name))(resolvePropSym(checker)(spec));
 
 const resolveSameFileDecl = (canonical: ts.Symbol, sf: ts.SourceFile) =>
   O.filter((decl: ts.Declaration) => extractNodeFilePath(decl) === normalizeFilePath(sf.fileName))(
@@ -382,7 +411,7 @@ const buildReExportFromDecl =
   (spec: ts.ExportSpecifier, decl: ts.Declaration) =>
     buildRuntimeExport(sf, {
       exportName: spec.name.text,
-      localName: (spec.propertyName ?? spec.name).text,
+      localName: resolveSpecifierLocalIdent(spec).text,
       kind: classifyDeclarationNode(decl),
       declaration: decl,
       symbol: O.some(canonical),
@@ -612,18 +641,30 @@ const resolveNamedDeclSymbol = (
     ? O.fromNullable(checker.getSymbolAtLocation(stmt.name))
     : O.fromNullable(checker.getSymbolAtLocation(stmt));
 
+const resolveDeclTextName = flow(
+  (stmt: ts.FunctionDeclaration | ts.ClassDeclaration) => stmt.name,
+  O.fromNullable,
+  O.match(
+    () => "default",
+    (id: ts.Identifier) => id.text,
+  ),
+);
+
 const extractExportedFunctionOrClass =
   ({ sf, checker }: FileCheckerCtx) =>
-  (stmt: ts.FunctionDeclaration | ts.ClassDeclaration, kind: "function" | "class") => [
-    buildRuntimeExport(sf, {
-      exportName: isDefaultStmt(stmt) ? "default" : stmt.name?.text ?? "default",
-      localName: stmt.name?.text ?? "default",
-      kind,
-      declaration: stmt,
-      symbol: resolveNamedDeclSymbol(stmt, checker),
-      defaultBagProperty: O.none,
-    }),
-  ];
+  (stmt: ts.FunctionDeclaration | ts.ClassDeclaration, kind: "function" | "class") => {
+    const declName = resolveDeclTextName(stmt);
+    return [
+      buildRuntimeExport(sf, {
+        exportName: isDefaultStmt(stmt) ? "default" : declName,
+        localName: declName,
+        kind,
+        declaration: stmt,
+        symbol: resolveNamedDeclSymbol(stmt, checker),
+        defaultBagProperty: O.none,
+      }),
+    ];
+  };
 
 const extractExportedFunctionDecl = (stmt: ts.FunctionDeclaration, ctx: FileCheckerCtx) =>
   stmt.body && isExportedStmt(stmt) ? extractExportedFunctionOrClass(ctx)(stmt, "function") : [];
@@ -709,12 +750,19 @@ const toFileAndLocalEntries = (exp: RuntimeExport) => [
 const toDefaultPropPair = (exp: RuntimeExport) =>
   O.map((propName: string) => ({ filePath: exp.fileName, propName, exp }))(exp.defaultBagProperty);
 
+const lookupDefaultPropPairs = (
+  filePath: string,
+  acc: Readonly<Record<string, ReadonlyArray<readonly [string, RuntimeExport]>>>,
+) => O.getOrElseW(() => [])(RR.lookup(filePath, acc));
+
 const groupDefaultPropsByFile = RA.reduce<
   DefaultPropPair,
   Readonly<Record<string, ReadonlyArray<readonly [string, RuntimeExport]>>>
 >({}, (acc, item) => ({
   ...acc,
-  [item.filePath]: RA.append([item.propName, item.exp] as const)(acc[item.filePath] ?? []),
+  [item.filePath]: RA.append([item.propName, item.exp] as const)(
+    lookupDefaultPropPairs(item.filePath, acc),
+  ),
 }));
 
 const buildFileDefaultPropsEntries = flow(
@@ -776,8 +824,12 @@ const matchSymbolToExport = (sym: ts.Symbol, { checker, lookup }: SymbolResoluti
   );
 };
 
-const extractBindingPropName = (el: ts.BindingElement) =>
-  extractPropertyNameText(el.propertyName ?? el.name);
+const resolveBindingPropTarget = flow(
+  (el: ts.BindingElement) => ({ propName: O.fromNullable(el.propertyName), name: el.name }),
+  ({ propName, name }) => O.getOrElseW(() => name)(propName),
+);
+
+const extractBindingPropName = flow(resolveBindingPropTarget, extractPropertyNameText);
 
 const extractBindingPropNames = (pattern: ts.ObjectBindingPattern) =>
   RA.filterMap(extractBindingPropName)(pattern.elements);
@@ -1156,11 +1208,21 @@ type EntryPointKeyEnv = Readonly<{
   resolution: SymbolResolutionEnv;
 }>;
 
+const lookupCatalogFileExports = (catalog: ProgramSymbolCatalog, filePath: string) =>
+  O.getOrElseW(() => [])(RR.lookup(filePath, catalog.fileExports));
+
+const extractCatalogFileExportKeys = (catalog: ProgramSymbolCatalog) =>
+  flow(
+    (sf: ts.SourceFile) => normalizeFilePath(sf.fileName),
+    (filePath) => lookupCatalogFileExports(catalog, filePath),
+    extractExportKeys,
+  );
+
 const collectEntryPointFileKeys = (
   sf: ts.SourceFile,
   { catalog, resolution }: EntryPointKeyEnv,
 ) => [
-  ...extractExportKeys(catalog.fileExports[normalizeFilePath(sf.fileName)] ?? []),
+  ...extractCatalogFileExportKeys(catalog)(sf),
   ...extractModuleExportKeys(sf, resolution),
 ];
 
@@ -1226,6 +1288,9 @@ const toProdEdgeDetail = (
 
 const groupProdDetailsByTarget = RNEA.groupBy((detail: ProdEdgeDetail) => detail.targetFile);
 
+const lookupStringList = (key: string, rec: Readonly<Record<string, ReadonlyArray<string>>>) =>
+  O.getOrElse(() => EMPTY_STRINGS)(RR.lookup(key, rec));
+
 const buildFileConsumersByExport = (
   runtimeExports: ReadonlyArray<RuntimeExport>,
   {
@@ -1243,8 +1308,8 @@ const buildFileConsumersByExport = (
           exp.exportName,
           {
             exportKey: exp.key,
-            prodConsumers: prodByKey[exp.key] ?? [],
-            testConsumers: testByKey[exp.key] ?? [],
+            prodConsumers: lookupStringList(exp.key, prodByKey),
+            testConsumers: lookupStringList(exp.key, testByKey),
           },
         ] as const,
     )(runtimeExports),
@@ -1297,8 +1362,13 @@ const buildFileModuleFlags = (filePath: string, { catalog, scope }: FileGraphBui
   isBarrel: catalog.barrelFiles.has(filePath),
   isTest: isMatchingAnyPattern(filePath, scope.testFilePatterns),
   isEntryPoint: isMatchingAnyPattern(filePath, scope.entryPointPatterns),
-  lineCount: catalog.lineCounts[filePath] ?? 0,
+  lineCount: O.getOrElse(() => 0)(RR.lookup(filePath, catalog.lineCounts)),
 });
+
+const lookupTargetProdDetails = (
+  prodByTargetFile: Readonly<Record<string, ReadonlyArray<ProdEdgeDetail>>>,
+  filePath: string,
+) => O.getOrElseW(() => [])(RR.lookup(filePath, prodByTargetFile));
 
 const buildFileModuleGraph =
   (ctx: FileGraphBuildContext) =>
@@ -1308,7 +1378,9 @@ const buildFileModuleGraph =
       ...buildFileModuleFlags(filePath, ctx),
       runtimeExports,
       consumersByExport: buildFileConsumersByExport(runtimeExports, { prodByKey, testByKey }),
-      prodImportsByConsumer: buildFileProdImportsByConsumer(prodByTargetFile[filePath] ?? []),
+      prodImportsByConsumer: buildFileProdImportsByConsumer(
+        lookupTargetProdDetails(prodByTargetFile, filePath),
+      ),
     };
   };
 
@@ -1346,6 +1418,8 @@ export const analyzeModuleSymbolGraph = ((
   scope: Partial<GraphQueryScope> = {},
 ) =>
   computeProgramSymbolGraph(program, {
-    entryPointPatterns: scope.entryPointPatterns ?? [],
-    testFilePatterns: scope.testFilePatterns ?? DEFAULT_TEST_PATTERNS,
+    entryPointPatterns: O.getOrElse(() => EMPTY_STRINGS)(O.fromNullable(scope.entryPointPatterns)),
+    testFilePatterns: O.getOrElseW(() => DEFAULT_TEST_PATTERNS)(
+      O.fromNullable(scope.testFilePatterns),
+    ),
   })) satisfies (program: ts.Program, scope?: Partial<GraphQueryScope>) => ProgramSymbolGraph;

@@ -6,6 +6,7 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { DEFAULT_TEST_PATTERNS } from "../analyzers/module-symbol-graph.js";
@@ -76,12 +77,23 @@ const reportRedundantFinding = (
     .exhaustive();
 };
 
+const EMPTY_FINDINGS: ReadonlyArray<RedundantTestFinding> = [];
+
+const resolveSameLevelMode = flow(
+  O.fromNullable<Options[0]["checkSameLevelDuplicates"]>,
+  O.match(
+    () => "enabled" as const,
+    (enabled) => (enabled ? ("enabled" as const) : ("disabled" as const)),
+  ),
+);
+
 const resolveScopeOptions = (options: Options[0], testPatterns: ReadonlyArray<string>) => ({
   ...DEFAULT_TEST_SCOPE_OPTIONS,
   testPatterns,
-  minRepeatedCases: options.minRepeatedCases ?? DEFAULT_TEST_SCOPE_OPTIONS.minRepeatedCases,
-  checkSameLevelDuplicates:
-    (options.checkSameLevelDuplicates ?? true) ? ("enabled" as const) : ("disabled" as const),
+  minRepeatedCases: O.getOrElse(() => DEFAULT_TEST_SCOPE_OPTIONS.minRepeatedCases)(
+    O.fromNullable(options.minRepeatedCases),
+  ),
+  checkSameLevelDuplicates: resolveSameLevelMode(options.checkSameLevelDuplicates),
 });
 
 type TestScopeEnv = Readonly<{
@@ -91,14 +103,21 @@ type TestScopeEnv = Readonly<{
   readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
 }>;
 
+const lookupFileFindings = (fileName: string) =>
+  flow(
+    (byFile: Readonly<Record<string, ReadonlyArray<RedundantTestFinding>>>) =>
+      RR.lookup(fileName)(byFile),
+    O.getOrElse(() => EMPTY_FINDINGS),
+  );
+
 const reportRedundantFindings = (env: TestScopeEnv) => (fileName: string) => {
+  const { redundancyByFile } = analyzeTestScope(
+    env.services.program,
+    resolveScopeOptions(env.options, env.testPatterns),
+  );
   RA.map((finding: RedundantTestFinding) => {
     reportRedundantFinding(finding, env.report);
-  })(
-    analyzeTestScope(env.services.program, resolveScopeOptions(env.options, env.testPatterns)).redundancyByFile[
-      fileName
-    ] ?? [],
-  );
+  })(lookupFileFindings(fileName)(redundancyByFile));
 };
 
 const resolveProgramFileName = (
@@ -127,7 +146,9 @@ const buildTestScopeListeners = (
 ) => (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => ({
   Program: checkProgram({
     options,
-    testPatterns: options.testPatterns ?? DEFAULT_TEST_PATTERNS,
+    testPatterns: O.getOrElse<ReadonlyArray<string>>(() => DEFAULT_TEST_PATTERNS)(
+      O.fromNullable(options.testPatterns),
+    ),
     services,
     report,
   }),

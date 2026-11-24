@@ -133,21 +133,27 @@ const hasStringFirstTypeArg = (type: ts.TypeReference, checker: ts.TypeChecker) 
   return check(type);
 };
 
-const isWideStringMap = (type: ts.Type, checker: ts.TypeChecker) => {
-  const symName = type.getSymbol()?.name;
-  return (
-    (symName === "ReadonlyMap" || symName === "Map") &&
-    isTsTypeReference(type) &&
-    hasStringFirstTypeArg(type, checker)
-  );
-};
+const MAP_SYMBOL_NAMES: ReadonlySet<string> = new Set(["ReadonlyMap", "Map"]);
+
+const isMapSymbol = flow(
+  (type: ts.Type) => type.getSymbol(),
+  O.fromNullable,
+  O.exists((s: ts.Symbol) => MAP_SYMBOL_NAMES.has(s.name)),
+);
+
+const isWideStringMap = (type: ts.Type, checker: ts.TypeChecker) =>
+  isMapSymbol(type) &&
+  isTsTypeReference(type) &&
+  hasStringFirstTypeArg(type, checker);
 
 const isNodeModulesSegment = (normalized: string) =>
   normalized.includes("/node_modules/");
 
 const isNodeModulesFile = flow(normalizeFilePath, isNodeModulesSegment);
 
-const resolveSymbolFirstDecl = O.flatMap((s: ts.Symbol) => O.fromNullable(s.declarations?.[0]));
+const resolveSymbolFirstDecl = O.flatMap(
+  flow((s: ts.Symbol) => s.declarations, O.fromNullable, O.flatMap(RA.head)),
+);
 
 const resolveAliasDecl = flow(
   (type: ts.Type) => O.fromNullable(type.aliasSymbol),
@@ -181,6 +187,26 @@ const resolveFirstDeclFile =
     return resolve(type);
   };
 
+const resolveAliasSymbolName = flow(
+  (type: ts.Type) => type.aliasSymbol,
+  O.fromNullable,
+  O.map((s) => s.name),
+);
+
+const resolveTypeSymbolNameOnly = flow(
+  (type: ts.Type) => type.getSymbol(),
+  O.fromNullable,
+  O.map((s) => s.name),
+);
+
+const resolveTypeSymbolName = (type: ts.Type) => {
+  const run = flow(
+    resolveAliasSymbolName,
+    O.alt(() => resolveTypeSymbolNameOnly(type)),
+  );
+  return run(type);
+};
+
 const isExternalLibraryType = (
   node: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
@@ -189,7 +215,7 @@ const isExternalLibraryType = (
   const tsNode = services.esTreeNodeToTSNodeMap.get(node);
   const type = checker.getTypeAtLocation(tsNode);
   return (
-    !BUILTIN_MAP_OR_RECORD.has(type.aliasSymbol?.name ?? type.getSymbol()?.name ?? "") &&
+    !O.exists((name: string) => BUILTIN_MAP_OR_RECORD.has(name))(resolveTypeSymbolName(type)) &&
     O.exists(isNodeModulesFile)(resolveFirstDeclFile(checker)(tsNode, type))
   );
 };

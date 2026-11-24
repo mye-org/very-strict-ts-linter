@@ -35,14 +35,14 @@ const computeMaxArgDepth = flow(RA.filter(isCallArg), RA.reduce(0, accumulateArg
 const computeMaxCallNestingDepth = (node: TSESTree.CallExpression): number =>
   isPipeOrFlowCall(node) ? 0 : 1 + computeMaxArgDepth(node.arguments);
 
-const resolveSingleBlockReturnCall = (body: TSESTree.BlockStatement) => {
-  const firstStmt = body.body[0];
-  return body.body.length === 1 &&
-    firstStmt?.type === AST_NODE_TYPES.ReturnStatement &&
-    firstStmt.argument?.type === AST_NODE_TYPES.CallExpression
-    ? O.some(firstStmt.argument)
-    : O.none;
-};
+const resolveSingleBlockReturnCall = flow(
+  (body: TSESTree.BlockStatement) => body.body,
+  O.fromPredicate((stmts: ReadonlyArray<TSESTree.Statement>) => stmts.length === 1),
+  O.flatMap(RA.head),
+  O.filter((stmt): stmt is TSESTree.ReturnStatement => stmt.type === AST_NODE_TYPES.ReturnStatement),
+  O.flatMap((ret) => O.fromNullable(ret.argument)),
+  O.filter((arg): arg is TSESTree.CallExpression => arg.type === AST_NODE_TYPES.CallExpression),
+);
 
 const resolveArrowReturnCall = (node: TSESTree.ArrowFunctionExpression) =>
   match(node.body)
@@ -123,6 +123,12 @@ const checkNestedCall =
       .exhaustive();
   };
 
+const resolveMaxNestingDepth = flow(
+  (options: Options[0]) => options.maxNestingDepth,
+  O.fromNullable,
+  O.getOrElse(() => 2),
+);
+
 export const preferFunctionComposition = createRule<Options, MessageIds>({
   name: "prefer-function-composition",
   meta: {
@@ -142,6 +148,6 @@ export const preferFunctionComposition = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => ({
     ArrowFunctionExpression: (node) => { checkFlowArrow(node, (d) => { context.report(d); }); },
-    CallExpression: checkNestedCall(options.maxNestingDepth ?? 2, (d) => { context.report(d); }),
+    CallExpression: checkNestedCall(resolveMaxNestingDepth(options), (d) => { context.report(d); }),
   }),
 });

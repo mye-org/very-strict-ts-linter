@@ -1,6 +1,7 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as Pred from "fp-ts/lib/Predicate.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
@@ -10,6 +11,7 @@ import { isInsideUnsafeOrMustFunction, isUnsafeOrMustName, resolveDirectFunction
 type MessageIds = "noTryCatch" | "noAsyncAwait" | "noRawPromise";
 
 const PROMISE_CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set(["Promise"]);
+const PROMISE_TYPE_NAMES: ReadonlySet<string> = new Set(["Promise", "PromiseLike"]);
 const PROMISE_TERMINAL_METHODS = new Set(["then", "catch", "finally"]);
 const PROMISE_STATIC_METHODS = new Set([
   "resolve",
@@ -47,10 +49,13 @@ const isPromiseSymbol = ({
   services: ParserServicesWithTypeInformation;
   checker: ts.TypeChecker;
 }>) => {
-  const symbol = checker
-    .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(object))
-    .getSymbol();
-  return symbol?.name === "Promise" || symbol?.name === "PromiseLike";
+  const check = flow(
+    (expr: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(expr),
+    (tsNode) => checker.getTypeAtLocation(tsNode).getSymbol(),
+    O.fromNullable,
+    O.exists((symbol: ts.Symbol) => PROMISE_TYPE_NAMES.has(symbol.name)),
+  );
+  return check(object);
 };
 
 const isPromiseTerminalCall = ({

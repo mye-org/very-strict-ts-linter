@@ -81,8 +81,20 @@ const extractComplexEntityNames = flow(
   RA.filter(isDomainEntityName),
 );
 
-const resolveSymbolDecl = (sym: ts.Symbol) =>
-  O.fromNullable(sym.valueDeclaration ?? sym.declarations?.[0]);
+const resolveFirstSymbolDecl = flow(
+  (sym: ts.Symbol) => O.fromNullable(sym.declarations),
+  O.flatMap(RA.head),
+);
+
+const resolveValueDecl = flow(
+  (sym: ts.Symbol) => sym.valueDeclaration,
+  O.fromNullable,
+);
+
+const resolveSymbolDecl = flow(
+  (sym: ts.Symbol) => ({ sym, valueDecl: resolveValueDecl(sym) }),
+  ({ sym, valueDecl }) => O.alt(() => resolveFirstSymbolDecl(sym))(valueDecl),
+);
 
 const resolveUnwrappedAtDecl = (sym: ts.Symbol, checker: ts.TypeChecker) =>
   flow(
@@ -105,11 +117,17 @@ const collectPropUnwrappedNames = (prop: ts.Symbol, checker: ts.TypeChecker) =>
 
 type NodeAndFile = Readonly<{ node: ts.Node; sf: ts.SourceFile }>;
 
+const hasNodeAggregateSuffix = flow(
+  (node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration) =>
+    O.fromNullable(node.name),
+  O.exists((name) => hasAggregateSuffix(name.text)),
+);
+
 const classifyCandidateOrigin = (
   node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration,
   fileName: string,
 ) =>
-  hasAggregateSuffix(node.name?.text ?? "") ||
+  hasNodeAggregateSuffix(node) ||
   hasAggregateJsDoc(node) ||
   isMatchingAnyPattern(fileName, DEFAULT_AGGREGATE_PATHS)
     ? ("explicit" as const)
@@ -343,8 +361,10 @@ export const analyzeAggregateGraph = ((
   config: Partial<RootResolutionConfig> = {},
 ) => {
   const resolved: RootResolutionConfig = {
-    explicitOptionRoots: config.explicitOptionRoots ?? [],
-    aggregatePathPatterns: config.aggregatePathPatterns ?? DEFAULT_AGGREGATE_PATHS,
+    explicitOptionRoots: O.getOrElseW(() => [])(O.fromNullable(config.explicitOptionRoots)),
+    aggregatePathPatterns: O.getOrElseW(() => DEFAULT_AGGREGATE_PATHS)(
+      O.fromNullable(config.aggregatePathPatterns),
+    ),
   };
   return memoizeByProgramAndKey(
     aggregateSummaryCache,

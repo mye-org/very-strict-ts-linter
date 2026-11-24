@@ -6,6 +6,7 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { flow } from "fp-ts/lib/function.js";
 import { DEFAULT_TEST_PATTERNS } from "../analyzers/module-symbol-graph.js";
 import {
@@ -44,10 +45,20 @@ const toFindingDescriptor = (finding: LowestLevelFinding) => ({
   },
 });
 
-const resolveScopeOptions = (options: Options[0], testPatterns: ReadonlyArray<string>) => ({
+const EMPTY_FINDINGS: ReadonlyArray<LowestLevelFinding> = [];
+
+const resolveTestPatterns = flow(
+  (options: Options[0]) => options.testPatterns,
+  O.fromNullable,
+  O.getOrElseW(() => DEFAULT_TEST_PATTERNS),
+);
+
+const resolveScopeOptions = (options: Options[0]) => ({
   ...DEFAULT_TEST_SCOPE_OPTIONS,
-  testPatterns,
-  minDelegatedCases: options.minDelegatedCases ?? DEFAULT_TEST_SCOPE_OPTIONS.minDelegatedCases,
+  testPatterns: resolveTestPatterns(options),
+  minDelegatedCases: O.getOrElse(() => DEFAULT_TEST_SCOPE_OPTIONS.minDelegatedCases)(
+    O.fromNullable(options.minDelegatedCases),
+  ),
 });
 
 const reportLowestLevelFindings =
@@ -56,9 +67,14 @@ const reportLowestLevelFindings =
     report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
   ) =>
   (fileName: string, scopeOptions: ReturnType<typeof resolveScopeOptions>) => {
-    RA.map((finding: LowestLevelFinding) => {
-      report(toFindingDescriptor(finding));
-    })(analyzeTestScope(services.program, scopeOptions).lowestLevelByFile[fileName] ?? []);
+    const run = flow(
+      (f: string) => RR.lookup(f, analyzeTestScope(services.program, scopeOptions).lowestLevelByFile),
+      O.getOrElse(() => EMPTY_FINDINGS),
+      RA.map((finding: LowestLevelFinding) => {
+        report(toFindingDescriptor(finding));
+      }),
+    );
+    run(fileName);
   };
 
 const resolveProgramFileName = (
@@ -88,10 +104,7 @@ const buildLowestLevelListeners =
   (options: Options[0], services: ParserServicesWithTypeInformation) =>
   (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => ({
     Program: (programNode: TSESTree.Program) => {
-      checkProgram(services, report)(
-        programNode,
-        resolveScopeOptions(options, options.testPatterns ?? DEFAULT_TEST_PATTERNS),
-      );
+      checkProgram(services, report)(programNode, resolveScopeOptions(options));
     },
   });
 

@@ -29,15 +29,22 @@ const extractKeyNodes = (node: TSESTree.Node & Readonly<Record<string, object>>)
     O.match(() => [] satisfies ReadonlyArray<TSESTree.Node>, extractValNodes),
   );
 
+const EMPTY_VISITOR_KEYS: ReadonlyArray<string> = [];
+
+const lookupVisitorKeys = (nodeType: TSESTree.Node["type"]) =>
+  flow(
+    (keys: TSESLint.SourceCode["visitorKeys"]) => RR.lookup(nodeType, keys),
+    O.flatMap(O.fromNullable),
+    O.getOrElse(() => EMPTY_VISITOR_KEYS),
+  );
+
 export const collectEstreeChildNodes = ((
   node: TSESTree.Node,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
-) => {
-  const keys = visitorKeys[node.type];
-  return !keys || !isNodeRecord(node)
-    ? []
-    : RA.flatMap(extractKeyNodes(node))(keys);
-}) satisfies (
+) =>
+  isNodeRecord(node)
+    ? RA.flatMap(extractKeyNodes(node))(lookupVisitorKeys(node.type)(visitorKeys))
+    : ([] satisfies ReadonlyArray<TSESTree.Node>)) satisfies (
   node: TSESTree.Node,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) => ReadonlyArray<TSESTree.Node>;

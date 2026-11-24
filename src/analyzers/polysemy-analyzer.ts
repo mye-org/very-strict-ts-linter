@@ -75,9 +75,8 @@ const buildModelDefIfLarge =
   (checker: ts.TypeChecker) =>
   (
     node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration,
-    sf: ts.SourceFile,
+    { name, sf }: Readonly<Record<"name", string> & { readonly sf: ts.SourceFile }>,
   ) => {
-    const name = node.name?.text ?? "";
     const props = extractPropNames(checker.getTypeAtLocation(node));
     return props.length >= 4
       ? O.some<ModelDef>({
@@ -91,8 +90,10 @@ const buildModelDefIfLarge =
 
 const extractModelDef =
   (checker: ts.TypeChecker) => (node: ts.Node, sf: ts.SourceFile) =>
-    isModelDeclaration(node) && node.name
-      ? buildModelDefIfLarge(checker)(node, sf)
+    isModelDeclaration(node)
+      ? O.flatMap((id: ts.Identifier) => buildModelDefIfLarge(checker)(node, { name: id.text, sf }))(
+          O.fromNullable(node.name),
+        )
       : O.none;
 
 const resolveModelKeyForType = (type: ts.Type) => {
@@ -363,12 +364,18 @@ const polysemyIndexCache = new WeakMap<ts.Program, Readonly<Record<string, Polys
 
 const readModelEntries = (graph: ProgramPolysemyGraph) => RR.toEntries(graph.models);
 
+const lookupModelEdges = (graph: ProgramPolysemyGraph, modelKey: string) =>
+  O.getOrElseW(() => [])(RR.lookup(modelKey, graph.edgesByModel));
+
 const extractPolysemyFindings = (thresholds: PolysemyThresholds) =>
   flow(
     (graph: ProgramPolysemyGraph) => ({ graph, entries: readModelEntries(graph) }),
     ({ graph, entries }) =>
       RA.filterMap(([, model]: readonly [string, ModelDef]) =>
-        toPolysemyFinding({ model, edges: graph.edgesByModel[model.modelKey] ?? [] }, thresholds),
+        toPolysemyFinding(
+          { model, edges: lookupModelEdges(graph, model.modelKey) },
+          thresholds,
+        ),
       )(entries),
   );
 

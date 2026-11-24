@@ -39,12 +39,30 @@ const isObjectLikeType = (type: ts.Type, checker: ts.TypeChecker) =>
 
 const isUnsafeNamedParent = (parent: ts.Node) =>
   (ts.isFunctionDeclaration(parent) || ts.isMethodDeclaration(parent)) &&
-  parent.name !== undefined &&
-  ts.isIdentifier(parent.name) &&
-  isUnsafeOrMustName(parent.name.text);
+  O.exists((name: ts.PropertyName) => ts.isIdentifier(name) && isUnsafeOrMustName(name.text))(
+    O.fromNullable(parent.name),
+  );
 
 const isEnclosingFnUnsafe = ({ parent }: ts.Declaration) =>
   ts.isFunctionLike(parent) && isUnsafeNamedParent(parent);
+
+const isMatchingDeclPair = ({
+  objSym,
+  keySym,
+  objDecl,
+  keyDecl,
+  checker,
+}: Readonly<{
+  objSym: ts.Symbol;
+  keySym: ts.Symbol;
+  objDecl: ts.Declaration;
+  keyDecl: ts.Declaration;
+  checker: ts.TypeChecker;
+}>) =>
+  objDecl.parent === keyDecl.parent &&
+  !isEnclosingFnUnsafe(keyDecl) &&
+  isObjectLikeType(checker.getTypeOfSymbol(objSym), checker) &&
+  isStringType(checker.getTypeOfSymbol(keySym));
 
 const isMatchingParamPair = ({
   objSym,
@@ -54,13 +72,16 @@ const isMatchingParamPair = ({
   objSym: ts.Symbol;
   keySym: ts.Symbol;
   checker: ts.TypeChecker;
-}>) =>
-  objSym.valueDeclaration !== undefined &&
-  keySym.valueDeclaration !== undefined &&
-  objSym.valueDeclaration.parent === keySym.valueDeclaration.parent &&
-  !isEnclosingFnUnsafe(keySym.valueDeclaration) &&
-  isObjectLikeType(checker.getTypeOfSymbol(objSym), checker) &&
-  isStringType(checker.getTypeOfSymbol(keySym));
+}>) => {
+  const check = flow(
+    O.apS("objDecl", O.fromNullable(objSym.valueDeclaration)),
+    O.apS("keyDecl", O.fromNullable(keySym.valueDeclaration)),
+    O.exists(({ objDecl, keyDecl }) =>
+      isMatchingDeclPair({ objSym, keySym, objDecl, keyDecl, checker }),
+    ),
+  );
+  return check(O.Do);
+};
 
 const isPairFromSameFn = ({
   objNode,
@@ -102,15 +123,16 @@ const isSplitKeyParam = (
   services: ParserServicesWithTypeInformation,
 ) => {
   const checker = services.program.getTypeChecker();
-  return (
-    keySym.valueDeclaration !== undefined &&
-    isStringType(checker.getTypeOfSymbol(keySym)) &&
-    isSplitKeyDecl(keySym.valueDeclaration, checker)
-  );
+  return O.exists(
+    (decl: ts.Declaration) =>
+      isStringType(checker.getTypeOfSymbol(keySym)) && isSplitKeyDecl(decl, checker),
+  )(O.fromNullable(keySym.valueDeclaration));
 };
 
-const isDotLiteralArg = (arg?: TSESTree.CallExpressionArgument) =>
-  arg?.type === AST_NODE_TYPES.Literal && arg.value === ".";
+const isDotLiteralArg = flow(
+  (arg?: TSESTree.CallExpressionArgument) => O.fromNullable(arg),
+  O.exists((a) => a.type === AST_NODE_TYPES.Literal && a.value === "."),
+);
 
 const isSplitCallOnParam = (
   callee: TSESTree.Expression,

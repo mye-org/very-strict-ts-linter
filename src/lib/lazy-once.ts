@@ -1,7 +1,7 @@
 import * as O from "fp-ts/lib/Option.js";
 import { flow } from "fp-ts/lib/function.js";
 
-export const lazyOnce = <A>(compute: () => A): (() => A) => {
+export const lazyOnce = (<A>(compute: () => A) => {
   const cache = new WeakMap<object, { readonly value: A }>();
   const token = {};
   const populate = () => {
@@ -16,4 +16,4 @@ export const lazyOnce = <A>(compute: () => A): (() => A) => {
     O.match(populate, (entry: { readonly value: A }) => entry.value),
   );
   return () => resolve(token);
-};
+}) satisfies <A>(compute: () => A) => () => A;

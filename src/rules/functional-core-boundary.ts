@@ -69,15 +69,23 @@ const formatPrivateHelperPayload = (fn: FunctionPurityInfo, maxPrivate: number) 
   max: String(maxPrivate),
 });
 
+const EMPTY_STRINGS: ReadonlyArray<string> = [];
+
 const resolvePurityOptions = (options: Options[0]) => ({
-  effectTypes: options.effectTypes ?? DEFAULT_EFFECT_TYPES,
-  impureModules: options.impureModules ?? DEFAULT_IMPURE_MODULES,
-  pureModules: options.pureModules ?? [],
+  effectTypes: O.getOrElse<ReadonlyArray<string>>(() => DEFAULT_EFFECT_TYPES)(
+    O.fromNullable(options.effectTypes),
+  ),
+  impureModules: O.getOrElse<ReadonlyArray<string>>(() => DEFAULT_IMPURE_MODULES)(
+    O.fromNullable(options.impureModules),
+  ),
+  pureModules: O.getOrElse(() => EMPTY_STRINGS)(O.fromNullable(options.pureModules)),
 });
 
 const resolveComplexityLimits = (options: Options[0]) => ({
-  maxImpureComplexity: options.maxImpureComplexity ?? 5,
-  maxPrivatePureHelperComplexity: options.maxPrivatePureHelperComplexity ?? 6,
+  maxImpureComplexity: O.getOrElse(() => 5)(O.fromNullable(options.maxImpureComplexity)),
+  maxPrivatePureHelperComplexity: O.getOrElse(() => 6)(
+    O.fromNullable(options.maxPrivatePureHelperComplexity),
+  ),
 });
 
 const resolveModuleScope = (summary: FilePuritySummary) =>

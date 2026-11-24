@@ -51,7 +51,7 @@ const checkModelNode = (
 ) => {
   O.map((finding: PolysemyFinding) => {
     env.report({
-      node: node.id ?? node,
+      node: O.getOrElse<TSESTree.Node>(() => node)(O.fromNullable(node.id)),
       messageId: "modelPolysemy",
       data: { model: finding.modelName, clusters: formatClusters(finding) },
     });

@@ -91,7 +91,7 @@ const STEP_KIND_BUILDERS: ReadonlyMap<string, (call: TSESTree.CallExpression) =>
 const buildOtherStep = (call: TSESTree.CallExpression) => ({ kind: "other", call }) satisfies StepKind;
 
 const toStepKind = (method: string, call: TSESTree.CallExpression) =>
-  (STEP_KIND_BUILDERS.get(method) ?? buildOtherStep)(call);
+  O.getOrElseW(() => buildOtherStep)(O.fromNullable(STEP_KIND_BUILDERS.get(method)))(call);
 
 const callArgs = (call: TSESTree.CallExpression) => call.arguments;
 const stepArgs = (step: StepKind) => callArgs(step.call);
@@ -118,10 +118,19 @@ const resolveMemberCallParent = (member: TSESTree.MemberExpression, child: TSEST
     ? O.map(pairMethodWithCall(member.property.name))(isParentCallOfMember(member))
     : O.none;
 
-const extractChainedCall = (current: TSESTree.Node) =>
-  current.parent?.type === AST_NODE_TYPES.MemberExpression
-    ? resolveMemberCallParent(current.parent, current)
+const resolveMemberParent = (current: TSESTree.Node) => (parent: TSESTree.Node) =>
+  parent.type === AST_NODE_TYPES.MemberExpression
+    ? resolveMemberCallParent(parent, current)
     : O.none;
+
+const extractChainedCall = (current: TSESTree.Node) => {
+  const run = flow(
+    (n: TSESTree.Node) => n.parent,
+    O.fromNullable,
+    O.flatMap(resolveMemberParent(current)),
+  );
+  return run(current);
+};
 
 const appendChainStep = ([method, call]: readonly [string, TSESTree.CallExpression]) => [
   toStepKind(method, call),

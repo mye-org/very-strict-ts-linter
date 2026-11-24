@@ -25,10 +25,19 @@ const resolveCallOfMember = (member: TSESTree.MemberExpression, child: TSESTree.
     ? O.some([member, member.parent] as const)
     : O.none;
 
-const resolveParentMemberCall = (current: TSESTree.Node) =>
-  current.parent?.type === AST_NODE_TYPES.MemberExpression
-    ? resolveCallOfMember(current.parent, current)
+const resolveMemberCall = (current: TSESTree.Node) => (parent: TSESTree.Node) =>
+  parent.type === AST_NODE_TYPES.MemberExpression
+    ? resolveCallOfMember(parent, current)
     : O.none;
+
+const resolveParentMemberCall = (current: TSESTree.Node) => {
+  const resolve = flow(
+    (node: TSESTree.Node) => node.parent,
+    O.fromNullable,
+    O.flatMap(resolveMemberCall(current)),
+  );
+  return resolve(current);
+};
 
 const resolveTerminatorFromStep = (
   [member, parentCall]: readonly [TSESTree.MemberExpression, TSESTree.CallExpression],

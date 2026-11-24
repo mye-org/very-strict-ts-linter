@@ -16,10 +16,13 @@ const isFunctionNode = O.exists(
     n.type === AST_NODE_TYPES.FunctionExpression,
 );
 
+const isFlowInit = O.exists(
+  (init: TSESTree.Expression) =>
+    init.type === AST_NODE_TYPES.CallExpression && isFlowCallExpression(init),
+);
+
 const isLocalHelperFunction = (declarator: TSESTree.VariableDeclarator) =>
-  hasFunctionInit(declarator) ||
-  (declarator.init?.type === AST_NODE_TYPES.CallExpression &&
-    isFlowCallExpression(declarator.init));
+  hasFunctionInit(declarator) || isFlowInit(O.fromNullable(declarator.init));
 
 const hasSingleReadRef = (v: TSESLint.Scope.Variable) =>
   RA.size(RA.filter((ref: TSESLint.Scope.Reference) => ref.isRead())(v.references)) === 1;

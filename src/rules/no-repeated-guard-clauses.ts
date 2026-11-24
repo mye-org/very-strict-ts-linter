@@ -1,5 +1,7 @@
 import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { flow } from "fp-ts/lib/function.js";
 import { analyzeGuardClauses, GuardCluster } from "../analyzers/guard-clause-analyzer.js";
 import { lazyOnce } from "../lib/lazy-once.js";
@@ -34,6 +36,13 @@ type GuardClauseEnv = Readonly<{
   readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
 }>;
 
+const lookupFirstCluster = (key: string) =>
+  flow(
+    (byLocation: Readonly<Record<string, ReadonlyArray<GuardCluster>>>) =>
+      RR.lookup(key)(byLocation),
+    O.flatMap(RA.head<GuardCluster>),
+  );
+
 const reportRepeatedGuard = (
   env: GuardClauseEnv,
 ) => (
@@ -46,7 +55,7 @@ const reportRepeatedGuard = (
       messageId: "repeatedGuardClause",
       data: formatClusterFields(cluster),
     });
-  })(O.fromNullable(byLocation[resolveLogicalLocationKey(node, env.services)]?.[0]));
+  })(lookupFirstCluster(resolveLogicalLocationKey(node, env.services))(byLocation));
 };
 
 const resolveGuardByLocation = (env: GuardClauseEnv) =>

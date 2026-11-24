@@ -9,8 +9,11 @@ import { createRule } from "../lib/rule-factory.js";
 
 const ARRAY_SYMBOL_NAMES: ReadonlySet<string> = new Set(["Array", "ReadonlyArray"]);
 
-const isArraySymbol = (type: ts.Type) =>
-  ARRAY_SYMBOL_NAMES.has(type.getSymbol()?.name ?? "");
+const isArraySymbol = flow(
+  (type: ts.Type) => type.getSymbol(),
+  O.fromNullable,
+  O.exists((s: ts.Symbol) => ARRAY_SYMBOL_NAMES.has(s.name)),
+);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive union check
 const isArrayLikeType = (type: ts.Type, checker: ts.TypeChecker): boolean =>

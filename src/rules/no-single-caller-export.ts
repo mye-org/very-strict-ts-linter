@@ -7,6 +7,8 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { DEFAULT_UBIQUITOUS_TYPES } from "../analyzers/module-cohesion-analyzer.js";
@@ -103,19 +105,24 @@ const reportEncapsulationFinding = (
     .exhaustive();
 };
 
+const EMPTY_STRINGS: ReadonlyArray<string> = [];
+const EMPTY_FINDINGS: ReadonlyArray<EncapsulationFinding> = [];
+
+const isFalseFlag = (v: RespectPurityFlag) => !v;
+
 const resolveAnalyzerOptions = (options: Options[0]) => ({
-  entryPoints: options.entryPoints ?? [],
-  testPatterns: options.testPatterns ?? DEFAULT_TEST_PATTERNS,
-  respectPurityBoundary: options.respectPurityBoundary ?? true,
-  maxMergedFileLines: options.maxMergedFileLines ?? 300,
+  entryPoints: O.getOrElse(() => EMPTY_STRINGS)(O.fromNullable(options.entryPoints)),
+  testPatterns: O.getOrElseW(() => DEFAULT_TEST_PATTERNS)(O.fromNullable(options.testPatterns)),
+  respectPurityBoundary: !O.exists(isFalseFlag)(O.fromNullable(options.respectPurityBoundary)),
+  maxMergedFileLines: O.getOrElse(() => 300)(O.fromNullable(options.maxMergedFileLines)),
   purityOptions: {
-    effectTypes: options.effectTypes ?? DEFAULT_EFFECT_TYPES,
-    impureModules: options.impureModules ?? DEFAULT_IMPURE_MODULES,
-    pureModules: options.pureModules ?? [],
+    effectTypes: O.getOrElseW(() => DEFAULT_EFFECT_TYPES)(O.fromNullable(options.effectTypes)),
+    impureModules: O.getOrElseW(() => DEFAULT_IMPURE_MODULES)(O.fromNullable(options.impureModules)),
+    pureModules: O.getOrElse(() => EMPTY_STRINGS)(O.fromNullable(options.pureModules)),
   },
   cohesionOptions: {
-    ubiquitousTypes: options.ubiquitousTypes ?? DEFAULT_UBIQUITOUS_TYPES,
-    primaryDomainTypes: options.primaryDomainTypes ?? [],
+    ubiquitousTypes: O.getOrElseW(() => DEFAULT_UBIQUITOUS_TYPES)(O.fromNullable(options.ubiquitousTypes)),
+    primaryDomainTypes: O.getOrElse(() => EMPTY_STRINGS)(O.fromNullable(options.primaryDomainTypes)),
   },
 });
 
@@ -173,11 +180,13 @@ const reportFileFindings = (env: SingleCallerEnv) => (
   sf: ts.SourceFile,
   resolved: SingleCallerOptions,
 ) => {
-  RA.map(env.reportFinding)(
-    runCachedSingleCallerAnalysis(env.services.program, resolved).byFile[
-      normalizeFilePath(sf.fileName)
-    ] ?? [],
+  const run = flow(
+    (fileName: string) =>
+      RR.lookup(fileName, runCachedSingleCallerAnalysis(env.services.program, resolved).byFile),
+    O.getOrElse(() => EMPTY_FINDINGS),
+    RA.map(env.reportFinding),
   );
+  run(normalizeFilePath(sf.fileName));
 };
 
 const checkProgram = (env: SingleCallerEnv) => (programNode: TSESTree.Program) => {

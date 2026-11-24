@@ -68,9 +68,11 @@ const isFunctionLikeOrAncestor = (p: TSESTree.Node) =>
 const isInsideFunctionLike = (node: TSESTree.Node): boolean =>
   node.parent ? isFunctionLikeOrAncestor(node.parent) : false;
 
+const isConstructorDefinition = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.MethodDefinition && node.kind === "constructor";
+
 const isConstructorMethod = (fn: TSESTree.Node) =>
-  (fn.type === AST_NODE_TYPES.MethodDefinition && fn.kind === "constructor") ||
-  (fn.parent?.type === AST_NODE_TYPES.MethodDefinition && fn.parent.kind === "constructor");
+  isConstructorDefinition(fn) || O.exists(isConstructorDefinition)(O.fromNullable(fn.parent));
 
 const isBrandedOrContainsBranded = (retType: ts.Type, checker: ts.TypeChecker) =>
   isBrandedOrNewtypeTsType(retType) ||

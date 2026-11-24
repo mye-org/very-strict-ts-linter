@@ -5,6 +5,8 @@ import {
   TSESTree,
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
+import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { flow } from "fp-ts/lib/function.js";
 import {
   analyzeSkeletonDuplications,
@@ -45,13 +47,19 @@ const reportCluster = (
   node: TSESTree.CallExpression,
   locationIndex: Readonly<Record<string, ReadonlyArray<SkeletonCluster>>>,
 ) => {
-  O.map((cluster: SkeletonCluster) => {
-    env.report({
-      node,
-      messageId: "structuralSkeletonDuplication",
-      data: formatClusterFields(cluster),
-    });
-  })(O.fromNullable(locationIndex[resolveCallLocationKey(node, env.services)]?.[0]));
+  const run = flow(
+    (n: TSESTree.CallExpression) => resolveCallLocationKey(n, env.services),
+    (key) => RR.lookup(key, locationIndex),
+    O.flatMap(RA.head),
+    O.map((cluster: SkeletonCluster) => {
+      env.report({
+        node,
+        messageId: "structuralSkeletonDuplication",
+        data: formatClusterFields(cluster),
+      });
+    }),
+  );
+  run(node);
 };
 
 const isPipeOrFlowNode = (n: TSESTree.CallExpression) =>

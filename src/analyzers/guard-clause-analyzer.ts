@@ -83,7 +83,11 @@ const formatBinaryExpr = (b: ts.BinaryExpression, env: NormalizationEnv) =>
     normalizeExpr(b.right, env),
   );
 
-const resolveUnaryOp = (op: ts.PrefixUnaryOperator) => ts.tokenToString(op) ?? "!";
+const resolveUnaryOp = flow(
+  ts.tokenToString,
+  O.fromNullable,
+  O.getOrElse(() => "!"),
+);
 const prefixText = (op: string, operand: string) => `${op}${operand}`;
 
 const formatPrefixExpr = (u: ts.PrefixUnaryExpression, env: NormalizationEnv) =>

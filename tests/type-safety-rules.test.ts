@@ -40,6 +40,9 @@ ruleTester.run("no-null-undefined", noNullUndefined, {
     `type MaybeCard = O.Option<Card>;`,
     `type User = { readonly name: UserName };`,
     `const empty = O.none;`,
+    `const isStr = (x: unknown) => typeof x === "string";`,
+    `const isEq = (a: number, b: number) => a === b;`,
+    `const name = O.map((u: User) => u.name)(maybeUser);`,
   ],
   invalid: [
     {
@@ -57,6 +60,65 @@ ruleTester.run("no-null-undefined", noNullUndefined, {
     {
       code: `const x = null;`,
       errors: [{ messageId: "noNullLiteral" }],
+    },
+    {
+      code: `const n = user?.name;`,
+      errors: [{ messageId: "noOptionalChaining" }],
+    },
+    {
+      code: `const first = items?.[0];`,
+      errors: [{ messageId: "noOptionalChaining" }],
+    },
+    {
+      code: `const res = fn?.();`,
+      errors: [{ messageId: "noOptionalChaining" }],
+    },
+    {
+      code: `const city = user?.address?.city;`,
+      errors: [
+        { messageId: "noOptionalChaining" },
+        { messageId: "noOptionalChaining" },
+      ],
+    },
+    {
+      code: `const isNil = x === null;`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `const isPresent = null !== x;`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `const isLooseNil = x == null;`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `const isUndef = x === undefined;`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `const isDef = undefined !== x;`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `const isVoid = x === void 0;`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `const isTypeofUndef = typeof x === "undefined";`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `const isTypeofDef = "undefined" !== typeof x;`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `const val = a ?? b;`,
+      errors: [{ messageId: "noNullishCheck" }],
+    },
+    {
+      code: `a ??= b;`,
+      errors: [{ messageId: "noNullishCheck" }],
     },
   ],
 });

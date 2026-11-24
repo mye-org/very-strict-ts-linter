@@ -26,8 +26,9 @@ const extractOptionTagFromProperty = flow(
 );
 
 const resolveSymbolOptionTag = flow(
-  (t: ts.Type) => t.getSymbol()?.name,
+  (t: ts.Type) => t.getSymbol(),
   O.fromNullable,
+  O.map((sym) => sym.name),
   O.filter((name) => OPTION_MEMBER_TAGS.has(name)),
 );
 
@@ -38,9 +39,22 @@ const resolveOptionMemberTag = (t: ts.Type) =>
     optionTagResolvers,
   );
 
+const isOptionSymbol = O.exists((s: ts.Symbol) => OPTION_TYPE_NAMES.has(s.name));
+
+const isAliasOptionSymbol = flow(
+  (type: ts.Type) => type.aliasSymbol,
+  O.fromNullable,
+  isOptionSymbol,
+);
+
+const isDirectOptionSymbol = flow(
+  (type: ts.Type) => type.getSymbol(),
+  O.fromNullable,
+  isOptionSymbol,
+);
+
 const hasOptionTypeName = (type: ts.Type) =>
-  OPTION_TYPE_NAMES.has(type.aliasSymbol?.name ?? "") ||
-  OPTION_TYPE_NAMES.has(type.getSymbol()?.name ?? "");
+  isAliasOptionSymbol(type) || isDirectOptionSymbol(type);
 
 const hasBothOptionTags = (types: ReadonlyArray<ts.Type>) => {
   const tags = RA.filterMap(resolveOptionMemberTag)(types);
