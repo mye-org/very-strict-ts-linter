@@ -1,3 +1,5 @@
+import * as O from "fp-ts/lib/Option.js";
+import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
 
 const sourceFileNodesCache = new WeakMap<ts.SourceFile, ReadonlyArray<ts.Node>>();
@@ -28,8 +30,12 @@ const computeSourceFileNodes = (sf: ts.SourceFile) => {
   return nodes;
 };
 
-const collectSourceFileNodes = (sf: ts.SourceFile) =>
-  sourceFileNodesCache.get(sf) ?? computeSourceFileNodes(sf);
+const resolveSourceFileNodes = (sf: ts.SourceFile) =>
+  flow(
+    (file: ts.SourceFile) => sourceFileNodesCache.get(file),
+    O.fromNullable,
+    O.getOrElse<ReadonlyArray<ts.Node>>(() => computeSourceFileNodes(sf)),
+  );
 
 export const collectTsNodesUntil = ((
   root: ts.Node,
@@ -41,7 +47,7 @@ export const collectTsNodesUntil = ((
 ) => ReadonlyArray<ts.Node>;
 
 export const collectTsNodes = ((root: ts.Node, sf: ts.SourceFile) =>
-  root === sf ? collectSourceFileNodes(sf) : walkTsNodes(root, isVisitableNode)) satisfies (
+  root === sf ? resolveSourceFileNodes(sf)(sf) : walkTsNodes(root, isVisitableNode)) satisfies (
   root: ts.Node,
   sf: ts.SourceFile,
 ) => ReadonlyArray<ts.Node>;
