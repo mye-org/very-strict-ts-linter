@@ -41,7 +41,7 @@ const resolveParentBindingName = (parent: TSESTree.Node) =>
 
 const resolveFunctionName = (node: FunctionNode) =>
   node.type === AST_NODE_TYPES.FunctionDeclaration
-    ? O.fromNullable(node.id?.name)
+    ? O.map((id: TSESTree.Identifier) => id.name)(O.fromNullable(node.id))
     : O.flatMap(resolveParentBindingName)(O.fromNullable(node.parent));
 
 const isStringOrNumberFlag = (flags: ts.TypeFlags) =>

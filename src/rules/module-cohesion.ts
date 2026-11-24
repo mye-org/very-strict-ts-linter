@@ -41,9 +41,15 @@ const formatCohesionPayload = (clusters: ReadonlyArray<CohesionCluster>) => ({
   clusters: formatClusters(clusters),
 });
 
+const EMPTY_STRINGS: ReadonlyArray<string> = [];
+
 const resolveCohesionOptions = (options: Options[0]) => ({
-  ubiquitousTypes: options.ubiquitousTypes ?? DEFAULT_UBIQUITOUS_TYPES,
-  primaryDomainTypes: options.primaryDomainTypes ?? [],
+  ubiquitousTypes: O.getOrElse<ReadonlyArray<string>>(() => DEFAULT_UBIQUITOUS_TYPES)(
+    O.fromNullable(options.ubiquitousTypes),
+  ),
+  primaryDomainTypes: O.getOrElse(() => EMPTY_STRINGS)(
+    O.fromNullable(options.primaryDomainTypes),
+  ),
 });
 
 const evaluateProgramCohesion = (

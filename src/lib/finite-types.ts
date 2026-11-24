@@ -1,3 +1,4 @@
+import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
@@ -23,16 +24,41 @@ const isFiniteDiscriminantTypeNode = (typeNode: ts.TypeNode) =>
 
 const isFiniteDeclNode = (decl: ts.Declaration) =>
   ts.isPropertySignature(decl) || ts.isPropertyDeclaration(decl)
-    ? decl.type !== undefined && isFiniteDiscriminantTypeNode(decl.type)
+    ? O.exists(isFiniteDiscriminantTypeNode)(O.fromNullable(decl.type))
     : true;
 
-const hasFiniteDiscriminantDecl = (prop: ts.Symbol) => {
-  const decl = prop.valueDeclaration ?? prop.declarations?.[0];
-  return decl ? isFiniteDeclNode(decl) : true;
-};
+const resolveFirstPropDeclaration = flow(
+  (prop: ts.Symbol) => prop.declarations,
+  O.fromNullable,
+  O.flatMap(RA.head),
+);
+
+const resolveValuePropDeclaration = flow(
+  (prop: ts.Symbol) => prop.valueDeclaration,
+  O.fromNullable,
+);
+
+const resolvePropDeclarationFor = (prop: ts.Symbol) =>
+  flow(
+    resolveValuePropDeclaration,
+    O.alt(() => resolveFirstPropDeclaration(prop)),
+  );
+
+const resolvePropDeclaration = (prop: ts.Symbol) =>
+  resolvePropDeclarationFor(prop)(prop);
+
+const isNonFiniteDeclNode = (decl: ts.Declaration) => !isFiniteDeclNode(decl);
+
+const isNonFiniteDiscriminantDecl = flow(
+  resolvePropDeclaration,
+  O.exists(isNonFiniteDeclNode),
+);
+
+const isFiniteDiscriminantDecl = (prop: ts.Symbol) =>
+  !isNonFiniteDiscriminantDecl(prop);
 
 const isDiscriminantProp = (prop: ts.Symbol) =>
-  DISCRIMINANT_PROP_NAMES.has(prop.name) && hasFiniteDiscriminantDecl(prop);
+  DISCRIMINANT_PROP_NAMES.has(prop.name) && isFiniteDiscriminantDecl(prop);
 
 const isDiscriminatedObject = flow(
   (type: ts.Type) => type.getProperties(),

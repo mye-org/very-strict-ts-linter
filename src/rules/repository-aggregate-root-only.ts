@@ -23,8 +23,20 @@ type AggregateGraph = ReturnType<typeof analyzeAggregateGraph>;
 const hasRepoSuffix = (name: string) =>
   name.endsWith("Repository") || name.endsWith("Repo");
 
-const extractSymbolDeclaration = (sym: ts.Symbol) =>
-  O.fromNullable(sym.valueDeclaration ?? sym.declarations?.[0]);
+const extractFirstDeclaration = flow(
+  (sym: ts.Symbol) => sym.declarations,
+  O.fromNullable,
+  O.flatMap(RA.head<ts.Declaration>),
+);
+
+const extractSymbolDeclaration = (sym: ts.Symbol) => {
+  const extract = flow(
+    (s: ts.Symbol) => s.valueDeclaration,
+    O.fromNullable,
+    O.alt(() => extractFirstDeclaration(sym)),
+  );
+  return extract(sym);
+};
 
 const resolvePropCallSigs = (prop: ts.Symbol, checker: ts.TypeChecker) => {
   const resolve = flow(
@@ -151,6 +163,11 @@ const makeRepoNodeChecker =
     check(name);
   };
 
+const extractOptionalIdName = flow(
+  (id: TSESTree.ClassDeclaration["id"]) => O.fromNullable(id),
+  O.map((id) => id.name),
+);
+
 const buildRepoListeners =
   (options: Options[0], services: ParserServicesWithTypeInformation) =>
   (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => {
@@ -158,7 +175,9 @@ const buildRepoListeners =
     return {
       TSTypeAliasDeclaration: (node: TSESTree.TSTypeAliasDeclaration) => { check(node, O.some(node.id.name)); },
       TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => { check(node, O.some(node.id.name)); },
-      ClassDeclaration: (node: TSESTree.ClassDeclaration) => { check(node, O.fromNullable(node.id?.name)); },
+      ClassDeclaration: (node: TSESTree.ClassDeclaration) => {
+        check(node, extractOptionalIdName(node.id));
+      },
       VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
         check(node, node.id.type === AST_NODE_TYPES.Identifier ? O.some(node.id.name) : O.none);
       },

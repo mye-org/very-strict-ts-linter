@@ -128,7 +128,9 @@ const resolveAnnotatedAdtName = (
 ) => resolveAnnotatedTypeName(adts)(param);
 
 const readParamAliasName = (param: ts.ParameterDeclaration, checker: ts.TypeChecker) =>
-  O.fromNullable(checker.getTypeAtLocation(param).aliasSymbol?.name);
+  O.map((sym: ts.Symbol) => sym.name)(
+    O.fromNullable(checker.getTypeAtLocation(param).aliasSymbol),
+  );
 
 type AdtLookupEnv = Readonly<{
   adts: Readonly<Record<string, RecursiveAdt>>;

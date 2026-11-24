@@ -87,7 +87,10 @@ const isCollectionMemberCallee = (callee: TSESTree.Expression) =>
   COLLECTION_CALLBACK_METHODS.has(callee.property.name);
 
 const isCollectionCallbackFn = ({ parent }: TSESTree.Node) =>
-  parent?.type === AST_NODE_TYPES.CallExpression && isCollectionMemberCallee(parent.callee);
+  O.exists(
+    (p: TSESTree.Node) =>
+      p.type === AST_NODE_TYPES.CallExpression && isCollectionMemberCallee(p.callee),
+  )(O.fromNullable(parent));
 
 const isExemptPrefixName = (name: string) => EXEMPT_FN_PREFIX_RE.test(name);
 

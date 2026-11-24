@@ -37,12 +37,21 @@ const extractKeyChildren = (node: TSESTree.Node, key: string) =>
     ? lookupKeyChildren(key)(node)
     : ([] satisfies ReadonlyArray<TSESTree.Node>);
 
+const EMPTY_VISITOR_KEYS: ReadonlyArray<string> = [];
+
+const lookupVisitorKeys = (nodeType: TSESTree.Node["type"]) =>
+  flow(
+    (keys: TSESLint.SourceCode["visitorKeys"]) => RR.lookup(nodeType, keys),
+    O.flatMap(O.fromNullable),
+    O.getOrElse(() => EMPTY_VISITOR_KEYS),
+  );
+
 export const collectEstreeChildNodes = ((
   node: TSESTree.Node,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) =>
   RA.flatMap((key: string) => extractKeyChildren(node, key))(
-    visitorKeys[node.type] ?? [],
+    lookupVisitorKeys(node.type)(visitorKeys),
   )) satisfies (
   node: TSESTree.Node,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],

@@ -177,8 +177,11 @@ const isNodeFpTsExport = (node: TSESTree.Node, ctx: ExportCheckContext) =>
     )
     .exhaustive();
 
-const isTypeQueryParent = (node: TSESTree.Node) =>
-  node.parent?.type === AST_NODE_TYPES.TSTypeQuery;
+const isTypeQueryParent = flow(
+  (node: TSESTree.Node) => node.parent,
+  O.fromNullable,
+  O.exists((parent) => parent.type === AST_NODE_TYPES.TSTypeQuery),
+);
 
 const isDeclOrMemberKeyIdent = (node: TSESTree.Identifier, parent: TSESTree.Node) =>
   (parent.type === AST_NODE_TYPES.MemberExpression && !parent.computed && parent.property === node) ||

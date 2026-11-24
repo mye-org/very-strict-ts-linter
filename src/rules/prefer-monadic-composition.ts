@@ -64,14 +64,14 @@ const isInsideOuterChainCallback = (node: TSESTree.Node): boolean =>
     ? isChainCallbackParent(node.parent) || isInsideOuterChainCallback(node.parent)
     : false;
 
-const resolveSingleBlockReturnExpr = (body: TSESTree.BlockStatement) => {
-  const firstStmt = body.body[0];
-  return body.body.length === 1 &&
-    firstStmt?.type === AST_NODE_TYPES.ReturnStatement &&
-    firstStmt.argument
-    ? O.some(firstStmt.argument)
+const resolveSingleBlockReturnExpr = (body: TSESTree.BlockStatement) =>
+  body.body.length === 1
+    ? O.flatMap((stmt: TSESTree.Statement) =>
+        stmt.type === AST_NODE_TYPES.ReturnStatement
+          ? O.fromNullable(stmt.argument)
+          : O.none,
+      )(O.fromNullable(body.body[0]))
     : O.none;
-};
 
 const resolveCallbackReturnExpression = (arg: TSESTree.CallExpressionArgument) =>
   match(arg)
@@ -153,18 +153,12 @@ const findMapThenFlattenTargets = (
     return i >= startIndex && next && isMapThenFlattenPair(arg, next) ? O.some(next) : O.none;
   })(args);
 
-const isUnwrapAndRewrap = (node: TSESTree.CallExpression, target: MemberCallTarget) => {
-  const firstArg = node.arguments[0];
-  const secondArg = node.arguments[1];
-  return (
-    MATCH_OR_FOLD_METHODS.has(target.method) &&
-    node.arguments.length === 2 &&
-    firstArg !== undefined &&
-    secondArg !== undefined &&
-    isReturningSameMonadConstructor(firstArg, target.namespace) &&
-    isReturningSameMonadConstructor(secondArg, target.namespace)
-  );
-};
+const isUnwrapAndRewrap = (node: TSESTree.CallExpression, target: MemberCallTarget) =>
+  MATCH_OR_FOLD_METHODS.has(target.method) &&
+  node.arguments.length === 2 &&
+  RA.every((arg: TSESTree.CallExpressionArgument) =>
+    isReturningSameMonadConstructor(arg, target.namespace),
+  )(node.arguments);
 
 const makeReport = (messageId: MessageIds, data: Readonly<Record<string, string>>) =>
   O.some([messageId, data] as const);

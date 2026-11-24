@@ -28,10 +28,14 @@ const computeSourceFileDigest = (sf: ts.SourceFile) => {
 };
 
 const resolveSourceFileDigest = (sf: ts.SourceFile) =>
-  sourceFileDigestCache.get(sf) ?? computeSourceFileDigest(sf);
+  flow(
+    (file: ts.SourceFile) => sourceFileDigestCache.get(file),
+    O.fromNullable,
+    O.getOrElse(() => computeSourceFileDigest(sf)),
+  );
 
 const extractStampPair = (sf: ts.SourceFile) =>
-  [normalizeFilePath(sf.fileName), resolveSourceFileDigest(sf)] as const;
+  [normalizeFilePath(sf.fileName), resolveSourceFileDigest(sf)(sf)] as const;
 
 const formatStampPair = ([filePath, digest]: readonly [string, string]) =>
   `${filePath}:${digest}`;
@@ -53,8 +57,15 @@ const computeProgramFingerprint = (program: ts.Program) => {
   return fp;
 };
 
+const resolveProgramFingerprintFor = (program: ts.Program) =>
+  flow(
+    (p: ts.Program) => programFingerprintCache.get(p),
+    O.fromNullable,
+    O.getOrElse(() => computeProgramFingerprint(program)),
+  );
+
 const resolveProgramFingerprint = (program: ts.Program) =>
-  programFingerprintCache.get(program) ?? computeProgramFingerprint(program);
+  resolveProgramFingerprintFor(program)(program);
 
 const matchEntryFingerprint = <V>(fp: string) =>
   O.flatMap(([storedFp, val]: StoredEntry<V>) => (storedFp === fp ? O.some(val) : O.none));
@@ -96,12 +107,23 @@ const lookupSingleByFingerprint = <A>({
   )(matchFallbackByFingerprint(fp)(fallbackSingleCache, cache));
 };
 
+const lookupOrComputeSingle = <A>({
+  program,
+  cache,
+  compute,
+}: MemoizeByProgramInput<A>) =>
+  flow(
+    (p: ts.Program) => cache.get(p),
+    O.fromNullable,
+    O.getOrElse(() => lookupSingleByFingerprint({ program, cache, compute })),
+  );
+
 export const memoizeByProgram = (<A>(
   cache: WeakMap<ts.Program, A>,
   compute: (p: ts.Program) => A,
 ) =>
   (program: ts.Program) =>
-    cache.get(program) ?? lookupSingleByFingerprint({ program, cache, compute })) satisfies <A>(
+    lookupOrComputeSingle({ program, cache, compute })(program)) satisfies <A>(
   cache: WeakMap<ts.Program, A>,
   compute: (p: ts.Program) => A,
 ) => (program: ts.Program) => A;
@@ -170,7 +192,9 @@ export const memoizeByProgramAndKey = (<A>(
   (program: ts.Program, key: string) =>
     lookupOrStoreKeyed(
       { cache, compute },
-      cache.get(program) ?? hydrateKeyedFromFingerprint(program, cache),
+      O.getOrElse(() => hydrateKeyedFromFingerprint(program, cache))(
+        O.fromNullable(cache.get(program)),
+      ),
     )(program, key)) satisfies <A>(
   cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
   compute: (p: ts.Program) => A,

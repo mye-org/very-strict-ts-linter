@@ -4,7 +4,9 @@ import {
   TSESLint,
   TSESTree,
 } from "@typescript-eslint/utils";
+import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { DEFAULT_TEST_PATTERNS } from "../analyzers/module-symbol-graph.js";
@@ -47,28 +49,44 @@ const toResponsibilityDescriptor = (finding: SingleResponsibilityFinding) => ({
   },
 });
 
+const resolveTestPatterns = flow(
+  (options: Options[0]) => options.testPatterns,
+  O.fromNullable,
+  O.getOrElse<ReadonlyArray<string>>(() => DEFAULT_TEST_PATTERNS),
+);
+
 const resolveScopeOptions = (options: Options[0]) => ({
   ...DEFAULT_TEST_SCOPE_OPTIONS,
-  testPatterns: options.testPatterns ?? DEFAULT_TEST_PATTERNS,
-  minUnrelatedComponents:
-    options.minUnrelatedComponents ?? DEFAULT_TEST_SCOPE_OPTIONS.minUnrelatedComponents,
+  testPatterns: resolveTestPatterns(options),
+  minUnrelatedComponents: O.getOrElse(() => DEFAULT_TEST_SCOPE_OPTIONS.minUnrelatedComponents)(
+    O.fromNullable(options.minUnrelatedComponents),
+  ),
 });
 
 const reportFileResponsibilities =
   (services: ParserServicesWithTypeInformation, options: Options[0]) =>
   (report: Reporter) =>
   (fileName: string) => {
-    RA.map((finding: SingleResponsibilityFinding) => {
-      report(toResponsibilityDescriptor(finding));
-    })(analyzeTestScope(services.program, resolveScopeOptions(options)).responsibilityByFile[fileName] ?? []);
+    O.map(
+      RA.map((finding: SingleResponsibilityFinding) => {
+        report(toResponsibilityDescriptor(finding));
+      }),
+    )(
+      RR.lookup(fileName)(
+        analyzeTestScope(services.program, resolveScopeOptions(options)).responsibilityByFile,
+      ),
+    );
   };
+
+const isTargetTestFile = (fileName: string, options: Options[0]) =>
+  isMatchingAnyPattern(fileName, resolveTestPatterns(options));
 
 const inspectTestProgram =
   (services: ParserServicesWithTypeInformation, options: Options[0]) =>
   (report: Reporter) =>
   (programNode: TSESTree.Program) => {
     const fileName = normalizeFilePath(services.esTreeNodeToTSNodeMap.get(programNode).fileName);
-    match(isMatchingAnyPattern(fileName, options.testPatterns ?? DEFAULT_TEST_PATTERNS))
+    match(isTargetTestFile(fileName, options))
       .with(false, () => {})
       .with(true, () => {
         reportFileResponsibilities(services, options)(report)(fileName);

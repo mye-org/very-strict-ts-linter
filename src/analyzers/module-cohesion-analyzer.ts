@@ -1,6 +1,7 @@
 import * as O from "fp-ts/lib/Option.js";
 import * as Ord from "fp-ts/lib/Ord.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import * as S from "fp-ts/lib/string.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
@@ -491,11 +492,16 @@ const collectSignatureDomainTypes = (exp: RuntimeExport, scope: DomainTypeScope)
   ]);
 };
 
+const isExportModifier = (m: ts.Modifier) => m.kind === ts.SyntaxKind.ExportKeyword;
+
+const hasExportModifier = flow(
+  ts.getModifiers,
+  O.fromNullable,
+  O.exists(RA.some(isExportModifier)),
+);
+
 const hasExportKeyword = (node: ts.Node) =>
-  ts.canHaveModifiers(node) &&
-  RA.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.ExportKeyword)(
-    ts.getModifiers(node) ?? [],
-  );
+  ts.canHaveModifiers(node) && hasExportModifier(node);
 
 const isPrivateLocalTypeDecl = (
   stmt: ts.TypeAliasDeclaration | ts.InterfaceDeclaration,
@@ -628,12 +634,20 @@ const advanceTransitiveState =
     };
   };
 
+const lookupDirectRefs = (
+  localDirectRefs: ReadonlyMap<ts.Symbol, ReadonlySet<ts.Symbol>>,
+) =>
+  flow(
+    (curr: ts.Symbol) => localDirectRefs.get(curr),
+    O.fromNullable,
+    O.map((refs) => [...refs]),
+    O.getOrElseW(() => []),
+  );
+
 const stepTransitiveFrontier = (state: TransitiveWalkState, refGraph: LocalRefGraph) =>
   advanceTransitiveState(refGraph)(
     state,
-    RA.flatMap((curr: ts.Symbol) => [...(refGraph.localDirectRefs.get(curr) ?? [])])(
-      state.frontier,
-    ),
+    RA.flatMap(lookupDirectRefs(refGraph.localDirectRefs))(state.frontier),
   );
 
 const walkTransitiveRefs = (
@@ -767,12 +781,15 @@ const collectPairwiseCohesionEdges = flow(
   RA.flatten,
 );
 
+const lookupAdjacencyNeighbors = (key: string, adjacency: CohesionAdjacency) =>
+  O.getOrElseW(() => [])(RR.lookup(key, adjacency));
+
 const addCohesionEdge = (
   acc: CohesionAdjacency,
   edge: readonly [string, CohesionNeighbor],
 ) => ({
   ...acc,
-  [edge[0]]: RA.append(edge[1])(acc[edge[0]] ?? []),
+  [edge[0]]: RA.append(edge[1])(lookupAdjacencyNeighbors(edge[0], acc)),
 });
 
 const buildCohesionAdjacency = flow(
@@ -796,7 +813,9 @@ const stepClusterFrontier = (
   state: ClusterWalkState,
   adjacency: CohesionAdjacency,
 ) => {
-  const neighborEdges = RA.flatMap((node: string) => adjacency[node] ?? [])(state.pendingNodes);
+  const neighborEdges = RA.flatMap((node: string) => lookupAdjacencyNeighbors(node, adjacency))(
+    state.pendingNodes,
+  );
   const nextPending = collectNextClusterFrontier(neighborEdges, state.seenNodes);
   return {
     pendingNodes: nextPending,
@@ -839,9 +858,13 @@ const appendSeededCluster =
     };
   };
 
-const compareClusterByFirstExport = Ord.contramap(
-  (cluster: CohesionCluster) => cluster.exports[0] ?? "",
-)(S.Ord);
+const readFirstClusterExport = flow(
+  (cluster: CohesionCluster) => cluster.exports,
+  RA.head,
+  O.getOrElse(() => ""),
+);
+
+const compareClusterByFirstExport = Ord.contramap(readFirstClusterExport)(S.Ord);
 
 const partitionCohesionClusters = (
   profiles: ReadonlyArray<ExportProfile>,

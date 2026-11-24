@@ -132,6 +132,12 @@ const checkAggregateMembers = (
   })(O.filter((aggName: string) => env.aggregateRoots.has(aggName))(name));
 };
 
+const resolveClassAggregateName = flow(
+  (node: TSESTree.ClassDeclaration) => node.id,
+  O.fromNullable,
+  O.map((id) => id.name),
+);
+
 const buildAggregateRefListeners = (
   env: AggregateCheckEnv,
 ) => ({
@@ -142,7 +148,7 @@ const buildAggregateRefListeners = (
     checkAggregateMembers(env)(O.some(node.id.name), RA.filter(isPropSig)(node.body.body));
   },
   ClassDeclaration: (node: TSESTree.ClassDeclaration) => {
-    checkAggregateMembers(env)(O.fromNullable(node.id?.name), RA.filter(isClassPropDef)(node.body.body));
+    checkAggregateMembers(env)(resolveClassAggregateName(node), RA.filter(isClassPropDef)(node.body.body));
   },
 });
 

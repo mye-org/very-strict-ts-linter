@@ -135,7 +135,11 @@ const isRootNamespaceHktType = (
   rootNamespaces: ReadonlySet<string>,
 ) => {
   const parts = collectEntityNameParts(entity);
-  return parts.length >= 2 && rootNamespaces.has(parts[0] ?? "") && parts[1] === "hkt";
+  return (
+    parts.length >= 2 &&
+    O.exists((head: string) => rootNamespaces.has(head))(RA.head(parts)) &&
+    parts[1] === "hkt"
+  );
 };
 
 const resolveAliasedSymbol = (symbol: ts.Symbol, checker: ts.TypeChecker) =>
@@ -198,11 +202,13 @@ const isStaticHktMember = (node: TSESTree.MemberExpression) =>
   node.property.type === AST_NODE_TYPES.Identifier &&
   node.property.name === "hkt";
 
+const HKT_NAMESPACE_NAMES: ReadonlySet<string> = new Set(["hkt"]);
+
 const isFpTsHktMemberByType = (node: TSESTree.MemberExpression, ctx: CheckerContext) =>
   O.exists(
     (symbol: ts.Symbol) =>
       hasFpTsHktDeclaration(symbol) ||
-      (symbol.name === "hkt" && hasFpTsPackageDeclaration(symbol)),
+      (HKT_NAMESPACE_NAMES.has(symbol.name) && hasFpTsPackageDeclaration(symbol)),
   )(resolveTsSymbol(node.property, ctx));
 
 const isFpTsHktMemberExpression = (node: TSESTree.MemberExpression, ctx: HktCheckContext) =>

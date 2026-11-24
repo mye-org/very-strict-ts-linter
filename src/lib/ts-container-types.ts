@@ -1,3 +1,4 @@
+import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
@@ -26,18 +27,30 @@ const WRAPPER_CONTAINER_NAMES = new Set([
 const IGNORED_UNION_FLAGS =
   ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Never;
 
+const EMPTY_TS_TYPES: ReadonlyArray<ts.Type> = [];
+
 const isTypeReference = (type: ts.Type): type is ts.TypeReference =>
   (type.flags & ts.TypeFlags.Object) !== 0 && "target" in type;
 
-const resolveContainerTypeArgs = (type: ts.Type, checker: ts.TypeChecker) => {
-  const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
-  return name && WRAPPER_CONTAINER_NAMES.has(name)
-    ? type.aliasTypeArguments ??
-        (isTypeReference(type)
-          ? checker.getTypeArguments(type)
-          : ([] satisfies ReadonlyArray<ts.Type>))
-    : ([] satisfies ReadonlyArray<ts.Type>);
-};
+const resolveAliasSymbol = flow((t: ts.Type) => t.aliasSymbol, O.fromNullable);
+const resolveDirectSymbol = flow((t: ts.Type) => t.getSymbol(), O.fromNullable);
+
+const resolveTypeSymbolName = (type: ts.Type) =>
+  flow(
+    resolveAliasSymbol,
+    O.alt(() => resolveDirectSymbol(type)),
+    O.map((sym) => sym.name),
+  );
+
+const resolveTypeArguments = (type: ts.Type, checker: ts.TypeChecker) =>
+  O.getOrElse(() =>
+    isTypeReference(type) ? checker.getTypeArguments(type) : EMPTY_TS_TYPES,
+  )(O.fromNullable(type.aliasTypeArguments));
+
+const resolveContainerTypeArgs = (type: ts.Type, checker: ts.TypeChecker) =>
+  O.exists((name: string) => WRAPPER_CONTAINER_NAMES.has(name))(resolveTypeSymbolName(type)(type))
+    ? resolveTypeArguments(type, checker)
+    : EMPTY_TS_TYPES;
 
 const unwrapArgList: (
   checker: ts.TypeChecker,

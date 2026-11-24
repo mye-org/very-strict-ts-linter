@@ -358,12 +358,17 @@ const isSurvivingFinding = (
     .with({ kind: "singleCallerExport" }, (f) => cohesiveConsumers.has(f.soleConsumer))
     .exhaustive();
 
+const lookupFindingsForFile = (
+  fileName: string,
+  acc: Readonly<Record<string, ReadonlyArray<EncapsulationFinding>>>,
+) => O.getOrElseW(() => [])(RR.lookup(fileName, acc));
+
 const appendFindingByFile = (
   acc: Readonly<Record<string, ReadonlyArray<EncapsulationFinding>>>,
   finding: EncapsulationFinding,
 ) => ({
   ...acc,
-  [finding.fileName]: RA.append(finding)(acc[finding.fileName] ?? []),
+  [finding.fileName]: RA.append(finding)(lookupFindingsForFile(finding.fileName, acc)),
 });
 
 const filterFindingsByCohesion = (
@@ -489,9 +494,15 @@ const buildReuseAdjacency = (
   usedSet: ReadonlySet<string>,
 ) => buildAdjacencyFromConsumerImports(usedSet)(fileGraph.prodImportsByConsumer);
 
+const lookupAdjacentExports = (adjacency: AdjacencyRecord) =>
+  flow(
+    (node: string) => RR.lookup(node, adjacency),
+    O.getOrElseW(() => []),
+  );
+
 const collectUnvisitedFromPending = (seenExports: ReadonlySet<string>, adjacency: AdjacencyRecord) =>
   flow(
-    RA.flatMap((node: string) => adjacency[node] ?? []),
+    RA.flatMap(lookupAdjacentExports(adjacency)),
     RA.filter((neighbor: string) => !seenExports.has(neighbor)),
     RA.uniq(S.Eq),
   );
@@ -558,9 +569,13 @@ const stepComponentPartition =
       ? acc
       : appendSeededComponent(graphCtx)(acc, exportName);
 
-const compareGroupByFirstExport = Ord.contramap(
-  (group: ConsumerExportGroup) => group.exports[0] ?? "",
-)(S.Ord);
+const readFirstGroupExport = flow(
+  (group: ConsumerExportGroup) => group.exports,
+  RA.head,
+  O.getOrElse(() => ""),
+);
+
+const compareGroupByFirstExport = Ord.contramap(readFirstGroupExport)(S.Ord);
 
 const partitionUsedExports =
   (fileGraph: FileModuleGraph) => (usedExports: ReadonlyArray<string>) =>

@@ -2,6 +2,7 @@ import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLin
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { match, P } from "ts-pattern";
+import { hasFunctionInit } from "../lib/estree-function-nodes.js";
 import { isInsideNewtypeDefinition } from "../lib/newtype-scope.js";
 import { createRule } from "../lib/rule-factory.js";
 import { hasStrictSuffix } from "../lib/string-suffix.js";
@@ -123,9 +124,7 @@ const checkParam = (checkNode: NodeChecker) => (param: TSESTree.Parameter) => {
 };
 
 const extractNonFnDeclaratorId = (node: TSESTree.VariableDeclarator) =>
-  node.id.type === AST_NODE_TYPES.Identifier &&
-  node.init?.type !== AST_NODE_TYPES.ArrowFunctionExpression &&
-  node.init?.type !== AST_NODE_TYPES.FunctionExpression
+  node.id.type === AST_NODE_TYPES.Identifier && !hasFunctionInit(node)
     ? O.some(node.id)
     : O.none;
 

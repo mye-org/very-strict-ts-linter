@@ -77,13 +77,16 @@ const isNonEmptyStaticObject = (expr: TSESTree.Expression) =>
   expr.properties.length > 0 &&
   RA.every(isStaticObjectProperty)(expr.properties);
 
+const isNonSpreadElement = flow(
+  (el: TSESTree.ArrayExpression["elements"][number]) => el,
+  O.fromNullable,
+  O.exists((node) => node.type !== AST_NODE_TYPES.SpreadElement),
+);
+
 const isNonEmptyStaticArray = (expr: TSESTree.Expression) =>
   expr.type === AST_NODE_TYPES.ArrayExpression &&
   expr.elements.length > 0 &&
-  RA.every(
-    (el: TSESTree.ArrayExpression["elements"][number]) =>
-      Boolean(el) && el?.type !== AST_NODE_TYPES.SpreadElement,
-  )(expr.elements);
+  RA.every(isNonSpreadElement)(expr.elements);
 
 const classifyAnnotatedInit = (
   init: TSESTree.Expression,

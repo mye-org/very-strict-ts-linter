@@ -2,6 +2,7 @@ import path from "node:path";
 import { AST_NODE_TYPES, ESLintUtils, TSESLint, TSESTree } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import * as S from "fp-ts/lib/string.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
@@ -45,7 +46,11 @@ const PASCAL_TOKEN_RE = /[A-Z][a-z0-9]+/g;
 
 const contextTermCache = new WeakMap<ts.Program, ContextTermsByDir>();
 
-const extractPascalTokens = (name: string) => name.match(PASCAL_TOKEN_RE) ?? [];
+const extractPascalTokens = flow(
+  (name: string) => name.match(PASCAL_TOKEN_RE),
+  O.fromNullable,
+  O.getOrElse<ReadonlyArray<string>>(() => []),
+);
 
 const isNamedTsDecl = (
   node: ts.Node,
@@ -77,11 +82,14 @@ const extractSfTokens = (sf: ts.SourceFile) => {
   return extract(sf);
 };
 
+const resolveExistingTerms = (dir: string, acc: ContextTermsByDir) =>
+  O.getOrElse<Iterable<string>>(() => [])(RR.lookup(dir)(acc));
+
 const mergeSourceFileTerms = (acc: ContextTermsByDir, sf: ts.SourceFile) => {
   const dir = resolveContextDir(sf.fileName);
   return {
     ...acc,
-    [dir]: new Set([...(acc[dir] ?? []), ...extractSfTokens(sf)]),
+    [dir]: new Set([...resolveExistingTerms(dir, acc), ...extractSfTokens(sf)]),
   };
 };
 
@@ -273,9 +281,11 @@ export const ubiquitousLanguage = createRule<Options, MessageIds>({
       options.domainPatterns,
     )(context.filename)
       ? buildListeners(
-          indexProgramContextTerms(ESLintUtils.getParserServices(context).program)[
-            resolveContextDir(context.filename)
-          ] ?? new Set<string>(),
+          O.getOrElse<ReadonlySet<string>>(() => new Set())(
+            RR.lookup(resolveContextDir(context.filename))(
+              indexProgramContextTerms(ESLintUtils.getParserServices(context).program),
+            ),
+          ),
           options,
         )(context.filename, (d) => { context.report(d); })
       : {},

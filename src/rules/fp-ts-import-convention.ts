@@ -18,10 +18,11 @@ const isTypeImportSpecifier = (spec: TSESTree.ImportClause) =>
 
 const isFunctionModulePath = (source: string) => FUNCTION_MODULE_RE.test(source);
 
-const extractTopLevelModule = (source: string) =>
-  FP_TS_TOP_LEVEL_MODULE_RE.exec(source)?.[1];
-
-const resolveTopLevelModule = flow(extractTopLevelModule, O.fromNullable);
+const resolveTopLevelModule = flow(
+  (source: string) => FP_TS_TOP_LEVEL_MODULE_RE.exec(source),
+  O.fromNullable,
+  O.flatMap(RA.lookup(1)),
+);
 
 const hasOnlyNamespaceSpecifier = (node: TSESTree.ImportDeclaration) =>
   node.specifiers.length === 1 &&

@@ -28,14 +28,16 @@ const LENGTH_OPERATORS = new Set(["===", "!==", "==", "!=", ">", ">=", "<", "<="
 const LENGTH_PROPERTY_NAMES: ReadonlySet<string> = new Set(["length"]);
 const FAILURE_NAMESPACES: ReadonlySet<string> = new Set(["O", "E"]);
 const FAILURE_MEMBERS: ReadonlySet<string> = new Set(["none", "left"]);
+const ARRAY_TYPE_NAMES: ReadonlySet<string> = new Set(["Array", "ReadonlyArray"]);
 
-const isNonTupleArrayType = (type: ts.Type, checker: ts.TypeChecker) => {
-  const symName = type.getSymbol()?.name;
-  return (
-    !checker.isTupleType(type) &&
-    (checker.isArrayType(type) || symName === "Array" || symName === "ReadonlyArray")
-  );
-};
+const hasArraySymbolName = flow(
+  (type: ts.Type) => type.getSymbol(),
+  O.fromNullable,
+  O.exists((sym: ts.Symbol) => ARRAY_TYPE_NAMES.has(sym.name)),
+);
+
+const isNonTupleArrayType = (type: ts.Type, checker: ts.TypeChecker) =>
+  !checker.isTupleType(type) && (checker.isArrayType(type) || hasArraySymbolName(type));
 
 const resolvePatternTargetNode = (pattern: TSESTree.ArrayPattern) =>
   match(pattern)
@@ -80,15 +82,21 @@ const resolveEnclosingFnName = (
   fn: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression,
 ) =>
   fn.type === AST_NODE_TYPES.FunctionDeclaration
-    ? O.fromNullable(fn.id?.name)
+    ? O.map((id: TSESTree.Identifier) => id.name)(O.fromNullable(fn.id))
     : O.flatMap(resolveVarDeclaratorName)(O.fromNullable(fn.parent));
 
 const isMemberParentOfCall = (member: TSESTree.MemberExpression) =>
   member.parent.type === AST_NODE_TYPES.CallExpression;
 
-const isInlineCallCallback = (fn: TSESTree.Node) =>
-  fn.parent?.type === AST_NODE_TYPES.CallExpression ||
-  (fn.parent?.type === AST_NODE_TYPES.MemberExpression && isMemberParentOfCall(fn.parent));
+const isInlineCallParent = (parent: TSESTree.Node) =>
+  parent.type === AST_NODE_TYPES.CallExpression ||
+  (parent.type === AST_NODE_TYPES.MemberExpression && isMemberParentOfCall(parent));
+
+const isInlineCallCallback = flow(
+  (fn: TSESTree.Node) => fn.parent,
+  O.fromNullable,
+  O.exists(isInlineCallParent),
+);
 
 const isCollectionPredicateMember = (member: TSESTree.MemberExpression) =>
   member.property.type === AST_NODE_TYPES.Identifier &&
@@ -98,8 +106,14 @@ const isCollectionPredicateCall = (call: TSESTree.CallExpression) =>
   call.callee.type === AST_NODE_TYPES.MemberExpression &&
   isCollectionPredicateMember(call.callee);
 
-const isPredicateCallbackArg = (fn: TSESTree.Node) =>
-  fn.parent?.type === AST_NODE_TYPES.CallExpression && isCollectionPredicateCall(fn.parent);
+const isPredicateCallParent = (parent: TSESTree.Node) =>
+  parent.type === AST_NODE_TYPES.CallExpression && isCollectionPredicateCall(parent);
+
+const isPredicateCallbackArg = flow(
+  (fn: TSESTree.Node) => fn.parent,
+  O.fromNullable,
+  O.exists(isPredicateCallParent),
+);
 
 const isPredicateFnName = (name: string) => PREDICATE_NAME_RE.test(name);
 

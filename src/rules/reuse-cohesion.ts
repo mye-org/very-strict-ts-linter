@@ -87,8 +87,10 @@ const toDisjointGroupDescriptor =
   });
 
 const resolveCohesionOptions = (options: Options[0]) => ({
-  minExports: options.minExports ?? 5,
-  testPatterns: options.testPatterns ?? DEFAULT_TEST_PATTERNS,
+  minExports: O.getOrElse(() => 5)(O.fromNullable(options.minExports)),
+  testPatterns: O.getOrElse<ReadonlyArray<string>>(() => DEFAULT_TEST_PATTERNS)(
+    O.fromNullable(options.testPatterns),
+  ),
 });
 
 const resolveProgramFileName = (

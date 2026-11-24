@@ -246,8 +246,20 @@ const lookupDeclEntry = (decl: ts.Declaration, fnByKey: Readonly<Record<string, 
 const resolveAliasSymbol = (sym: ts.Symbol, checker: ts.TypeChecker) =>
   sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym;
 
-const resolveSymbolDecl = (sym: ts.Symbol) =>
-  O.fromNullable(sym.valueDeclaration ?? sym.declarations?.[0]);
+const resolveFirstSymbolDecl = flow(
+  (sym: ts.Symbol) => O.fromNullable(sym.declarations),
+  O.flatMap(RA.head),
+);
+
+const resolveValueDecl = flow(
+  (sym: ts.Symbol) => sym.valueDeclaration,
+  O.fromNullable,
+);
+
+const resolveSymbolDecl = flow(
+  (sym: ts.Symbol) => ({ sym, valueDecl: resolveValueDecl(sym) }),
+  ({ sym, valueDecl }) => O.alt(() => resolveFirstSymbolDecl(sym))(valueDecl),
+);
 
 const lookupCalleeSymbol = (call: ts.CallExpression, checker: ts.TypeChecker) =>
   O.fromNullable(checker.getSymbolAtLocation(call.expression));
@@ -508,12 +520,16 @@ const indexChainsByLocation = RNEA.groupBy((f: ContextDrillingFinding) =>
   makeLocationKey(f.rootLocation),
 );
 
+const lookupIncomingCount = (incomingCount: Readonly<Record<string, number>>, nodeId: string) =>
+  O.getOrElse(() => 0)(RR.lookup(nodeId, incomingCount));
+
 const collectRootNodeIds = flow(
   (graph: ProgramGraph) => ({
     keys: RR.keys(graph.outgoing),
     incomingCount: graph.incomingCount,
   }),
-  ({ keys, incomingCount }) => RA.filter((nodeId: string) => (incomingCount[nodeId] ?? 0) === 0)(keys),
+  ({ keys, incomingCount }) =>
+    RA.filter((nodeId: string) => lookupIncomingCount(incomingCount, nodeId) === 0)(keys),
 );
 
 const appendRootLongestPath =

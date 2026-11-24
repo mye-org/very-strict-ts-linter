@@ -405,12 +405,35 @@ const isImpureModuleSpecifier = (specifier: string, options: PurityOptions) =>
   !isMatchingModulePattern(specifier, options.pureModules) &&
   isMatchingModulePattern(specifier, options.impureModules);
 
-const hasAsyncModifier = (node: ts.Node) =>
-  ts.canHaveModifiers(node) &&
-  RA.some((m: ts.Modifier) => m.kind === ts.SyntaxKind.AsyncKeyword)(ts.getModifiers(node) ?? []);
+const isAsyncModifier = (m: ts.Modifier) => m.kind === ts.SyntaxKind.AsyncKeyword;
 
-const resolveTypeSymbolName = (type: ts.Type) =>
-  O.fromNullable(type.aliasSymbol?.name ?? type.getSymbol()?.name);
+const hasAsyncModifierNode = flow(
+  ts.getModifiers,
+  O.fromNullable,
+  O.exists(RA.some(isAsyncModifier)),
+);
+
+const hasAsyncModifier = (node: ts.Node) =>
+  ts.canHaveModifiers(node) && hasAsyncModifierNode(node);
+
+const readSymbolName = (sym: ts.Symbol) => sym.name;
+
+const resolveAliasName = flow(
+  (type: ts.Type) => type.aliasSymbol,
+  O.fromNullable,
+  O.map(readSymbolName),
+);
+
+const resolveOwnSymbolName = flow(
+  (type: ts.Type) => type.getSymbol(),
+  O.fromNullable,
+  O.map(readSymbolName),
+);
+
+const resolveTypeSymbolName = flow(
+  (type: ts.Type) => ({ type, aliasName: resolveAliasName(type) }),
+  ({ type, aliasName }) => O.alt(() => resolveOwnSymbolName(type))(aliasName),
+);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive union effect check
 const matchEffectType = (type: ts.Type, effectSet: ReadonlySet<string>): O.Option<string> =>
@@ -466,8 +489,16 @@ const resolveImportedDeclSpecifier = flow(
   O.flatMap(extractImportDeclSpecifier),
 );
 
-const resolveImportedModuleSpecifier = (sym: ts.Symbol) =>
-  RA.findFirstMap(resolveImportedDeclSpecifier)(sym.declarations ?? []);
+const readSymbolDeclarations = flow(
+  (sym: ts.Symbol) => sym.declarations,
+  O.fromNullable,
+  O.getOrElseW(() => []),
+);
+
+const resolveImportedModuleSpecifier = flow(
+  readSymbolDeclarations,
+  RA.findFirstMap(resolveImportedDeclSpecifier),
+);
 
 const isNodeModulesPath = flow(normalizeFilePath, hasNodeModulesSegment);
 
@@ -479,8 +510,10 @@ const isDeclInProjectSource = flow(
   isProjectSourceFile,
 );
 
-const isDeclaredInProjectSource = (sym: ts.Symbol) =>
-  RA.some(isDeclInProjectSource)(sym.declarations ?? []);
+const isDeclaredInProjectSource = flow(
+  readSymbolDeclarations,
+  RA.some(isDeclInProjectSource),
+);
 
 const isExternalSymbolOpt = (sym: O.Option<ts.Symbol>) =>
   !O.exists(isDeclaredInProjectSource)(sym);
@@ -519,12 +552,16 @@ const isMutableModuleLevelBinding = (
   { fnNode, checker }: Readonly<{ fnNode: ts.FunctionLikeDeclaration; checker: ts.TypeChecker }>,
 ) => isMutableBindingOutsideFn(fnNode, checker)(ident);
 
+const isMutableCollectionSymbol = flow(
+  (objType: ts.Type) => objType.getSymbol(),
+  O.fromNullable,
+  O.exists((sym: ts.Symbol) => MUTABLE_COLLECTION_TYPE_NAMES.has(sym.name)),
+);
+
 const isMutableCollectionType = (objType: ts.Type, checker: ts.TypeChecker) =>
   checker.isArrayType(objType) ||
   checker.isTupleType(objType) ||
-  O.exists((name: string) => MUTABLE_COLLECTION_TYPE_NAMES.has(name))(
-    O.fromNullable(objType.getSymbol()?.name),
-  );
+  isMutableCollectionSymbol(objType);
 
 const matchStaticMutatingMethod = (objExpr: ts.Expression, methodName: string) =>
   ts.isIdentifier(objExpr)
@@ -813,10 +850,21 @@ const isIncrementUnaryExpr = (node: ts.Node) =>
   (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
   INCREMENT_OPERATORS.has(node.operator);
 
+const countNewExprArgs = flow(
+  (node: ts.NewExpression) => node.arguments,
+  O.fromNullable,
+  O.match(
+    () => 0,
+    (args: ts.NodeArray<ts.Expression>) => args.length,
+  ),
+);
+
+const hasZeroArguments = (node: ts.NewExpression) => countNewExprArgs(node) === 0;
+
 const isZeroArgNewDate = (node: ts.NewExpression) =>
   ts.isIdentifier(node.expression) &&
   DATE_GLOBAL_NAMES.has(node.expression.text) &&
-  (node.arguments?.length ?? 0) === 0;
+  hasZeroArguments(node);
 
 const isExternalNodeSymbol = (node: ts.Node, checker: ts.TypeChecker) =>
   isExternalSymbolOpt(lookupNodeSymbol(checker)(node));
@@ -1031,6 +1079,15 @@ const buildDeclPlacement = (
     nesting,
   }) satisfies FunctionPlacement;
 
+const resolveFunctionDeclName = flow(
+  (node: ts.FunctionDeclaration) => node.name,
+  O.fromNullable,
+  O.match(
+    () => "default",
+    (id: ts.Identifier) => id.text,
+  ),
+);
+
 const collectFunctionDeclWithBody =
   (
     node: ts.FunctionDeclaration,
@@ -1041,7 +1098,7 @@ const collectFunctionDeclWithBody =
     return registerWithChildren(
       {
         fn: node,
-        name: node.name?.text ?? "default",
+        name: resolveFunctionDeclName(node),
         symbol: sym,
         placement: buildDeclPlacement({ reportNode: node, sym, nesting }, fileCtx),
       },
@@ -1283,8 +1340,11 @@ const collectFileFunctions = (
   });
 };
 
+const lookupReasonsById = (reasonsById: ReasonsMap, id: string) =>
+  O.getOrElse(() => EMPTY_STRINGS)(RR.lookup(id, reasonsById));
+
 const hasImpureReasonsForTarget = (target: O.Option<CollectedFunction>, reasonsById: ReasonsMap) =>
-  O.exists((rec: CollectedFunction) => (reasonsById[rec.id]?.length ?? 0) > 0)(target);
+  O.exists((rec: CollectedFunction) => lookupReasonsById(reasonsById, rec.id).length > 0)(target);
 
 const lookupRecordBySym = (index: ProgramFunctionIndex, targetSym: ts.Symbol) =>
   O.fromNullable(index.recordBySym.get(targetSym));
@@ -1317,7 +1377,7 @@ const collectPropagatedRefHofReasons = (rec: CollectedFunction) => (env: Propaga
 
 const mergeRecordReasons = (rec: CollectedFunction) => (env: PropagationEnv) =>
   RA.uniq(S.Eq)([
-    ...(env.reasonsById[rec.id] ?? EMPTY_STRINGS),
+    ...lookupReasonsById(env.reasonsById, rec.id),
     ...collectPropagatedCallReasons(rec)(env),
     ...collectPropagatedInlineHofReasons(rec)(env),
     ...collectPropagatedRefHofReasons(rec)(env),
@@ -1400,7 +1460,7 @@ const buildPurityRecordIdentity = (rec: CollectedFunction) => ({
 });
 
 const toFunctionPurityRecord = (reasonsById: ReasonsMap) => (rec: CollectedFunction) => {
-  const reasons = RA.sort(S.Ord)(reasonsById[rec.id] ?? EMPTY_STRINGS);
+  const reasons = RA.sort(S.Ord)(lookupReasonsById(reasonsById, rec.id));
   return {
     ...buildPurityRecordIdentity(rec),
     purity: reasons.length > 0 ? ("impure" as const) : ("pure" as const),
@@ -1492,6 +1552,15 @@ const buildInitialReasons = flow(
   fromStringEntries,
 );
 
+const lookupFileCollectedFunctions = (
+  recordsByFile: Readonly<Record<string, ReadonlyArray<CollectedFunction>>>,
+) =>
+  flow(
+    (sf: ts.SourceFile) => normalizeFilePath(sf.fileName),
+    (filePath) => RR.lookup(filePath, recordsByFile),
+    O.getOrElse(() => EMPTY_FUNCTIONS),
+  );
+
 const assembleProgramPurity = (
   sourceFiles: ReadonlyArray<ts.SourceFile>,
   {
@@ -1504,7 +1573,7 @@ const assembleProgramPurity = (
 ) => {
   const summaries = RA.map((sf: ts.SourceFile) =>
     buildFilePuritySummary(sf, {
-      recs: recordsByFile[normalizeFilePath(sf.fileName)] ?? EMPTY_FUNCTIONS,
+      recs: lookupFileCollectedFunctions(recordsByFile)(sf),
       reasonsById: finalReasons,
     }),
   )(sourceFiles);

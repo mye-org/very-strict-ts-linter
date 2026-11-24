@@ -18,7 +18,9 @@ const OTHERWISE_METHODS: ReadonlySet<string> = new Set(["otherwise"]);
 const MATCH_CALLEES: ReadonlySet<string> = new Set(["match"]);
 
 const isIdentifierNamed = (name: string, node?: TSESTree.Node) =>
-  node?.type === AST_NODE_TYPES.Identifier && node.name === name;
+  O.exists((n: TSESTree.Node) => n.type === AST_NODE_TYPES.Identifier && n.name === name)(
+    O.fromNullable(node),
+  );
 
 const isSpreadUpdateOf = (expr: TSESTree.Expression, targetName: string) =>
   expr.type === AST_NODE_TYPES.ObjectExpression &&
