@@ -50,8 +50,13 @@ export const isMatchingAnyPattern = (
   patterns: ReadonlyArray<string>,
 ): boolean => RA.some((pattern: string) => isMatchingPattern(filePath, pattern))(patterns);
 
+type FilePathPredicate = (filePath: string) => boolean;
+
 export const shouldLintDomainFile = (
   scope: "everywhere" | "domain-only",
-  filePath: string,
   domainPatterns: ReadonlyArray<string>,
-): boolean => scope === "everywhere" || isMatchingAnyPattern(filePath, domainPatterns);
+): FilePathPredicate => {
+  const isIncludedFile = (filePath: string) =>
+    scope === "everywhere" || isMatchingAnyPattern(filePath, domainPatterns);
+  return isIncludedFile;
+};

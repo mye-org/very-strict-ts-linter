@@ -24,10 +24,11 @@ const isBannedSource = (source: string, bannedSources: ReadonlyArray<string>) =>
   )(bannedSources);
 
 const reportIfBanned = (
-  sourceNode: TSESTree.Node,
-  source: string,
   bannedSources: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => (
+  sourceNode: TSESTree.Node,
+  source: string,
 ) => {
   match(isBannedSource(source, bannedSources))
     .with(true, () => {
@@ -45,22 +46,20 @@ const isStringLiteral = (s: TSESTree.Expression): s is TSESTree.StringLiteral =>
   s.type === AST_NODE_TYPES.Literal && typeof s.value === "string";
 
 const checkDynamicImport = (
-  node: TSESTree.ImportExpression,
   bannedSources: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+) => (node: TSESTree.ImportExpression) => {
   O.map((s: TSESTree.StringLiteral) => {
-    reportIfBanned(s, s.value, bannedSources, report);
+    reportIfBanned(bannedSources, report)(s, s.value);
   })(O.fromPredicate(isStringLiteral)(node.source));
 };
 
 const checkExportNamed = (
-  node: TSESTree.ExportNamedDeclaration,
   bannedSources: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+) => (node: TSESTree.ExportNamedDeclaration) => {
   O.map((src: TSESTree.StringLiteral) => {
-    reportIfBanned(src, src.value, bannedSources, report);
+    reportIfBanned(bannedSources, report)(src, src.value);
   })(O.fromNullable(node.source));
 };
 
@@ -69,17 +68,13 @@ const buildListeners = (
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => ({
   ImportDeclaration: (node: TSESTree.ImportDeclaration) => {
-    reportIfBanned(node.source, node.source.value, bannedSources, report);
+    reportIfBanned(bannedSources, report)(node.source, node.source.value);
   },
-  ExportNamedDeclaration: (node: TSESTree.ExportNamedDeclaration) => {
-    checkExportNamed(node, bannedSources, report);
-  },
+  ExportNamedDeclaration: checkExportNamed(bannedSources, report),
   ExportAllDeclaration: (node: TSESTree.ExportAllDeclaration) => {
-    reportIfBanned(node.source, node.source.value, bannedSources, report);
+    reportIfBanned(bannedSources, report)(node.source, node.source.value);
   },
-  ImportExpression: (node: TSESTree.ImportExpression) => {
-    checkDynamicImport(node, bannedSources, report);
-  },
+  ImportExpression: checkDynamicImport(bannedSources, report),
 });
 
 export const noReactInTs = createRule<Options, MessageIds>({

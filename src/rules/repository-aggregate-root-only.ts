@@ -72,19 +72,16 @@ const extractEntityNamesFromDecl = (
   return extract(node);
 };
 
-const resolveManagedEntities = (
-  reportNode: TSESTree.Node,
-  repoName: string,
-  graph: AggregateGraph,
-  services: ParserServicesWithTypeInformation,
-) => {
-  const resolve = flow(
-    RA.findFirst((r: AggregateGraph["repos"][number]) => r.repoName === repoName),
-    O.map((r) => r.entityTypes),
-    O.getOrElse(() => extractEntityNamesFromDecl(reportNode, services)),
-  );
-  return resolve(graph.repos);
-};
+const resolveManagedEntities =
+  (graph: AggregateGraph, services: ParserServicesWithTypeInformation) =>
+  (reportNode: TSESTree.Node, repoName: string) => {
+    const resolve = flow(
+      RA.findFirst((r: AggregateGraph["repos"][number]) => r.repoName === repoName),
+      O.map((r) => r.entityTypes),
+      O.getOrElse(() => extractEntityNamesFromDecl(reportNode, services)),
+    );
+    return resolve(graph.repos);
+  };
 
 const joinParentNames = (parents: ReadonlyArray<string>) => parents.join(", ");
 
@@ -99,88 +96,74 @@ const resolveChildOwnership =
 const excludeExplicitAggregates = (explicitAggs: ReadonlySet<string>) =>
   RA.filter((entity: string) => !explicitAggs.has(entity));
 
-const findNonAggregateTarget = (
-  managedEntities: ReadonlyArray<string>,
-  options: Options[0],
-  graph: AggregateGraph,
-) => {
-  const find = flow(
-    excludeExplicitAggregates(new Set(options.aggregateRoots)),
-    RA.filterMap(resolveChildOwnership(new Set(options.childEntities), graph)),
-    RA.head,
-  );
-  return find(managedEntities);
-};
+const findNonAggregateTarget =
+  (options: Options[0], graph: AggregateGraph) =>
+  (managedEntities: ReadonlyArray<string>) => {
+    const find = flow(
+      excludeExplicitAggregates(new Set(options.aggregateRoots)),
+      RA.filterMap(resolveChildOwnership(new Set(options.childEntities), graph)),
+      RA.head,
+    );
+    return find(managedEntities);
+  };
 
-const checkRepoDeclaration = (
-  reportNode: TSESTree.Node,
-  repoName: string,
-  options: Options[0],
-  graph: AggregateGraph,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  match(hasRepoSuffix(repoName))
-    .with(false, () => {})
-    .with(true, () => {
-      const check = flow(
-        (n: TSESTree.Node) => resolveManagedEntities(n, repoName, graph, services),
-        (entities) => findNonAggregateTarget(entities, options, graph),
-        O.map(({ entity, parent }) => {
-          report({ node: reportNode, messageId: "nonAggregateRepository", data: { repo: repoName, entity, parent } });
-        }),
-      );
-      check(reportNode);
-    })
-    .exhaustive();
-};
-
-const inspectNamedRepo = (
-  node: TSESTree.Node,
-  name: string,
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  checkRepoDeclaration(
-    node,
-    name,
-    options,
-    analyzeAggregateGraph(services.program, options.aggregateRoots, options.aggregatePathPatterns),
-    services,
-    report,
-  );
-};
-
-const makeRepoNodeChecker =
+const checkRepoDeclaration =
   (
     options: Options[0],
+    graph: AggregateGraph,
+  ) =>
+  (
     services: ParserServicesWithTypeInformation,
     report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
   ) =>
+  (reportNode: TSESTree.Node, repoName: string) => {
+    match(hasRepoSuffix(repoName))
+      .with(false, () => {})
+      .with(true, () => {
+        const check = flow(
+          (n: TSESTree.Node) => resolveManagedEntities(graph, services)(n, repoName),
+          findNonAggregateTarget(options, graph),
+          O.map(({ entity, parent }) => {
+            report({ node: reportNode, messageId: "nonAggregateRepository", data: { repo: repoName, entity, parent } });
+          }),
+        );
+        check(reportNode);
+      })
+      .exhaustive();
+  };
+
+const makeRepoNodeChecker =
+  (options: Options[0], services: ParserServicesWithTypeInformation) =>
+  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
   (node: TSESTree.Node, name: O.Option<string>) => {
     const check = flow(
       O.filter(hasRepoSuffix),
-      O.map((n: string) => { inspectNamedRepo(node, n, options, services, report); }),
+      O.map((n: string) => {
+        checkRepoDeclaration(
+          options,
+          analyzeAggregateGraph(services.program, {
+            explicitOptionRoots: options.aggregateRoots,
+            aggregatePathPatterns: options.aggregatePathPatterns,
+          }),
+        )(services, report)(node, n);
+      }),
     );
     check(name);
   };
 
-const buildRepoListeners = (
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  const check = makeRepoNodeChecker(options, services, report);
-  return {
-    TSTypeAliasDeclaration: (node: TSESTree.TSTypeAliasDeclaration) => { check(node, O.some(node.id.name)); },
-    TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => { check(node, O.some(node.id.name)); },
-    ClassDeclaration: (node: TSESTree.ClassDeclaration) => { check(node, O.fromNullable(node.id?.name)); },
-    VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
-      check(node, node.id.type === AST_NODE_TYPES.Identifier ? O.some(node.id.name) : O.none);
-    },
+const buildRepoListeners =
+  (options: Options[0], services: ParserServicesWithTypeInformation) =>
+  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => {
+    const check = makeRepoNodeChecker(options, services)(report);
+    return {
+      TSTypeAliasDeclaration: (node: TSESTree.TSTypeAliasDeclaration) => { check(node, O.some(node.id.name)); },
+      TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => { check(node, O.some(node.id.name)); },
+      ClassDeclaration: (node: TSESTree.ClassDeclaration) => { check(node, O.fromNullable(node.id?.name)); },
+      VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
+        check(node, node.id.type === AST_NODE_TYPES.Identifier ? O.some(node.id.name) : O.none);
+      },
+    };
   };
-};
 
 export const repositoryAggregateRootOnly = createRule<Options, MessageIds>({
   name: "repository-aggregate-root-only",
@@ -214,5 +197,5 @@ export const repositoryAggregateRootOnly = createRule<Options, MessageIds>({
     ],
   },
   create: (context, [options]) =>
-    buildRepoListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    buildRepoListeners(options, ESLintUtils.getParserServices(context))((d) => { context.report(d); }),
 });

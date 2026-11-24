@@ -52,16 +52,21 @@ const isExportedVariableDeclarator = (
         id: { type: AST_NODE_TYPES.Identifier },
         parent: {
           type: AST_NODE_TYPES.VariableDeclaration,
+          parent: { type: AST_NODE_TYPES.ExportNamedDeclaration },
         },
       },
-      (declarator) =>
-        match(declarator.parent.parent)
-          .with({ type: AST_NODE_TYPES.ExportNamedDeclaration }, () => true)
-          .with({ type: AST_NODE_TYPES.Program }, () =>
-            exportedNames.has(declarator.id.name),
-          )
-          .with(P._, () => false)
-          .exhaustive(),
+      () => true,
+    )
+    .with(
+      {
+        type: AST_NODE_TYPES.VariableDeclarator,
+        id: { type: AST_NODE_TYPES.Identifier },
+        parent: {
+          type: AST_NODE_TYPES.VariableDeclaration,
+          parent: { type: AST_NODE_TYPES.Program },
+        },
+      },
+      (declarator) => exportedNames.has(declarator.id.name),
     )
     .with(P._, () => false)
     .exhaustive();
@@ -70,19 +75,26 @@ const isExportedFunction = (
   node: FunctionNode,
   exportedNames: ReadonlySet<string>,
 ) =>
-  match(node.parent)
-    .with({ type: AST_NODE_TYPES.ExportNamedDeclaration }, () => true)
-    .with({ type: AST_NODE_TYPES.ExportDefaultDeclaration }, () => true)
-    .with({ type: AST_NODE_TYPES.VariableDeclarator }, (parent) =>
+  match(node)
+    .with(
+      P.union(
+        { parent: { type: AST_NODE_TYPES.ExportNamedDeclaration } },
+        { parent: { type: AST_NODE_TYPES.ExportDefaultDeclaration } },
+      ),
+      () => true,
+    )
+    .with({ parent: { type: AST_NODE_TYPES.VariableDeclarator } }, ({ parent }) =>
       isExportedVariableDeclarator(parent, exportedNames),
     )
     .with(
-      { type: AST_NODE_TYPES.Program },
-      () =>
-        node.type === AST_NODE_TYPES.FunctionDeclaration &&
-        O.exists((id: TSESTree.Identifier) => exportedNames.has(id.name))(
-          O.fromNullable(node.id),
-        ),
+      {
+        type: AST_NODE_TYPES.FunctionDeclaration,
+        parent: { type: AST_NODE_TYPES.Program },
+      },
+      flow(
+        (matched: TSESTree.FunctionDeclaration) => O.fromNullable(matched.id),
+        O.exists((id: TSESTree.Identifier) => exportedNames.has(id.name)),
+      ),
     )
     .with(P._, () => false)
     .exhaustive();

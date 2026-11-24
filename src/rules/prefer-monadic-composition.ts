@@ -76,20 +76,25 @@ const resolveSingleBlockReturnExpr = (body: TSESTree.BlockStatement) => {
 
 const resolveCallbackReturnExpression = (arg: TSESTree.CallExpressionArgument) =>
   match(arg)
-    .with({ type: AST_NODE_TYPES.ArrowFunctionExpression }, (fn) =>
-      match(fn.body)
-        .with({ type: AST_NODE_TYPES.BlockStatement }, resolveSingleBlockReturnExpr)
-        .with(P._, O.some)
-        .exhaustive(),
+    .with(
+      {
+        type: AST_NODE_TYPES.ArrowFunctionExpression,
+        body: { type: AST_NODE_TYPES.BlockStatement },
+      },
+      ({ body }) => resolveSingleBlockReturnExpr(body),
+    )
+    .with(
+      { type: AST_NODE_TYPES.ArrowFunctionExpression },
+      ({ body }) => O.some(body),
     )
     .with(P._, () => O.none)
     .exhaustive();
 
-const isMonadConstructorExpr = (
-  expr: TSESTree.Expression,
-  namespace: string,
-  constructors: ReadonlySet<string>,
-) =>
+const isMonadConstructorExpr = ([
+  expr,
+  namespace,
+  constructors,
+]: readonly [TSESTree.Expression, string, ReadonlySet<string>]) =>
   (expr.type === AST_NODE_TYPES.MemberExpression &&
     expr.object.type === AST_NODE_TYPES.Identifier &&
     expr.object.name === namespace &&
@@ -101,12 +106,12 @@ const isMonadConstructorExpr = (
         target.namespace === namespace && constructors.has(target.method),
     )(resolveMemberCall(expr)));
 
-const isMatchingMonadConstructor = (
-  arg: TSESTree.CallExpressionArgument,
-  namespace: string,
-  constructors: ReadonlySet<string>,
-) =>
-  O.exists((expr: TSESTree.Expression) => isMonadConstructorExpr(expr, namespace, constructors))(
+const isMatchingMonadConstructor = ([
+  arg,
+  namespace,
+  constructors,
+]: readonly [TSESTree.CallExpressionArgument, string, ReadonlySet<string>]) =>
+  O.exists((expr: TSESTree.Expression) => isMonadConstructorExpr([expr, namespace, constructors]))(
     resolveCallbackReturnExpression(arg),
   );
 
@@ -115,7 +120,7 @@ const isReturningSameMonadConstructor = (
   namespace: string,
 ) =>
   O.exists((constructors: ReadonlySet<string>) =>
-    isMatchingMonadConstructor(arg, namespace, constructors),
+    isMatchingMonadConstructor([arg, namespace, constructors]),
   )(RR.lookup(namespace, MONAD_REWRAP_CONSTRUCTORS));
 
 const isNegatedTernaryTest = (unary: TSESTree.UnaryExpression) =>
@@ -186,37 +191,40 @@ const resolvePipelineStartIndex = (node: TSESTree.CallExpression) =>
     .with([false, true], () => O.some(0))
     .otherwise(() => O.none);
 
+type MonadicReportDescriptor = Readonly<{
+  node: TSESTree.Node;
+  messageId: MessageIds;
+  data: Readonly<Record<string, string>>;
+}>;
+
 const reportMemberCall = (
   node: TSESTree.CallExpression,
-  report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
+  report: (d: MonadicReportDescriptor) => void,
 ) => {
   const check = flow(
     resolveMemberCall,
     O.flatMap((target) => classifyMemberCall(node, target)),
-    O.map(([messageId, data]) => { report(node, messageId, data); }),
+    O.map(([messageId, data]) => { report({ node, messageId, data }); }),
   );
   check(node);
 };
 
-const reportPipelineCall = (
-  node: TSESTree.CallExpression,
-  startIndex: number,
-  report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
-) => {
-  RA.map((target: TSESTree.CallExpressionArgument) => { report(target, "mapThenFlatten", {}); })(
-    findMapThenFlattenTargets(node.arguments, startIndex),
-  );
-};
+const reportPipelineCall =
+  (report: (d: MonadicReportDescriptor) => void) =>
+  (node: TSESTree.CallExpression, startIndex: number) => {
+    RA.map((target: TSESTree.CallExpressionArgument) => {
+      report({ node: target, messageId: "mapThenFlatten", data: {} });
+    })(findMapThenFlattenTargets(node.arguments, startIndex));
+  };
 
-const checkCallNode = (
-  node: TSESTree.CallExpression,
-  report: (n: TSESTree.Node, messageId: MessageIds, data: Readonly<Record<string, string>>) => void,
-) => {
-  O.match(
-    () => { reportMemberCall(node, report); },
-    (startIndex: number) => { reportPipelineCall(node, startIndex, report); },
-  )(resolvePipelineStartIndex(node));
-};
+const checkCallNode =
+  (report: (d: MonadicReportDescriptor) => void) =>
+  (node: TSESTree.CallExpression) => {
+    O.match(
+      () => { reportMemberCall(node, report); },
+      (startIndex: number) => { reportPipelineCall(report)(node, startIndex); },
+    )(resolvePipelineStartIndex(node));
+  };
 
 export const preferMonadicComposition = createRule<[], MessageIds>({
   name: "prefer-monadic-composition",
@@ -240,10 +248,6 @@ export const preferMonadicComposition = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => ({
-    CallExpression: (node) => {
-      checkCallNode(node, (n, messageId, data) => {
-        context.report({ node: n, messageId, data });
-      });
-    },
+    CallExpression: checkCallNode((d) => { context.report(d); }),
   }),
 });

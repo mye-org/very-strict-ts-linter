@@ -222,10 +222,9 @@ const isFpTsHktImportType = (node: TSESTree.TSImportType) =>
   (isFpTsRootSource(node.source.value) && startsWithHktQualifier(O.fromNullable(node.qualifier)));
 
 const reportWhen = <N extends TSESTree.Node>(
-  node: N,
   predicate: Pred.Predicate<N>,
   report: (n: TSESTree.Node) => void,
-) => {
+) => (node: N) => {
   O.map(report)(O.fromPredicate(predicate)(node));
 };
 
@@ -270,11 +269,11 @@ const buildHktListeners = (
   ({
     ImportDeclaration: (n) => { checkImportDeclaration(n, report); },
     ExportNamedDeclaration: (n) => { checkExportNamedDeclaration(n, report); },
-    ExportAllDeclaration: (n) => { reportWhen(n, (e) => isFpTsHktSource(e.source.value), report); },
-    TSModuleDeclaration: (n) => { reportWhen(n, isFpTsHktModuleAugmentation, report); },
-    TSImportType: (n) => { reportWhen(n, isFpTsHktImportType, report); },
-    TSTypeReference: (n) => { reportWhen(n, (r) => isTypeRefFpTsHkt(r, ctx), report); },
-    MemberExpression: (n) => { reportWhen(n, (m) => isFpTsHktMemberExpression(m, ctx), report); },
+    ExportAllDeclaration: reportWhen((e: TSESTree.ExportAllDeclaration) => isFpTsHktSource(e.source.value), report),
+    TSModuleDeclaration: reportWhen(isFpTsHktModuleAugmentation, report),
+    TSImportType: reportWhen(isFpTsHktImportType, report),
+    TSTypeReference: reportWhen((r: TSESTree.TSTypeReference) => isTypeRefFpTsHkt(r, ctx), report),
+    MemberExpression: reportWhen((m: TSESTree.MemberExpression) => isFpTsHktMemberExpression(m, ctx), report),
   }) satisfies TSESLint.RuleListener;
 
 const extractProgramStatements = (sourceCode: Readonly<TSESLint.SourceCode>) =>

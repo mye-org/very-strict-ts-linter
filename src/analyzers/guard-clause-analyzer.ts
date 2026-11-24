@@ -67,42 +67,37 @@ const collectRootNames = flow(
 
 const joinComma = (items: ReadonlyArray<string>) => items.join(",");
 
-const formatCallArgList = (
-  args: ReadonlyArray<ts.Expression>,
-  roots: ReadonlyArray<string>,
-  sf: ts.SourceFile,
-) => joinComma(RA.map((a: ts.Expression) => normalizeExpr(a, roots, sf))(args));
+type NormalizationEnv = Readonly<{
+  roots: ReadonlyArray<string>;
+  sf: ts.SourceFile;
+}>;
 
-const wrapBinaryText = (lhs: string, op: string, rhs: string) => `(${lhs} ${op} ${rhs})`;
+const formatCallArgList = (args: ReadonlyArray<ts.Expression>, env: NormalizationEnv) =>
+  joinComma(RA.map((a: ts.Expression) => normalizeExpr(a, env))(args));
 
-const formatBinaryExpr = (b: ts.BinaryExpression, roots: ReadonlyArray<string>, sf: ts.SourceFile) =>
-  wrapBinaryText(
-    normalizeExpr(b.left, roots, sf),
-    b.operatorToken.getText(sf),
-    normalizeExpr(b.right, roots, sf),
+const wrapBinaryText = (op: string) => (lhs: string, rhs: string) => `(${lhs} ${op} ${rhs})`;
+
+const formatBinaryExpr = (b: ts.BinaryExpression, env: NormalizationEnv) =>
+  wrapBinaryText(b.operatorToken.getText(env.sf))(
+    normalizeExpr(b.left, env),
+    normalizeExpr(b.right, env),
   );
 
 const resolveUnaryOp = (op: ts.PrefixUnaryOperator) => ts.tokenToString(op) ?? "!";
 const prefixText = (op: string, operand: string) => `${op}${operand}`;
 
-const formatPrefixExpr = (
-  u: ts.PrefixUnaryExpression,
-  roots: ReadonlyArray<string>,
-  sf: ts.SourceFile,
-) => prefixText(resolveUnaryOp(u.operator), normalizeExpr(u.operand, roots, sf));
+const formatPrefixExpr = (u: ts.PrefixUnaryExpression, env: NormalizationEnv) =>
+  prefixText(resolveUnaryOp(u.operator), normalizeExpr(u.operand, env));
 
 const formatCallText = (callee: string, args: string) => `${callee}(${args})`;
 
-const formatCallExpr = (c: ts.CallExpression, roots: ReadonlyArray<string>, sf: ts.SourceFile) =>
-  formatCallText(normalizeExpr(c.expression, roots, sf), formatCallArgList(c.arguments, roots, sf));
+const formatCallExpr = (c: ts.CallExpression, env: NormalizationEnv) =>
+  formatCallText(normalizeExpr(c.expression, env), formatCallArgList(c.arguments, env));
 
 const formatMemberText = (target: string, prop: string) => `${target}.${prop}`;
 
-const formatMemberExpr = (
-  m: ts.PropertyAccessExpression,
-  roots: ReadonlyArray<string>,
-  sf: ts.SourceFile,
-) => formatMemberText(normalizeExpr(m.expression, roots, sf), m.name.text);
+const formatMemberExpr = (m: ts.PropertyAccessExpression, env: NormalizationEnv) =>
+  formatMemberText(normalizeExpr(m.expression, env), m.name.text);
 
 const hasRootName = (roots: ReadonlyArray<string>, name: string) => roots.includes(name);
 
@@ -122,24 +117,24 @@ const formatFallbackNode = flow(readNodeText, collapseWhitespace);
 const buildGuardPreview = flow(readNodeText, collapseWhitespace, truncatePreview);
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive normalization
-const normalizeExpr = (node: ts.Node, roots: ReadonlyArray<string>, sf: ts.SourceFile): string =>
+const normalizeExpr = (node: ts.Node, env: NormalizationEnv): string =>
   match(node)
-    .when(ts.isParenthesizedExpression, (p) => normalizeExpr(p.expression, roots, sf))
-    .when(ts.isBinaryExpression, (b) => formatBinaryExpr(b, roots, sf))
-    .when(ts.isPrefixUnaryExpression, (u) => formatPrefixExpr(u, roots, sf))
-    .when(ts.isPropertyAccessExpression, (m) => formatMemberExpr(m, roots, sf))
-    .when(ts.isCallExpression, (c) => formatCallExpr(c, roots, sf))
+    .when(ts.isParenthesizedExpression, (p) => normalizeExpr(p.expression, env))
+    .when(ts.isBinaryExpression, (b) => formatBinaryExpr(b, env))
+    .when(ts.isPrefixUnaryExpression, (u) => formatPrefixExpr(u, env))
+    .when(ts.isPropertyAccessExpression, (m) => formatMemberExpr(m, env))
+    .when(ts.isCallExpression, (c) => formatCallExpr(c, env))
     .when(
-      (n): n is ts.Identifier => isTrackedRootIdentifier(n, roots),
-      (id) => formatRootSlot(roots, id.text),
+      (n): n is ts.Identifier => isTrackedRootIdentifier(n, env.roots),
+      (id) => formatRootSlot(env.roots, id.text),
     )
-    .otherwise((n) => formatFallbackNode(n, sf));
+    .otherwise((n) => formatFallbackNode(n, env.sf));
 
 const toGuardOccurrence = (node: ts.BinaryExpression, sf: ts.SourceFile) => {
   const clauseCount = countAtomicClauses(node);
   return clauseCount >= 2 && hasFieldPropertyRead(node, sf)
     ? O.some<GuardOccurrence>({
-        signature: normalizeExpr(node, collectRootNames(node, sf), sf),
+        signature: normalizeExpr(node, { roots: collectRootNames(node, sf), sf }),
         preview: buildGuardPreview(node, sf),
         clauseCount,
         location: resolveTsNodeLocation(node, sf),
@@ -158,8 +153,7 @@ const extractFileGuards = flow(
 
 const collectAllProgramGuards = flow(collectProjectSourceFiles, RA.flatMap(extractFileGuards));
 
-const collectProgramGuards = (program: ts.Program) =>
-  memoizeByProgram(program, guardCache, collectAllProgramGuards);
+const collectProgramGuards = memoizeByProgram(guardCache, collectAllProgramGuards);
 
 const groupAllBySignature = RNEA.groupBy((occ: GuardOccurrence) => occ.signature);
 
@@ -182,7 +176,12 @@ type GuardIndex = Readonly<{
   readonly byLocation: Readonly<Record<string, ReadonlyArray<GuardCluster>>>;
 }>;
 
-type GuardThresholds = Readonly<Record<"minClauses" | "minOccurrences", number>>;
+export type GuardThresholds = Readonly<Record<"minClauses" | "minOccurrences", number>>;
+
+const DEFAULT_GUARD_THRESHOLDS: GuardThresholds = {
+  minClauses: 2,
+  minOccurrences: 2,
+};
 
 const guardIndexCache = new WeakMap<ts.Program, Readonly<Record<string, GuardIndex>>>();
 
@@ -217,14 +216,11 @@ const makeGuardCacheKey = (thresholds: GuardThresholds) =>
 
 export const analyzeGuardClauses = (
   program: ts.Program,
-  minClauses = 2,
-  minOccurrences = 2,
+  thresholds: Partial<GuardThresholds> = {},
 ): GuardIndex => {
-  const thresholds = { minClauses, minOccurrences };
+  const resolved: GuardThresholds = { ...DEFAULT_GUARD_THRESHOLDS, ...thresholds };
   return memoizeByProgramAndKey(
-    program,
-    makeGuardCacheKey(thresholds),
     guardIndexCache,
-    computeGuardIndexForThresholds(thresholds),
-  );
+    computeGuardIndexForThresholds(resolved),
+  )(program, makeGuardCacheKey(resolved));
 };

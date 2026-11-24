@@ -82,18 +82,30 @@ const isSamePrimitiveFamily = (a: ts.Type, b: ts.Type) =>
   (isNumberLiteralLike(a) && isNumberLiteralLike(b)) ||
   (isBooleanType(a) && isBooleanType(b));
 
-const isPairDistinct = (a: ts.Type, b: ts.Type, checker: ts.TypeChecker) =>
+const isPairDistinct = ({
+  a,
+  b,
+  checker,
+}: Readonly<{
+  a: ts.Type;
+  b: ts.Type;
+  checker: ts.TypeChecker;
+}>) =>
   !isSamePrimitiveFamily(a, b) &&
   (!checker.isTypeAssignableTo(a, b) || !checker.isTypeAssignableTo(b, a));
 
-const hasDistinctOther = (
-  a: ts.Type,
-  members: ReadonlyArray<ts.Type>,
-  checker: ts.TypeChecker,
-) => RA.some((b: ts.Type) => a !== b && isPairDistinct(a, b, checker))(members);
+const hasDistinctOther = ({
+  a,
+  members,
+  checker,
+}: Readonly<{
+  a: ts.Type;
+  members: ReadonlyArray<ts.Type>;
+  checker: ts.TypeChecker;
+}>) => RA.some((b: ts.Type) => a !== b && isPairDistinct({ a, b, checker }))(members);
 
 const hasHeterogeneousMembers = (members: ReadonlyArray<ts.Type>, checker: ts.TypeChecker) =>
-  RA.some((a: ts.Type) => hasDistinctOther(a, members, checker))(members);
+  RA.some((a: ts.Type) => hasDistinctOther({ a, members, checker }))(members);
 
 const isFiniteNonBooleanUnionParam = (
   param: ts.Symbol,
@@ -227,45 +239,50 @@ const findMatchChainInExpr = (expr: TSESTree.Node, paramNames: ReadonlySet<strin
         .with(P._, () => [] satisfies ReadonlyArray<ReadonlyArray<TSESTree.Expression>>)
         .exhaustive();
 
-const resolveCallbackReturnType = (
-  cb: TSESTree.Expression,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
-  const resolve = flow(
-    (expr: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(expr),
-    (tsNode) => checker.getTypeAtLocation(tsNode).getCallSignatures(),
-    RA.head<ts.Signature>,
-    O.map((sig) => checker.getReturnTypeOfSignature(sig)),
-  );
-  return resolve(cb);
-};
+const resolveCallbackReturnType =
+  (services: ParserServicesWithTypeInformation, checker: ts.TypeChecker) =>
+  (cb: TSESTree.Expression) => {
+    const resolve = flow(
+      (expr: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(expr),
+      (tsNode) => checker.getTypeAtLocation(tsNode).getCallSignatures(),
+      RA.head<ts.Signature>,
+      O.map((sig) => checker.getReturnTypeOfSignature(sig)),
+    );
+    return resolve(cb);
+  };
 
 const hasAtLeastTwo = (xs: ReadonlyArray<ts.Type>) => xs.length >= 2;
 
 const hasMultipleHeterogeneous = (members: ReadonlyArray<ts.Type>, checker: ts.TypeChecker) =>
   hasAtLeastTwo(members) && hasHeterogeneousMembers(members, checker);
 
-const hasHeterogeneousCallbacks = (
-  callbacks: ReadonlyArray<TSESTree.Expression>,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) =>
+const hasHeterogeneousCallbacks = ({
+  callbacks,
+  services,
+  checker,
+}: Readonly<{
+  callbacks: ReadonlyArray<TSESTree.Expression>;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) =>
   hasMultipleHeterogeneous(
-    RA.filterMap((cb: TSESTree.Expression) => resolveCallbackReturnType(cb, services, checker))(
-      callbacks,
-    ),
+    RA.filterMap(resolveCallbackReturnType(services, checker))(callbacks),
     checker,
   );
 
-const hasCorrelatedMatchBranches = (
-  node: FunctionNode,
-  paramNames: ReadonlySet<string>,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) =>
+const hasCorrelatedMatchBranches = ({
+  node,
+  paramNames,
+  services,
+  checker,
+}: Readonly<{
+  node: FunctionNode;
+  paramNames: ReadonlySet<string>;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) =>
   RA.some((callbacks: ReadonlyArray<TSESTree.Expression>) =>
-    hasHeterogeneousCallbacks(callbacks, services, checker),
+    hasHeterogeneousCallbacks({ callbacks, services, checker }),
   )(findMatchChainInExpr(node.body, paramNames));
 
 const isWideUnionReturn = (sig: ts.Signature, checker: ts.TypeChecker) => {
@@ -292,31 +309,33 @@ const hasFunctionTypeParams = flow(
   O.exists((tp) => tp.params.length > 0),
 );
 
-const resolveFunctionSignature = (
-  node: FunctionNode,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
-  const resolve = flow(
-    (n: FunctionNode) => services.esTreeNodeToTSNodeMap.get(n),
-    (tsNode) => checker.getSignatureFromDeclaration(tsNode),
-    O.fromNullable,
-  );
-  return resolve(node);
-};
+const resolveFunctionSignature =
+  (services: ParserServicesWithTypeInformation, checker: ts.TypeChecker) =>
+  (node: FunctionNode) => {
+    const resolve = flow(
+      (n: FunctionNode) => services.esTreeNodeToTSNodeMap.get(n),
+      (tsNode) => checker.getSignatureFromDeclaration(tsNode),
+      O.fromNullable,
+    );
+    return resolve(node);
+  };
 
-const isDispatchCandidate = (
-  node: FunctionNode,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
+const isDispatchCandidate = ({
+  node,
+  services,
+  checker,
+}: Readonly<{
+  node: FunctionNode;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) => {
   const check = flow(
-    (n: FunctionNode) => resolveFunctionSignature(n, services, checker),
+    resolveFunctionSignature(services, checker),
     O.filter((sig: ts.Signature) => isWideUnionReturn(sig, checker)),
     O.map((sig) => collectFiniteUnionParamNames(sig, checker)),
     O.filter((names) => names.length > 0),
     O.map((names) => new Set(names)),
-    O.exists((nameSet) => hasCorrelatedMatchBranches(node, nameSet, services, checker)),
+    O.exists((paramNames) => hasCorrelatedMatchBranches({ node, paramNames, services, checker })),
   );
   return !hasFunctionTypeParams(node) && check(node);
 };
@@ -324,18 +343,16 @@ const isDispatchCandidate = (
 const isDispatchCandidateNode = (
   node: FunctionNode,
   services: ParserServicesWithTypeInformation,
-) => isDispatchCandidate(node, services, services.program.getTypeChecker());
+) => isDispatchCandidate({ node, services, checker: services.program.getTypeChecker() });
 
-const checkDispatchFunction = (
-  node: FunctionNode,
-  services: ParserServicesWithTypeInformation,
-  report: (n: FunctionNode) => void,
-) => {
-  match(isDispatchCandidateNode(node, services))
-    .with(true, () => { report(node); })
-    .with(false, () => {})
-    .exhaustive();
-};
+const checkDispatchFunction =
+  (services: ParserServicesWithTypeInformation, report: (n: FunctionNode) => void) =>
+  (node: FunctionNode) => {
+    match(isDispatchCandidateNode(node, services))
+      .with(true, () => { report(node); })
+      .with(false, () => {})
+      .exhaustive();
+  };
 
 export const preferTypeLevelDispatch = createRule<[], MessageIds>({
   name: "prefer-type-level-dispatch",
@@ -353,11 +370,9 @@ export const preferTypeLevelDispatch = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const check = (node: FunctionNode) => {
-      checkDispatchFunction(node, ESLintUtils.getParserServices(context), (n) => {
-        context.report({ node: n, messageId: "preferTypeLevelDispatch" });
-      });
-    };
+    const check = checkDispatchFunction(ESLintUtils.getParserServices(context), (n) => {
+      context.report({ node: n, messageId: "preferTypeLevelDispatch" });
+    });
     return { FunctionDeclaration: check, FunctionExpression: check, ArrowFunctionExpression: check };
   },
 });

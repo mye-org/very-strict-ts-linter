@@ -140,11 +140,15 @@ const isAnchoredRegexLiteral = (expr: TSESTree.Expression) =>
   "regex" in expr &&
   ANCHORED_LITERAL_REGEX_RE.test(expr.regex.pattern);
 
-const isGuardMemberCall = (
-  callee: TSESTree.MemberExpression,
-  arg0: O.Option<TSESTree.CallExpressionArgument>,
-  services: ParserServicesWithTypeInformation,
-) =>
+const isGuardMemberCall = ({
+  callee,
+  arg0,
+  services,
+}: Readonly<{
+  callee: TSESTree.MemberExpression;
+  arg0: O.Option<TSESTree.CallExpressionArgument>;
+  services: ParserServicesWithTypeInformation;
+}>) =>
   callee.property.type === AST_NODE_TYPES.Identifier &&
   match(callee.property.name)
     .with(P.when((m) => GUARD_STRING_METHODS.has(m)), () =>
@@ -162,15 +166,13 @@ const isTemplateGuardCall = (
 ) =>
   !isExemptEnclosingFunction(node) &&
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
-  isGuardMemberCall(node.callee, O.fromNullable(node.arguments[0]), services);
+  isGuardMemberCall({ callee: node.callee, arg0: O.fromNullable(node.arguments[0]), services });
 
-const reportOpt = (
-  node: TSESTree.Node,
-  msg: O.Option<MessageIds>,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
-) => {
-  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
-};
+const reportOpt =
+  (report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void) =>
+  (node: TSESTree.Node, msg: O.Option<MessageIds>) => {
+    O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
+  };
 
 export const preferTemplateLiteralType = createRule<[], MessageIds>({
   name: "prefer-template-literal-type",
@@ -190,16 +192,15 @@ export const preferTemplateLiteralType = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const rep = (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => { context.report(d); };
+    const rep = reportOpt((d) => { context.report(d); });
     return {
-      TSUnionType: (node) => { reportOpt(node, isCartesianStringUnion(node) ? O.some("preferTemplateLiteralUnion") : O.none, rep); },
+      TSUnionType: (node) => { rep(node, isCartesianStringUnion(node) ? O.some("preferTemplateLiteralUnion") : O.none); },
       CallExpression: (node) => {
-        reportOpt(
+        rep(
           node,
           isTemplateGuardCall(node, ESLintUtils.getParserServices(context))
             ? O.some("preferTemplateLiteralGuard")
             : O.none,
-          rep,
         );
       },
     };

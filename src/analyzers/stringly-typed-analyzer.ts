@@ -114,20 +114,18 @@ const extractIdentifierTargetKey = (expr: ts.Expression, sf: ts.SourceFile) =>
 const unwrapParenExpr = (expr: ts.Expression): ts.Expression =>
   ts.isParenthesizedExpression(expr) ? unwrapParenExpr(expr.expression) : expr;
 
-const resolveNonParenTargetKey = (
-  expr: ts.Expression,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
+type StringlyFileCtx = Readonly<{
+  sf: ts.SourceFile;
+  checker: ts.TypeChecker;
+}>;
+
+const resolveNonParenTargetKey = (expr: ts.Expression, { sf, checker }: StringlyFileCtx) =>
   ts.isPropertyAccessExpression(expr)
     ? resolveQualifiedPropertyKey(expr, checker)
     : extractIdentifierTargetKey(expr, sf);
 
-const resolveTargetDescriptor = (
-  expr: ts.Expression,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) => resolveNonParenTargetKey(unwrapParenExpr(expr), sf, checker);
+const resolveTargetDescriptor = (expr: ts.Expression, ctx: StringlyFileCtx) =>
+  resolveNonParenTargetKey(unwrapParenExpr(expr), ctx);
 
 const isBarePrimitiveSubject = flow(
   (expr: ts.Expression, checker: ts.TypeChecker) => checker.getTypeAtLocation(expr),
@@ -135,20 +133,17 @@ const isBarePrimitiveSubject = flow(
   O.isSome,
 );
 
-const combineTargetAndLiteral = (
-  targetOpt: O.Option<TargetDescriptor>,
-  literalOpt: O.Option<string>,
-  locNode: ts.Node,
-  sf: ts.SourceFile,
-) =>
-  O.isSome(targetOpt) && O.isSome(literalOpt)
-    ? O.some<DiscriminantOccurrence>({
-        targetKey: targetOpt.value.targetKey,
-        displayKey: targetOpt.value.displayKey,
-        literalValue: literalOpt.value,
-        location: resolveTsNodeLocation(locNode, sf),
-      })
-    : O.none;
+const combineTargetAndLiteral =
+  (locNode: ts.Node, sf: ts.SourceFile) =>
+  (targetOpt: O.Option<TargetDescriptor>, literalOpt: O.Option<string>) =>
+    O.isSome(targetOpt) && O.isSome(literalOpt)
+      ? O.some<DiscriminantOccurrence>({
+          targetKey: targetOpt.value.targetKey,
+          displayKey: targetOpt.value.displayKey,
+          literalValue: literalOpt.value,
+          location: resolveTsNodeLocation(locNode, sf),
+        })
+      : O.none;
 
 const extractSubjectLiteralOccurrence = ({
   subject,
@@ -158,73 +153,54 @@ const extractSubjectLiteralOccurrence = ({
   checker,
 }: SubjectLiteralSite) =>
   isBarePrimitiveSubject(subject, checker)
-    ? combineTargetAndLiteral(
-        resolveTargetDescriptor(subject, sf, checker),
+    ? combineTargetAndLiteral(locNode, sf)(
+        resolveTargetDescriptor(subject, { sf, checker }),
         extractLiteralValue(literalNode),
-        locNode,
-        sf,
       )
     : O.none;
 
-const extractBinaryDirection = (
-  node: ts.BinaryExpression,
-  pair: readonly [ts.Expression, ts.Expression],
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
-  extractSubjectLiteralOccurrence({
-    subject: pair[0],
-    literalNode: pair[1],
-    locNode: node,
-    sf,
-    checker,
-  });
+const extractBinaryDirection =
+  ({ sf, checker }: StringlyFileCtx) =>
+  (node: ts.BinaryExpression, pair: readonly [ts.Expression, ts.Expression]) =>
+    extractSubjectLiteralOccurrence({
+      subject: pair[0],
+      literalNode: pair[1],
+      locNode: node,
+      sf,
+      checker,
+    });
 
-const extractBinaryPair = (
-  node: ts.BinaryExpression,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
-  O.alt(() => extractBinaryDirection(node, [node.right, node.left], sf, checker))(
-    extractBinaryDirection(node, [node.left, node.right], sf, checker),
+const extractBinaryPair = (node: ts.BinaryExpression, ctx: StringlyFileCtx) =>
+  O.alt(() => extractBinaryDirection(ctx)(node, [node.right, node.left]))(
+    extractBinaryDirection(ctx)(node, [node.left, node.right]),
   );
 
-const extractBinaryOccurrence = (
-  node: ts.BinaryExpression,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) => (isEqualityToken(node.operatorToken.kind) ? extractBinaryPair(node, sf, checker) : O.none);
+const extractBinaryOccurrence = (node: ts.BinaryExpression, ctx: StringlyFileCtx) =>
+  isEqualityToken(node.operatorToken.kind) ? extractBinaryPair(node, ctx) : O.none;
 
-const extractCaseClauseOcc = (
-  clause: ts.CaseOrDefaultClause,
-  target: TargetDescriptor,
-  sf: ts.SourceFile,
-) =>
-  ts.isCaseClause(clause)
-    ? O.map((literalValue: string) => ({
-        targetKey: target.targetKey,
-        displayKey: target.displayKey,
-        literalValue,
-        location: resolveTsNodeLocation(clause, sf),
-      }))(extractLiteralValue(clause.expression))
-    : O.none;
+const extractCaseClauseOcc =
+  (target: TargetDescriptor, sf: ts.SourceFile) => (clause: ts.CaseOrDefaultClause) =>
+    ts.isCaseClause(clause)
+      ? O.map((literalValue: string) => ({
+          targetKey: target.targetKey,
+          displayKey: target.displayKey,
+          literalValue,
+          location: resolveTsNodeLocation(clause, sf),
+        }))(extractLiteralValue(clause.expression))
+      : O.none;
 
-const collectSwitchCaseClauses = (
-  clauses: ts.NodeArray<ts.CaseOrDefaultClause>,
-  target: TargetDescriptor,
-  sf: ts.SourceFile,
-) => RA.filterMap((clause: ts.CaseOrDefaultClause) => extractCaseClauseOcc(clause, target, sf))(clauses);
+const collectSwitchCaseClauses =
+  (target: TargetDescriptor, sf: ts.SourceFile) =>
+  (clauses: ts.NodeArray<ts.CaseOrDefaultClause>) =>
+    RA.filterMap(extractCaseClauseOcc(target, sf))(clauses);
 
-const extractSwitchCaseOccurrences = (
-  node: ts.SwitchStatement,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
-  isBarePrimitiveSubject(node.expression, checker)
+const extractSwitchCaseOccurrences = (node: ts.SwitchStatement, ctx: StringlyFileCtx) =>
+  isBarePrimitiveSubject(node.expression, ctx.checker)
     ? O.match(
         () => [] satisfies ReadonlyArray<DiscriminantOccurrence>,
-        (target: TargetDescriptor) => collectSwitchCaseClauses(node.caseBlock.clauses, target, sf),
-      )(resolveTargetDescriptor(node.expression, sf, checker))
+        (target: TargetDescriptor) =>
+          collectSwitchCaseClauses(target, ctx.sf)(node.caseBlock.clauses),
+      )(resolveTargetDescriptor(node.expression, ctx))
     : [];
 
 const isMatchIdentifierCall = (expr: ts.CallExpression) =>
@@ -252,63 +228,43 @@ const extractMatchArgOccurrence =
   (arg0: ts.Expression, subject: ts.Expression) =>
     extractSubjectLiteralOccurrence({ subject, literalNode: arg0, locNode: arg0, sf, checker });
 
-const extractMatchPairOccurrence = (
-  arg0: O.Option<ts.Expression>,
-  subject: O.Option<ts.Expression>,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
-  O.isSome(arg0) && O.isSome(subject)
-    ? extractMatchArgOccurrence(sf, checker)(arg0.value, subject.value)
-    : O.none;
+const extractMatchPairOccurrence =
+  ({ sf, checker }: StringlyFileCtx) =>
+  (arg0: O.Option<ts.Expression>, subject: O.Option<ts.Expression>) =>
+    O.isSome(arg0) && O.isSome(subject)
+      ? extractMatchArgOccurrence(sf, checker)(arg0.value, subject.value)
+      : O.none;
 
-const extractMatchWithOccurrence = (
-  node: ts.CallExpression,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
+const extractMatchWithOccurrence = (node: ts.CallExpression, ctx: StringlyFileCtx) =>
   isWithPropAccess(node.expression) && node.arguments.length >= 1
-    ? extractMatchPairOccurrence(
+    ? extractMatchPairOccurrence(ctx)(
         O.fromNullable(node.arguments[0]),
         findRootMatchSubject(node.expression.expression),
-        sf,
-        checker,
       )
     : O.none;
 
-const collectBinaryOccurrences = (
-  nodes: ReadonlyArray<ts.Node>,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
-  RA.filterMap((n: ts.BinaryExpression) => extractBinaryOccurrence(n, sf, checker))(
+const collectBinaryOccurrences = (nodes: ReadonlyArray<ts.Node>, ctx: StringlyFileCtx) =>
+  RA.filterMap((n: ts.BinaryExpression) => extractBinaryOccurrence(n, ctx))(
     RA.filter(ts.isBinaryExpression)(nodes),
   );
 
-const collectSwitchOccurrences = (
-  nodes: ReadonlyArray<ts.Node>,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
-  RA.flatMap((n: ts.SwitchStatement) => extractSwitchCaseOccurrences(n, sf, checker))(
+const collectSwitchOccurrences = (nodes: ReadonlyArray<ts.Node>, ctx: StringlyFileCtx) =>
+  RA.flatMap((n: ts.SwitchStatement) => extractSwitchCaseOccurrences(n, ctx))(
     RA.filter(ts.isSwitchStatement)(nodes),
   );
 
-const collectMatchOccurrences = (
-  nodes: ReadonlyArray<ts.Node>,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
-  RA.filterMap((n: ts.CallExpression) => extractMatchWithOccurrence(n, sf, checker))(
+const collectMatchOccurrences = (nodes: ReadonlyArray<ts.Node>, ctx: StringlyFileCtx) =>
+  RA.filterMap((n: ts.CallExpression) => extractMatchWithOccurrence(n, ctx))(
     RA.filter(ts.isCallExpression)(nodes),
   );
 
 const extractFileOccurrences = (sf: ts.SourceFile, checker: ts.TypeChecker) => {
   const nodes = collectTsNodes(sf, sf);
+  const ctx: StringlyFileCtx = { sf, checker };
   return [
-    ...collectBinaryOccurrences(nodes, sf, checker),
-    ...collectSwitchOccurrences(nodes, sf, checker),
-    ...collectMatchOccurrences(nodes, sf, checker),
+    ...collectBinaryOccurrences(nodes, ctx),
+    ...collectSwitchOccurrences(nodes, ctx),
+    ...collectMatchOccurrences(nodes, ctx),
   ];
 };
 
@@ -323,8 +279,10 @@ const extractOccurrencesForProgram = flow(
   ({ files, checker }) => extractProgramFiles(checker)(files),
 );
 
-const collectProgramOccurrences = (program: ts.Program) =>
-  memoizeByProgram(program, discriminantCache, extractOccurrencesForProgram);
+const collectProgramOccurrences = memoizeByProgram(
+  discriminantCache,
+  extractOccurrencesForProgram,
+);
 
 const extractOccLocations = RA.map((o: DiscriminantOccurrence) => o.location);
 
@@ -392,8 +350,6 @@ export const analyzeStringlyTypedDiscriminants = (
   minBranches = 2,
 ): DiscriminantIndex =>
   memoizeByProgramAndKey(
-    program,
-    makeDiscriminantCacheKey(minBranches),
     discriminantIndexCache,
     computeDiscriminantIndexForMinBranches(minBranches),
-  );
+  )(program, makeDiscriminantCacheKey(minBranches));

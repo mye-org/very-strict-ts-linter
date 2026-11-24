@@ -8,9 +8,9 @@ const checkOptionalProperty = (
   node: TSESTree.TSPropertySignature,
   report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
 ) => {
-  match(node.optional)
-    .with(true, () => { report({ node, messageId: "noOptionalProperty" }); })
-    .with(false, () => {})
+  match(node)
+    .with({ optional: true }, (matched) => { report({ node: matched, messageId: "noOptionalProperty" }); })
+    .with({ optional: false }, () => {})
     .exhaustive();
 };
 

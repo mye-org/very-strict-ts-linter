@@ -38,42 +38,41 @@ const formatClumpReport = (
   },
 });
 
+type ClumpCheckEnv = Readonly<{
+  readonly options: Options[0];
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
 const reportFirstClump = (
+  env: ClumpCheckEnv,
+) => (
   node: ClumpCandidateNode,
   index: Readonly<Record<string, ReadonlyArray<ClumpFinding>>>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   const reportIfFound = flow(
-    (n: ClumpCandidateNode) => resolveNodeLocationKey(n, services),
+    (n: ClumpCandidateNode) => resolveNodeLocationKey(n, env.services),
     (key: string) => RR.lookup(key, index),
     O.flatMap(RA.head<ClumpFinding>),
-    O.map((clump: ClumpFinding) => { report(formatClumpReport(node, clump)); }),
+    O.map((clump: ClumpFinding) => { env.report(formatClumpReport(node, clump)); }),
   );
   reportIfFound(node);
 };
 
 const runClumpCheck =
-  (
-    options: Options[0],
-    services: ParserServicesWithTypeInformation,
-    report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-  ) =>
+  (env: ClumpCheckEnv) =>
   (node: ClumpCandidateNode) => {
-    reportFirstClump(
+    reportFirstClump(env)(
       node,
-      analyzeDataClumps(services.program, options.minSize, options.minOccurrences).byLocation,
-      services,
-      report,
+      analyzeDataClumps(env.services.program, {
+        minSize: env.options.minSize,
+        minOccurrences: env.options.minOccurrences,
+      }).byLocation,
     );
   };
 
-const makeClumpListeners = (
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  const check = runClumpCheck(options, services, report);
+const makeClumpListeners = (env: ClumpCheckEnv) => {
+  const check = runClumpCheck(env);
   return {
     FunctionDeclaration: check,
     FunctionExpression: check,
@@ -109,5 +108,9 @@ export const noDataClumps = createRule<Options, MessageIds>({
     defaultOptions: [{ minSize: 2, minOccurrences: 3 }],
   },
   create: (context, [options]) =>
-    makeClumpListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    makeClumpListeners({
+      options,
+      services: ESLintUtils.getParserServices(context),
+      report: (d) => { context.report(d); },
+    }),
 });

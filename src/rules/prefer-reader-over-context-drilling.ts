@@ -36,47 +36,43 @@ const toDrillingDescriptor = (node: TSESTree.Node, finding: ContextDrillingFindi
   },
 });
 
-const reportDrillingFindings = (
-  node: TSESTree.Node,
-  locationIndex: Readonly<Record<string, ReadonlyArray<ContextDrillingFinding>>>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  O.map(
-    RA.map((finding: ContextDrillingFinding) => {
-      report(toDrillingDescriptor(node, finding));
-    }),
-  )(O.fromNullable(locationIndex[resolveNodeLocationKey(node, services)]));
-};
+const reportDrillingFindings =
+  (
+    services: ParserServicesWithTypeInformation,
+    report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+  ) =>
+  (
+    node: TSESTree.Node,
+    locationIndex: Readonly<Record<string, ReadonlyArray<ContextDrillingFinding>>>,
+  ) => {
+    O.map(
+      RA.map((finding: ContextDrillingFinding) => {
+        report(toDrillingDescriptor(node, finding));
+      }),
+    )(O.fromNullable(locationIndex[resolveNodeLocationKey(node, services)]));
+  };
 
-const checkNamedFnNode = (
-  node: TSESTree.FunctionDeclaration | TSESTree.VariableDeclarator,
-  minDepth: number,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  reportDrillingFindings(
-    node,
-    analyzeContextDrilling(services.program, minDepth).locationIndex,
-    services,
-    report,
-  );
-};
-
-const buildDrillingListeners = (
-  minDepth: number,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => ({
-  FunctionDeclaration: (node: TSESTree.FunctionDeclaration) => {
-    checkNamedFnNode(node, minDepth, services, report);
-  },
-  VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
-    O.map((n: TSESTree.VariableDeclarator) => { checkNamedFnNode(n, minDepth, services, report); })(
-      O.fromPredicate(hasFunctionInit)(node),
+const checkNamedFnNode =
+  (minDepth: number, services: ParserServicesWithTypeInformation) =>
+  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+  (node: TSESTree.FunctionDeclaration | TSESTree.VariableDeclarator) => {
+    reportDrillingFindings(services, report)(
+      node,
+      analyzeContextDrilling(services.program, minDepth).locationIndex,
     );
-  },
-});
+  };
+
+const buildDrillingListeners =
+  (minDepth: number, services: ParserServicesWithTypeInformation) =>
+  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => {
+    const check = checkNamedFnNode(minDepth, services)(report);
+    return {
+      FunctionDeclaration: check,
+      VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
+        O.map(check)(O.fromPredicate(hasFunctionInit)(node));
+      },
+    };
+  };
 
 export const preferReaderOverContextDrilling = createRule<Options, MessageIds>({
   name: "prefer-reader-over-context-drilling",
@@ -102,7 +98,7 @@ export const preferReaderOverContextDrilling = createRule<Options, MessageIds>({
     defaultOptions: [{ minDepth: 3 }],
   },
   create: (context, [options]) =>
-    buildDrillingListeners(options.minDepth, ESLintUtils.getParserServices(context), (d) => {
+    buildDrillingListeners(options.minDepth, ESLintUtils.getParserServices(context))((d) => {
       context.report(d);
     }),
 });

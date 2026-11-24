@@ -38,87 +38,102 @@ const isPromiseStaticCall = (object: TSESTree.Expression, propName: string) =>
   PROMISE_CONSTRUCTOR_NAMES.has(object.name) &&
   PROMISE_STATIC_METHODS.has(propName);
 
-const isPromiseSymbol = (
-  object: TSESTree.Expression,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
+const isPromiseSymbol = ({
+  object,
+  services,
+  checker,
+}: Readonly<{
+  object: TSESTree.Expression;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) => {
   const symbol = checker
     .getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(object))
     .getSymbol();
   return symbol?.name === "Promise" || symbol?.name === "PromiseLike";
 };
 
-const isPromiseTerminalCall = (
-  object: TSESTree.Expression,
-  propName: string,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => PROMISE_TERMINAL_METHODS.has(propName) && isPromiseSymbol(object, services, checker);
+const isPromiseTerminalCall = ({
+  callee,
+  services,
+  checker,
+}: Readonly<{
+  callee: TSESTree.MemberExpression & { property: TSESTree.Identifier };
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) =>
+  PROMISE_TERMINAL_METHODS.has(callee.property.name) &&
+  isPromiseSymbol({ object: callee.object, services, checker });
 
-const reportPromiseMemberCall = (
-  node: TSESTree.CallExpression,
-  callee: TSESTree.MemberExpression & { property: TSESTree.Identifier },
-  services: ParserServicesWithTypeInformation,
-  report: (n: TSESTree.Node, messageId: MessageIds) => void,
-) => {
-  match({
-    isStatic: isPromiseStaticCall(callee.object, callee.property.name),
-    isTerminal: isPromiseTerminalCall(callee.object, callee.property.name, services, services.program.getTypeChecker()),
-  })
-    .with({ isStatic: true }, () => { report(node, "noRawPromise"); })
-    .with({ isTerminal: true }, () => { report(callee.property, "noRawPromise"); })
-    .otherwise(() => {});
-};
+const reportPromiseMemberCall =
+  (
+    services: ParserServicesWithTypeInformation,
+    report: (n: TSESTree.Node, messageId: MessageIds) => void,
+  ) =>
+  (
+    node: TSESTree.CallExpression,
+    callee: TSESTree.MemberExpression & { property: TSESTree.Identifier },
+  ) => {
+    match({
+      isStatic: isPromiseStaticCall(callee.object, callee.property.name),
+      isTerminal: isPromiseTerminalCall({
+        callee,
+        services,
+        checker: services.program.getTypeChecker(),
+      }),
+    })
+      .with({ isStatic: true }, () => { report(node, "noRawPromise"); })
+      .with({ isTerminal: true }, () => { report(callee.property, "noRawPromise"); })
+      .otherwise(() => {});
+  };
 
-const checkCallExpression = (
-  node: TSESTree.CallExpression,
-  services: ParserServicesWithTypeInformation,
-  report: (n: TSESTree.Node, messageId: MessageIds) => void,
-) => {
-  match({ callee: node.callee, insideUnsafe: isInsideUnsafeOrMustFunction(node) })
-    .with(
-      {
-        insideUnsafe: false,
-        callee: {
-          type: AST_NODE_TYPES.MemberExpression,
-          computed: false,
-          property: { type: AST_NODE_TYPES.Identifier },
+const checkCallExpression =
+  (
+    services: ParserServicesWithTypeInformation,
+    report: (n: TSESTree.Node, messageId: MessageIds) => void,
+  ) =>
+  (node: TSESTree.CallExpression) => {
+    match({ callee: node.callee, insideUnsafe: isInsideUnsafeOrMustFunction(node) })
+      .with(
+        {
+          insideUnsafe: false,
+          callee: {
+            type: AST_NODE_TYPES.MemberExpression,
+            computed: false,
+            property: { type: AST_NODE_TYPES.Identifier },
+          },
         },
-      },
-      ({ callee }) => { reportPromiseMemberCall(node, callee, services, report); },
-    )
-    .otherwise(() => {});
-};
+        ({ callee }) => { reportPromiseMemberCall(services, report)(node, callee); },
+      )
+      .otherwise(() => {});
+  };
 
 const isRawNewPromise = (node: TSESTree.NewExpression) =>
   node.callee.type === AST_NODE_TYPES.Identifier &&
   PROMISE_CONSTRUCTOR_NAMES.has(node.callee.name) &&
   !isInsideUnsafeOrMustFunction(node);
 
-const reportWhen = <N extends TSESTree.Node>(
-  node: N,
-  predicate: Pred.Predicate<N>,
-  onMatch: (n: N) => void,
-) => {
-  O.map(onMatch)(O.fromPredicate(predicate)(node));
-};
+const reportWhen =
+  <N extends TSESTree.Node>(predicate: Pred.Predicate<N>, onMatch: (n: N) => void) =>
+  (node: N) => {
+    O.map(onMatch)(O.fromPredicate(predicate)(node));
+  };
 
 const buildErrorHandlingListeners = (
   services: ParserServicesWithTypeInformation,
   report: (node: TSESTree.Node, messageId: MessageIds) => void,
 ) => {
-  const checkAsync = (node: TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression) => {
-    reportWhen(node, (n) => n.async && !isExemptFunction(n), (n) => { report(n, "noAsyncAwait"); });
-  };
+  const checkAsync = reportWhen<
+    TSESTree.FunctionDeclaration | TSESTree.FunctionExpression | TSESTree.ArrowFunctionExpression
+  >((n) => n.async && !isExemptFunction(n), (n) => { report(n, "noAsyncAwait"); });
   return {
-    TryStatement: (node: TSESTree.TryStatement) => { reportWhen(node, (n) => !isInsideUnsafeOrMustFunction(n), (n) => { report(n, "noTryCatch"); }); },
+    TryStatement: reportWhen<TSESTree.TryStatement>((n) => !isInsideUnsafeOrMustFunction(n), (n) => { report(n, "noTryCatch"); }),
     FunctionDeclaration: checkAsync,
     FunctionExpression: checkAsync,
     ArrowFunctionExpression: checkAsync,
-    AwaitExpression: (node: TSESTree.AwaitExpression) => { reportWhen(node, (n) => !isInsideAsyncFunction(n) && !isInsideUnsafeOrMustFunction(n), (n) => { report(n, "noAsyncAwait"); }); },
-    NewExpression: (node: TSESTree.NewExpression) => { reportWhen(node, isRawNewPromise, (n) => { report(n, "noRawPromise"); }); },
-    CallExpression: (node: TSESTree.CallExpression) => { checkCallExpression(node, services, report); },
+    AwaitExpression: reportWhen<TSESTree.AwaitExpression>((n) => !isInsideAsyncFunction(n) && !isInsideUnsafeOrMustFunction(n), (n) => { report(n, "noAsyncAwait"); }),
+    NewExpression: reportWhen<TSESTree.NewExpression>(isRawNewPromise, (n) => { report(n, "noRawPromise"); }),
+    CallExpression: checkCallExpression(services, report),
   };
 };
 

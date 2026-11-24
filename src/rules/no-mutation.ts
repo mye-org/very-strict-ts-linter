@@ -166,15 +166,14 @@ const UNTYPED_METHOD_CHECKS = {
 
 const isStaticMemberCall = (
   callee: TSESTree.Expression,
-  objectName: string,
-  propertyName: string,
+  target: Readonly<{ readonly objectName: "Object" | "Reflect"; readonly propertyName: "assign" | "set" | "defineProperty" }>,
 ) =>
   callee.type === AST_NODE_TYPES.MemberExpression &&
   !callee.computed &&
   callee.object.type === AST_NODE_TYPES.Identifier &&
-  callee.object.name === objectName &&
+  callee.object.name === target.objectName &&
   callee.property.type === AST_NODE_TYPES.Identifier &&
-  callee.property.name === propertyName;
+  callee.property.name === target.propertyName;
 
 const isObjectExpression = (arg: TSESTree.CallExpressionArgument) =>
   arg.type === AST_NODE_TYPES.ObjectExpression;
@@ -184,7 +183,7 @@ const readFirstArg = (node: TSESTree.CallExpression) => RA.head(node.arguments);
 const isFirstArgObjectLiteral = flow(readFirstArg, O.exists(isObjectExpression));
 
 const isNonFreshObjectAssign = (node: TSESTree.CallExpression) =>
-  isStaticMemberCall(node.callee, "Object", "assign") &&
+  isStaticMemberCall(node.callee, { objectName: "Object", propertyName: "assign" }) &&
   O.isSome(readFirstArg(node)) &&
   !isFirstArgObjectLiteral(node);
 
@@ -194,20 +193,17 @@ const resolveReceiverType = (
 ) => checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(receiver));
 
 const isTypedPolicyMatch = (
-  receiver: TSESTree.Expression,
-  checkerCtx: CheckerContext,
   policy: TypedReceiverPolicy,
-) => policy.isMatch(resolveReceiverType(receiver, checkerCtx), checkerCtx.checker);
+  target: Readonly<{ readonly receiver: TSESTree.Expression; readonly checkerCtx: CheckerContext }>,
+) => policy.isMatch(resolveReceiverType(target.receiver, target.checkerCtx), target.checkerCtx.checker);
 
 const hasTypedMethodMatch = (
   method: string,
-  receiver: TSESTree.Expression,
-  checkerCtx: CheckerContext,
-) => {
-  const isPolicyMatch = (policy: TypedReceiverPolicy) =>
-    isTypedPolicyMatch(receiver, checkerCtx, policy);
-  return O.exists(isPolicyMatch)(RR.lookup(method, TYPED_METHOD_CHECKS));
-};
+  target: Readonly<{ readonly receiver: TSESTree.Expression; readonly checkerCtx: CheckerContext }>,
+) =>
+  O.exists((policy: TypedReceiverPolicy) => isTypedPolicyMatch(policy, target))(
+    RR.lookup(method, TYPED_METHOD_CHECKS),
+  );
 
 const hasUntypedMethodMatch = (method: string, receiver: TSESTree.Expression) => {
   const isPolicyMatch = (policy: UntypedReceiverPolicy) => policy.isMatch(receiver);
@@ -223,7 +219,7 @@ const isMutatingMemberCall = (
   match(checkerCtx)
     .with({ _tag: "None" }, () => hasUntypedMethodMatch(member.property.name, member.object))
     .with({ _tag: "Some" }, ({ value }) =>
-      hasTypedMethodMatch(member.property.name, member.object, value),
+      hasTypedMethodMatch(member.property.name, { receiver: member.object, checkerCtx: value }),
     )
     .exhaustive();
 
@@ -250,10 +246,9 @@ const reportMutatingProperty = (
 };
 
 const checkMemberMethodMutation = (
-  node: TSESTree.CallExpression,
   checkerCtx: O.Option<CheckerContext>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+) => (node: TSESTree.CallExpression) => {
   O.map((property: TSESTree.Identifier) => {
     reportMutatingProperty(property, report);
   })(findMutatingProperty(node.callee, checkerCtx));
@@ -262,8 +257,8 @@ const checkMemberMethodMutation = (
 const classifyStaticMutation = (node: TSESTree.CallExpression) =>
   match({
     nonFreshAssign: isNonFreshObjectAssign(node),
-    reflectSet: isStaticMemberCall(node.callee, "Reflect", "set"),
-    defineProperty: isStaticMemberCall(node.callee, "Object", "defineProperty"),
+    reflectSet: isStaticMemberCall(node.callee, { objectName: "Reflect", propertyName: "set" }),
+    defineProperty: isStaticMemberCall(node.callee, { objectName: "Object", propertyName: "defineProperty" }),
   })
     .with({ nonFreshAssign: true }, () => O.some<MessageIds>("noObjectAssignMutation"))
     .with({ reflectSet: true }, () => O.some<MessageIds>("noReflectSet"))
@@ -271,13 +266,12 @@ const classifyStaticMutation = (node: TSESTree.CallExpression) =>
     .otherwise(() => O.none);
 
 const checkCallExpression = (
-  node: TSESTree.CallExpression,
   checkerCtx: O.Option<CheckerContext>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+) => (node: TSESTree.CallExpression) => {
   O.fold(
     () => {
-      checkMemberMethodMutation(node, checkerCtx, report);
+      checkMemberMethodMutation(checkerCtx, report)(node);
     },
     (messageId: MessageIds) => {
       report({ node, messageId });
@@ -289,9 +283,7 @@ const buildNoMutationListeners = (
   checkerCtx: O.Option<CheckerContext>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => ({
-  CallExpression: (node: TSESTree.CallExpression) => {
-    checkCallExpression(node, checkerCtx, report);
-  },
+  CallExpression: checkCallExpression(checkerCtx, report),
 });
 
 const parseCheckerContext = flow(

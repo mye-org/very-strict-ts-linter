@@ -51,19 +51,20 @@ const isInsideFunctionBody = (node: TSESTree.VariableDeclaration) =>
   node.parent.type === AST_NODE_TYPES.BlockStatement &&
   isFunctionNode(O.fromNullable(node.parent.parent));
 
-const reportSingleUseDeclarators = (
-  node: TSESTree.VariableDeclaration,
-  sourceCode: Readonly<TSESLint.SourceCode>,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
-) => {
-  const run = flow(
-    RA.filterMap((d: TSESTree.VariableDeclarator) => isSingleUseDeclarator(d, sourceCode)),
-    RA.map(({ declarator, name }) => {
-      report({ node: declarator, messageId: "unnecessaryLocalConst", data: { name } });
-    }),
-  );
-  run(node.declarations);
-};
+const reportSingleUseDeclarators =
+  (
+    sourceCode: Readonly<TSESLint.SourceCode>,
+    report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+  ) =>
+  (node: TSESTree.VariableDeclaration) => {
+    const run = flow(
+      RA.filterMap((d: TSESTree.VariableDeclarator) => isSingleUseDeclarator(d, sourceCode)),
+      RA.map(({ declarator, name }) => {
+        report({ node: declarator, messageId: "unnecessaryLocalConst", data: { name } });
+      }),
+    );
+    run(node.declarations);
+  };
 
 export const noUnnecessaryLocalConst = createRule<[], MessageIds>({
   name: "no-unnecessary-local-const",
@@ -84,7 +85,7 @@ export const noUnnecessaryLocalConst = createRule<[], MessageIds>({
     VariableDeclaration: (node) => {
       match(isInsideFunctionBody(node))
         .with(true, () => {
-          reportSingleUseDeclarators(node, context.sourceCode, (d) => { context.report(d); });
+          reportSingleUseDeclarators(context.sourceCode, (d) => { context.report(d); })(node);
         })
         .with(false, () => {})
         .exhaustive();

@@ -32,51 +32,45 @@ const formatClusterFields = (cluster: SkeletonCluster) => ({
   preview: cluster.preview,
 });
 
+type SkeletonEnv = Readonly<{
+  readonly options: Options[0];
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
 const reportCluster = (
+  env: SkeletonEnv,
+) => (
   node: TSESTree.CallExpression,
   locationIndex: Readonly<Record<string, ReadonlyArray<SkeletonCluster>>>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   O.map((cluster: SkeletonCluster) => {
-    report({
+    env.report({
       node,
       messageId: "structuralSkeletonDuplication",
       data: formatClusterFields(cluster),
     });
-  })(O.fromNullable(locationIndex[resolveCallLocationKey(node, services)]?.[0]));
+  })(O.fromNullable(locationIndex[resolveCallLocationKey(node, env.services)]?.[0]));
 };
 
 const isPipeOrFlowNode = (n: TSESTree.CallExpression) =>
   isPipeCallExpression(n) || isFlowCallExpression(n);
 
 const resolveSkeletonIndex = (options: Options[0], services: ParserServicesWithTypeInformation) =>
-  analyzeSkeletonDuplications(
-    services.program,
-    options.minSteps,
-    options.minDistinctCombinators,
-    options.minOccurrences,
-  ).locationIndex;
+  analyzeSkeletonDuplications(services.program, {
+    minSteps: options.minSteps,
+    minDistinctCombinators: options.minDistinctCombinators,
+    minOccurrences: options.minOccurrences,
+  }).locationIndex;
 
-const checkPipelineCall = (
-  node: TSESTree.CallExpression,
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const checkPipelineCall = (env: SkeletonEnv) => (node: TSESTree.CallExpression) => {
   O.map((n: TSESTree.CallExpression) => {
-    reportCluster(n, resolveSkeletonIndex(options, services), services, report);
+    reportCluster(env)(n, resolveSkeletonIndex(env.options, env.services));
   })(O.fromPredicate(isPipeOrFlowNode)(node));
 };
 
-const buildSkeletonListeners = (
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => ({
-  CallExpression: (node: TSESTree.CallExpression) => {
-    checkPipelineCall(node, options, services, report);
-  },
+const buildSkeletonListeners = (env: SkeletonEnv) => ({
+  CallExpression: checkPipelineCall(env),
 });
 
 export const noStructuralSkeletonDuplication = createRule<Options, MessageIds>({
@@ -105,7 +99,11 @@ export const noStructuralSkeletonDuplication = createRule<Options, MessageIds>({
     defaultOptions: [{ minSteps: 4, minDistinctCombinators: 3, minOccurrences: 2 }],
   },
   create: (context, [options]) =>
-    buildSkeletonListeners(options, ESLintUtils.getParserServices(context), (d) => {
-      context.report(d);
+    buildSkeletonListeners({
+      options,
+      services: ESLintUtils.getParserServices(context),
+      report: (d) => {
+        context.report(d);
+      },
     }),
 });

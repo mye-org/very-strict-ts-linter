@@ -2,6 +2,7 @@ import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLin
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as S from "fp-ts/lib/string.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { collectEstreeChildNodes } from "../lib/estree-children.js";
 import { isEsTreeFunctionNode } from "../lib/estree-function-nodes.js";
@@ -66,19 +67,17 @@ const resolveExprRepoType = (
   services: ParserServicesWithTypeInformation,
 ) => resolveTsTypeName(resolveExprTsType(expr, services));
 
-const isRepoReceiver = (
+const hasRepoType = (
   expr: TSESTree.Expression,
-  receiverName: string,
   services: ParserServicesWithTypeInformation,
-) => isRepoLikeName(receiverName) || O.exists(isRepoLikeName)(resolveExprRepoType(expr, services));
+) => O.exists(isRepoLikeName)(resolveExprRepoType(expr, services));
 
 const extractMemberRepoKey = (
-  member: TSESTree.MemberExpression,
   methodSet: ReadonlySet<string>,
   services: ParserServicesWithTypeInformation,
-) =>
+) => (member: TSESTree.MemberExpression) =>
   member.property.type === AST_NODE_TYPES.Identifier && methodSet.has(member.property.name)
-    ? O.filter((name: string) => isRepoReceiver(member.object, name, services))(
+    ? O.filter((name: string) => isRepoLikeName(name) || hasRepoType(member.object, services))(
         extractReceiverName(member.object),
       )
     : O.none;
@@ -87,17 +86,22 @@ const extractIdentRepoKey = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.Identifier ? extractStandaloneEntity(callee.name) : O.none;
 
 const extractRepoKey = (
-  call: TSESTree.CallExpression,
   methodSet: ReadonlySet<string>,
   services: ParserServicesWithTypeInformation,
-) =>
+) => (call: TSESTree.CallExpression) =>
   call.callee.type === AST_NODE_TYPES.MemberExpression
-    ? extractMemberRepoKey(call.callee, methodSet, services)
+    ? extractMemberRepoKey(methodSet, services)(call.callee)
     : extractIdentRepoKey(call.callee);
 
 type MultiRepoContext = Readonly<{
   readonly methodSet: ReadonlySet<string>;
   readonly visitorKeys: TSESLint.SourceCode["visitorKeys"];
+}>;
+
+type MultiRepoEnv = Readonly<{
+  readonly repoCtx: MultiRepoContext;
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
 }>;
 
 const collectBlockBodyCalls = (
@@ -109,48 +113,36 @@ const collectBlockBodyCalls = (
     : EMPTY_CALL_EXPRS;
 
 const extractBodyRepoKeys = (
-  fn: FunctionNode,
-  { methodSet, visitorKeys }: MultiRepoContext,
+  repoCtx: MultiRepoContext,
   services: ParserServicesWithTypeInformation,
 ) =>
-  RA.filterMap((call: TSESTree.CallExpression) => extractRepoKey(call, methodSet, services))(
-    collectBlockBodyCalls(fn, visitorKeys),
+  flow(
+    (fn: FunctionNode) => collectBlockBodyCalls(fn, repoCtx.visitorKeys),
+    RA.filterMap<TSESTree.CallExpression, string>(extractRepoKey(repoCtx.methodSet, services)),
   );
 
 const collectDistinctRepos = (
-  fn: FunctionNode,
   repoCtx: MultiRepoContext,
   services: ParserServicesWithTypeInformation,
-) => RA.uniq(S.Eq)(extractBodyRepoKeys(fn, repoCtx, services));
+) => flow(extractBodyRepoKeys(repoCtx, services), RA.uniq(S.Eq));
 
 const formatMultiRepoPayload = (repos: ReadonlyArray<string>) => ({
   count: String(repos.length),
   repos: repos.join(", "),
 });
 
-const checkFunctionRepos = (
-  fn: FunctionNode,
-  repoCtx: MultiRepoContext,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  const repos = collectDistinctRepos(fn, repoCtx, services);
+const checkFunctionRepos = (env: MultiRepoEnv) => (fn: FunctionNode) => {
+  const repos = collectDistinctRepos(env.repoCtx, env.services)(fn);
   match(repos.length >= 2)
     .with(true, () => {
-      report({ node: fn, messageId: "multiRepoOrchestration", data: formatMultiRepoPayload(repos) });
+      env.report({ node: fn, messageId: "multiRepoOrchestration", data: formatMultiRepoPayload(repos) });
     })
     .with(false, () => {})
     .exhaustive();
 };
 
-const buildMultiRepoListeners = (
-  repoCtx: MultiRepoContext,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  const check = (fn: FunctionNode) => {
-    checkFunctionRepos(fn, repoCtx, services, report);
-  };
+const buildMultiRepoListeners = (env: MultiRepoEnv) => {
+  const check = checkFunctionRepos(env);
   return {
     FunctionDeclaration: check,
     FunctionExpression: check,
@@ -182,12 +174,12 @@ export const noMultiRepoOrchestration = createRule<Options, MessageIds>({
     defaultOptions: [{ persistenceMethods: DEFAULT_PERSISTENCE_METHODS }],
   },
   create: (context, [options]) =>
-    buildMultiRepoListeners(
-      {
+    buildMultiRepoListeners({
+      repoCtx: {
         methodSet: new Set(options.persistenceMethods),
         visitorKeys: context.sourceCode.visitorKeys,
       },
-      ESLintUtils.getParserServices(context),
-      (d) => { context.report(d); },
-    ),
+      services: ESLintUtils.getParserServices(context),
+      report: (d) => { context.report(d); },
+    }),
 });

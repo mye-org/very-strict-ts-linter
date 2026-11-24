@@ -46,11 +46,15 @@ const isUnsafeNamedParent = (parent: ts.Node) =>
 const isEnclosingFnUnsafe = ({ parent }: ts.Declaration) =>
   ts.isFunctionLike(parent) && isUnsafeNamedParent(parent);
 
-const isMatchingParamPair = (
-  objSym: ts.Symbol,
-  keySym: ts.Symbol,
-  checker: ts.TypeChecker,
-) =>
+const isMatchingParamPair = ({
+  objSym,
+  keySym,
+  checker,
+}: Readonly<{
+  objSym: ts.Symbol;
+  keySym: ts.Symbol;
+  checker: ts.TypeChecker;
+}>) =>
   objSym.valueDeclaration !== undefined &&
   keySym.valueDeclaration !== undefined &&
   objSym.valueDeclaration.parent === keySym.valueDeclaration.parent &&
@@ -58,16 +62,20 @@ const isMatchingParamPair = (
   isObjectLikeType(checker.getTypeOfSymbol(objSym), checker) &&
   isStringType(checker.getTypeOfSymbol(keySym));
 
-const isPairFromSameFn = (
-  objNode: TSESTree.Identifier,
-  keyNode: TSESTree.Identifier,
-  services: ParserServicesWithTypeInformation,
-) => {
+const isPairFromSameFn = ({
+  objNode,
+  keyNode,
+  services,
+}: Readonly<{
+  objNode: TSESTree.Identifier;
+  keyNode: TSESTree.Identifier;
+  services: ParserServicesWithTypeInformation;
+}>) => {
   const check = flow(
     O.apS("objSym", resolveParamSymbol(objNode, services)),
     O.apS("keySym", resolveParamSymbol(keyNode, services)),
     O.exists(({ objSym, keySym }) =>
-      isMatchingParamPair(objSym, keySym, services.program.getTypeChecker()),
+      isMatchingParamPair({ objSym, keySym, checker: services.program.getTypeChecker() }),
     ),
   );
   return check(O.Do);
@@ -121,13 +129,11 @@ const isDotPathSplitOnParam = (
   services: ParserServicesWithTypeInformation,
 ) => isDotLiteralArg(call.arguments[0]) && isSplitCallOnParam(call.callee, services);
 
-const reportOpt = (
-  node: TSESTree.Node,
-  msg: O.Option<MessageIds>,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
-) => {
-  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
-};
+const reportOpt =
+  (report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void) =>
+  (node: TSESTree.Node, msg: O.Option<MessageIds>) => {
+    O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
+  };
 
 const isComputedParamIndex = (
   node: TSESTree.MemberExpression,
@@ -137,7 +143,7 @@ const isComputedParamIndex = (
   node.computed &&
   node.object.type === AST_NODE_TYPES.Identifier &&
   node.property.type === AST_NODE_TYPES.Identifier &&
-  isPairFromSameFn(node.object, node.property, services);
+  isPairFromSameFn({ objNode: node.object, keyNode: node.property, services });
 
 const isInParamCheck = (
   node: TSESTree.BinaryExpression,
@@ -147,7 +153,7 @@ const isInParamCheck = (
   node.operator === "in" &&
   node.left.type === AST_NODE_TYPES.Identifier &&
   node.right.type === AST_NODE_TYPES.Identifier &&
-  isPairFromSameFn(node.right, node.left, services);
+  isPairFromSameFn({ objNode: node.right, keyNode: node.left, services });
 
 export const requireKeyofPath = createRule<[], MessageIds>({
   name: "require-keyof-path",
@@ -168,11 +174,11 @@ export const requireKeyofPath = createRule<[], MessageIds>({
   },
   create: (context) => {
     const services = ESLintUtils.getParserServices(context);
-    const rep = (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => { context.report(d); };
+    const rep = reportOpt((d) => { context.report(d); });
     return {
-      MemberExpression: (node) => { reportOpt(node.property, isComputedParamIndex(node, services) ? O.some("requireKeyofParam") : O.none, rep); },
-      BinaryExpression: (node) => { reportOpt(node.left, isInParamCheck(node, services) ? O.some("requireKeyofParam") : O.none, rep); },
-      CallExpression: (node) => { reportOpt(node.callee, !isInsideUnsafeOrMustFunction(node) && isDotPathSplitOnParam(node, services) ? O.some("requireTypedPathParam") : O.none, rep); },
+      MemberExpression: (node) => { rep(node.property, isComputedParamIndex(node, services) ? O.some("requireKeyofParam") : O.none); },
+      BinaryExpression: (node) => { rep(node.left, isInParamCheck(node, services) ? O.some("requireKeyofParam") : O.none); },
+      CallExpression: (node) => { rep(node.callee, !isInsideUnsafeOrMustFunction(node) && isDotPathSplitOnParam(node, services) ? O.some("requireTypedPathParam") : O.none); },
     };
   },
 });

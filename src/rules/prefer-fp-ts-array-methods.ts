@@ -2,6 +2,7 @@ import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLin
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { createRule } from "../lib/rule-factory.js";
@@ -53,16 +54,23 @@ const resolveCallTargetTsNode = (
   );
 
 const resolveCallTargetType = (
-  node: TSESTree.CallExpression,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) => checker.getTypeAtLocation(resolveCallTargetTsNode(node, services));
+) =>
+  flow(
+    (node: TSESTree.CallExpression) => resolveCallTargetTsNode(node, services),
+    (tsNode) => checker.getTypeAtLocation(tsNode),
+  );
 
-const isArrayTypeCall = (
-  node: TSESTree.CallExpression,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => isArrayLikeType(resolveCallTargetType(node, services, checker), checker);
+const isArrayTypeCall = ({
+  node,
+  services,
+  checker,
+}: Readonly<{
+  node: TSESTree.CallExpression;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) => isArrayLikeType(resolveCallTargetType(services, checker)(node), checker);
 
 const isBannedMemberProperty = (member: TSESTree.MemberExpression) =>
   !member.computed &&
@@ -75,7 +83,7 @@ const isBannedArrayCall = (
 ) =>
   node.callee.type === AST_NODE_TYPES.MemberExpression &&
   isBannedMemberProperty(node.callee) &&
-  isArrayTypeCall(node, services, services.program.getTypeChecker());
+  isArrayTypeCall({ node, services, checker: services.program.getTypeChecker() });
 
 const formatReplacementFields = (method: string) => ({
   method,
@@ -93,33 +101,32 @@ const reportBannedProperty = (
   });
 };
 
-const checkArrayCall = (
-  node: TSESTree.CallExpression,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  match({ callee: node.callee, isBanned: isBannedArrayCall(node, services) })
-    .with(
-      {
-        isBanned: true,
-        callee: {
-          type: AST_NODE_TYPES.MemberExpression,
-          computed: false,
-          property: { type: AST_NODE_TYPES.Identifier },
+const checkArrayCall =
+  (
+    services: ParserServicesWithTypeInformation,
+    report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+  ) =>
+  (node: TSESTree.CallExpression) => {
+    match({ callee: node.callee, isBanned: isBannedArrayCall(node, services) })
+      .with(
+        {
+          isBanned: true,
+          callee: {
+            type: AST_NODE_TYPES.MemberExpression,
+            computed: false,
+            property: { type: AST_NODE_TYPES.Identifier },
+          },
         },
-      },
-      ({ callee }) => { reportBannedProperty(callee.property, report); },
-    )
-    .otherwise(() => {});
-};
+        ({ callee }) => { reportBannedProperty(callee.property, report); },
+      )
+      .otherwise(() => {});
+  };
 
 const buildArrayMethodListeners = (
   services: ParserServicesWithTypeInformation,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => ({
-  CallExpression: (node: TSESTree.CallExpression) => {
-    checkArrayCall(node, services, report);
-  },
+  CallExpression: checkArrayCall(services, report),
 });
 
 export const preferFpTsArrayMethods = createRule<[], MessageIds>({

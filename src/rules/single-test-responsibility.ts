@@ -54,31 +54,27 @@ const resolveScopeOptions = (options: Options[0]) => ({
     options.minUnrelatedComponents ?? DEFAULT_TEST_SCOPE_OPTIONS.minUnrelatedComponents,
 });
 
-const reportFileResponsibilities = (
-  fileName: string,
-  services: ParserServicesWithTypeInformation,
-  options: Options[0],
-  report: Reporter,
-) => {
-  RA.map((finding: SingleResponsibilityFinding) => {
-    report(toResponsibilityDescriptor(finding));
-  })(analyzeTestScope(services.program, resolveScopeOptions(options)).responsibilityByFile[fileName] ?? []);
-};
+const reportFileResponsibilities =
+  (services: ParserServicesWithTypeInformation, options: Options[0]) =>
+  (report: Reporter) =>
+  (fileName: string) => {
+    RA.map((finding: SingleResponsibilityFinding) => {
+      report(toResponsibilityDescriptor(finding));
+    })(analyzeTestScope(services.program, resolveScopeOptions(options)).responsibilityByFile[fileName] ?? []);
+  };
 
-const inspectTestProgram = (
-  programNode: TSESTree.Program,
-  services: ParserServicesWithTypeInformation,
-  options: Options[0],
-  report: Reporter,
-) => {
-  const fileName = normalizeFilePath(services.esTreeNodeToTSNodeMap.get(programNode).fileName);
-  match(isMatchingAnyPattern(fileName, options.testPatterns ?? DEFAULT_TEST_PATTERNS))
-    .with(false, () => {})
-    .with(true, () => {
-      reportFileResponsibilities(fileName, services, options, report);
-    })
-    .exhaustive();
-};
+const inspectTestProgram =
+  (services: ParserServicesWithTypeInformation, options: Options[0]) =>
+  (report: Reporter) =>
+  (programNode: TSESTree.Program) => {
+    const fileName = normalizeFilePath(services.esTreeNodeToTSNodeMap.get(programNode).fileName);
+    match(isMatchingAnyPattern(fileName, options.testPatterns ?? DEFAULT_TEST_PATTERNS))
+      .with(false, () => {})
+      .with(true, () => {
+        reportFileResponsibilities(services, options)(report)(fileName);
+      })
+      .exhaustive();
+  };
 
 export const singleTestResponsibility = createRule<Options, MessageIds>({
   name: "single-test-responsibility",
@@ -110,10 +106,8 @@ export const singleTestResponsibility = createRule<Options, MessageIds>({
     ],
   },
   create: (context, [options]) => ({
-    Program: (programNode: TSESTree.Program) => {
-      inspectTestProgram(programNode, ESLintUtils.getParserServices(context), options, (d) => {
-        context.report(d);
-      });
-    },
+    Program: inspectTestProgram(ESLintUtils.getParserServices(context), options)((d) => {
+      context.report(d);
+    }),
   }),
 });

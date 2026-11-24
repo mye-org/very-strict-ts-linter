@@ -99,10 +99,17 @@ const reportMixedExports = (ctx: ProgramPurityContext, report: ReportFn) => {
     .exhaustive();
 };
 
+type FileInspectionEnv = Readonly<{
+  readonly services: ParserServicesWithTypeInformation;
+  readonly limits: ComplexityLimits;
+  readonly report: ReportFn;
+}>;
+
 const resolveFunctionViolation = (
+  limits: ComplexityLimits,
+) => (
   fn: FunctionPurityInfo,
   summary: FilePuritySummary,
-  limits: ComplexityLimits,
 ) =>
   match({
     purity: fn.purity,
@@ -120,9 +127,10 @@ const resolveFunctionViolation = (
     .otherwise(() => O.none);
 
 const reportFunctionViolation = (
-  violation: O.Option<Readonly<{ readonly messageId: MessageIds; readonly data: Readonly<Record<string, string>> }>>,
-  esNode: TSESTree.Node,
   report: ReportFn,
+) => (
+  esNode: TSESTree.Node,
+  violation: O.Option<Readonly<{ readonly messageId: MessageIds; readonly data: Readonly<Record<string, string>> }>>,
 ) => {
   O.map((v: Readonly<{ readonly messageId: MessageIds; readonly data: Readonly<Record<string, string>> }>) => {
     report({ node: esNode, ...v });
@@ -135,25 +143,24 @@ const lookupReportNode = (
 ) => O.fromNullable(services.tsNodeToESTreeNodeMap.get(fn.reportNode));
 
 const resolveReportNode = (
+  services: ParserServicesWithTypeInformation,
+) => (
   fn: FunctionPurityInfo,
   programNode: TSESTree.Program,
-  services: ParserServicesWithTypeInformation,
 ) => O.getOrElse<TSESTree.Node>(() => programNode)(lookupReportNode(fn, services));
 
 const inspectFileFunctions = (
+  env: FileInspectionEnv,
+) => (
   ctx: ProgramPurityContext,
-  services: ParserServicesWithTypeInformation,
-  limits: ComplexityLimits,
-  report: ReportFn,
 ) => {
   RA.map((fn: FunctionPurityInfo) => {
-    match(fn.isNested)
-      .with(true, () => {})
-      .with(false, () => {
-        reportFunctionViolation(
-          resolveFunctionViolation(fn, ctx.summary, limits),
-          resolveReportNode(fn, ctx.programNode, services),
-          report,
+    match(fn)
+      .with({ isNested: true }, () => {})
+      .with({ isNested: false }, (matched) => {
+        reportFunctionViolation(env.report)(
+          resolveReportNode(env.services)(matched, ctx.programNode),
+          resolveFunctionViolation(env.limits)(matched, ctx.summary),
         );
       })
       .exhaustive();
@@ -161,24 +168,24 @@ const inspectFileFunctions = (
 };
 
 const inspectFileSummary = (
+  env: FileInspectionEnv,
+) => (
   ctx: ProgramPurityContext,
-  services: ParserServicesWithTypeInformation,
-  limits: ComplexityLimits,
-  report: ReportFn,
 ) => {
   match(ctx.summary.isBarrel)
     .with(true, () => {})
     .with(false, () => {
-      reportMixedExports(ctx, report);
-      inspectFileFunctions(ctx, services, limits, report);
+      reportMixedExports(ctx, env.report);
+      inspectFileFunctions(env)(ctx);
     })
     .exhaustive();
 };
 
 const lookupFileSummary = (
-  programNode: TSESTree.Program,
   services: ParserServicesWithTypeInformation,
   options: Options[0],
+) => (
+  programNode: TSESTree.Program,
 ) =>
   O.fromNullable(
     analyzeProgramPurity(services.program, resolvePurityOptions(options)).files[
@@ -229,8 +236,12 @@ export const functionalCoreBoundary = createRule<Options, MessageIds>({
     Program: (programNode: TSESTree.Program) => {
       const services = ESLintUtils.getParserServices(context);
       O.map((summary: FilePuritySummary) => {
-        inspectFileSummary({ programNode, summary }, services, resolveComplexityLimits(options), (d) => { context.report(d); });
-      })(lookupFileSummary(programNode, services, options));
+        inspectFileSummary({
+          services,
+          limits: resolveComplexityLimits(options),
+          report: (d) => { context.report(d); },
+        })({ programNode, summary });
+      })(lookupFileSummary(services, options)(programNode));
     },
   }),
 });

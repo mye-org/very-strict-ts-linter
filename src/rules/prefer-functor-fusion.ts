@@ -80,11 +80,10 @@ const isFusibleFilterMap = (
     )
     .otherwise(() => false);
 
-const makeFusionFinding = (
-  target: TSESTree.CallExpressionArgument,
-  messageId: MessageIds,
-  namespace: string,
-) => O.some<FusionFinding>({ target, messageId, namespace });
+const makeFusionFinding =
+  (target: TSESTree.CallExpressionArgument) =>
+  (messageId: MessageIds, namespace: string) =>
+    O.some<FusionFinding>({ target, messageId, namespace });
 
 const isFilterMapPair = (c: CallStep, n: CallStep) =>
   FILTERABLE_NAMESPACES.has(c.ns) &&
@@ -92,24 +91,26 @@ const isFilterMapPair = (c: CallStep, n: CallStep) =>
   MAP_OP_NAMES.has(n.op) &&
   isFusibleFilterMap(c.call, n.call);
 
-const matchFusionPair = (
-  c: CallStep,
-  n: CallStep,
-  second: TSESTree.CallExpressionArgument,
-) =>
-  match({
-    sameNs: c.ns === n.ns,
-    isMapMap: FUNCTOR_NAMESPACES.has(c.ns) && MAP_OP_NAMES.has(c.op) && MAP_OP_NAMES.has(n.op),
-    isFilterMap: isFilterMapPair(c, n),
-  })
-    .with({ sameNs: true, isMapMap: true }, () => makeFusionFinding(second, "consecutiveMap", c.ns))
-    .with({ sameNs: true, isFilterMap: true }, () => makeFusionFinding(second, "filterThenMap", c.ns))
-    .otherwise(() => O.none);
+const matchFusionPair =
+  (second: TSESTree.CallExpressionArgument) =>
+  (c: CallStep, n: CallStep) =>
+    match({
+      sameNs: c.ns === n.ns,
+      isMapMap: FUNCTOR_NAMESPACES.has(c.ns) && MAP_OP_NAMES.has(c.op) && MAP_OP_NAMES.has(n.op),
+      isFilterMap: isFilterMapPair(c, n),
+    })
+      .with({ sameNs: true, isMapMap: true }, () =>
+        makeFusionFinding(second)("consecutiveMap", c.ns),
+      )
+      .with({ sameNs: true, isFilterMap: true }, () =>
+        makeFusionFinding(second)("filterThenMap", c.ns),
+      )
+      .otherwise(() => O.none);
 
 const classifyAdjacentSteps = ({ first, second }: AdjacentPair) =>
   match([resolveCallStep(first), resolveCallStep(second)] as const)
     .with([{ _tag: "Some" }, { _tag: "Some" }], ([{ value: c }, { value: n }]) =>
-      matchFusionPair(c, n, second),
+      matchFusionPair(second)(c, n),
     )
     .otherwise(() => O.none);
 

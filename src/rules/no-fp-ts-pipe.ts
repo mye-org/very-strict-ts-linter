@@ -64,9 +64,12 @@ const hasFpTsDeclaration = flow(
   O.exists(RA.some(isFpTsDeclaration)),
 );
 
-const isFpTsExportSymbol = (targetSymbol: ts.Symbol, checker: ts.TypeChecker, targetName: string) => {
-  const resolved = resolveSymbol(targetSymbol, checker);
-  return match({ nameMatches: resolved.name === targetName, isFpTs: hasFpTsDeclaration(resolved) })
+const isFpTsExportSymbol = (
+  targetSymbol: ts.Symbol,
+  opts: Readonly<{ readonly checker: ts.TypeChecker; readonly targetName: ExportContext["targetExport"] }>,
+) => {
+  const resolved = resolveSymbol(targetSymbol, opts.checker);
+  return match({ nameMatches: resolved.name === opts.targetName, isFpTs: hasFpTsDeclaration(resolved) })
     .with({ nameMatches: true, isFpTs: true }, () => true)
     .otherwise(() => false);
 };
@@ -88,10 +91,13 @@ const lookupTsSymbol = (ctx: CheckerContext) =>
 const resolveSymbolForNode = (node: TSESTree.Node, ctx: CheckerContext) =>
   O.flatMap(lookupTsSymbol(ctx))(lookupTsNode(node, ctx));
 
-const isNodeFpTsExportByType = (node: TSESTree.Node, ctx: CheckerContext, targetExport: string) =>
+const isNodeFpTsExportByType = (
+  node: TSESTree.Node,
+  opts: Readonly<{ readonly ctx: CheckerContext; readonly targetExport: ExportContext["targetExport"] }>,
+) =>
   O.exists((targetSymbol: ts.Symbol) =>
-    isFpTsExportSymbol(targetSymbol, ctx.checker, targetExport),
-  )(resolveSymbolForNode(node, ctx));
+    isFpTsExportSymbol(targetSymbol, { checker: opts.ctx.checker, targetName: opts.targetExport }),
+  )(resolveSymbolForNode(node, opts.ctx));
 
 const isValueImportDecl = (node: TSESTree.Node): node is TSESTree.ImportDeclaration =>
   node.type === AST_NODE_TYPES.ImportDeclaration && node.importKind === "value";
@@ -143,27 +149,29 @@ const hasExportProperty = (node: TSESTree.MemberExpression, targetExport: string
 
 const isStaticExportMember = (
   node: TSESTree.MemberExpression,
-  namespaces: ReadonlySet<string>,
-  targetExport: string,
-) => hasNamespaceObject(node, namespaces) && hasExportProperty(node, targetExport);
+  opts: Readonly<{ readonly namespaces: ReadonlySet<string>; readonly targetExport: ExportContext["targetExport"] }>,
+) => hasNamespaceObject(node, opts.namespaces) && hasExportProperty(node, opts.targetExport);
 
 const isNodeFpTsExportByAst = (
   node: TSESTree.Node,
-  fpTsImports: FpTsImports,
-  targetExport: string,
+  opts: Readonly<{ readonly fpTsImports: FpTsImports; readonly targetExport: ExportContext["targetExport"] }>,
 ) =>
   match(node)
-    .with({ type: AST_NODE_TYPES.Identifier }, (id) => fpTsImports.locals.has(id.name))
+    .with({ type: AST_NODE_TYPES.Identifier }, (id) => opts.fpTsImports.locals.has(id.name))
     .with({ type: AST_NODE_TYPES.MemberExpression }, (mem) =>
-      isStaticExportMember(mem, fpTsImports.namespaces, targetExport),
+      isStaticExportMember(mem, { namespaces: opts.fpTsImports.namespaces, targetExport: opts.targetExport }),
     )
     .with(P._, () => false)
     .exhaustive();
 
 const isNodeFpTsExport = (node: TSESTree.Node, ctx: ExportContext) =>
-  match(ctx.checkerCtx)
-    .with({ _tag: "None" }, () => isNodeFpTsExportByAst(node, ctx.fpTsImports, ctx.targetExport))
-    .with({ _tag: "Some" }, ({ value }) => isNodeFpTsExportByType(node, value, ctx.targetExport))
+  match(ctx)
+    .with({ checkerCtx: { _tag: "None" } }, (matched) =>
+      isNodeFpTsExportByAst(node, { fpTsImports: matched.fpTsImports, targetExport: matched.targetExport }),
+    )
+    .with({ checkerCtx: { _tag: "Some" } }, (matched) =>
+      isNodeFpTsExportByType(node, { ctx: matched.checkerCtx.value, targetExport: matched.targetExport }),
+    )
     .exhaustive();
 
 const isTypeQueryParent = (node: TSESTree.Node) =>
@@ -209,30 +217,28 @@ const isMatchingImportedIdent = (spec: TSESTree.ImportSpecifier, targetExport: s
 
 const isUnusedFpTsExportImport = (
   spec: TSESTree.ImportSpecifier,
-  sourceCode: Readonly<TSESLint.SourceCode>,
-  ctx: ExportContext,
+  importCtx: Readonly<{ readonly sourceCode: Readonly<TSESLint.SourceCode>; readonly ctx: ExportContext }>,
 ) =>
   match({
-    matchingIdent: isMatchingImportedIdent(spec, ctx.targetExport),
+    matchingIdent: isMatchingImportedIdent(spec, importCtx.ctx.targetExport),
     valueFpTsImport: isValueFpTsImport(spec.parent),
-    noReads: hasNoReadReferences(O.fromNullable(sourceCode.getDeclaredVariables(spec)[0])),
+    noReads: hasNoReadReferences(O.fromNullable(importCtx.sourceCode.getDeclaredVariables(spec)[0])),
   })
     .with({ matchingIdent: true, valueFpTsImport: true, noReads: true }, () => true)
     .otherwise(() => false);
 
 const isMatchingReExportSource = (
-  source: TSESTree.StringLiteral,
   spec: TSESTree.ExportSpecifier,
-  targetExport: string,
+  reExportCtx: Readonly<{ readonly source: TSESTree.StringLiteral; readonly targetExport: ExportContext["targetExport"] }>,
 ) =>
   match({
-    isFpTs: isFpTsImportSource(source.value),
+    isFpTs: isFpTsImportSource(reExportCtx.source.value),
     local: spec.local,
   })
     .with(
       {
         isFpTs: true,
-        local: { type: AST_NODE_TYPES.Identifier, name: targetExport },
+        local: { type: AST_NODE_TYPES.Identifier, name: reExportCtx.targetExport },
       },
       () => true,
     )
@@ -240,7 +246,7 @@ const isMatchingReExportSource = (
 
 const isSourceExportMatch = (spec: TSESTree.ExportSpecifier, ctx: ExportContext) =>
   spec.parent.source
-    ? isMatchingReExportSource(spec.parent.source, spec, ctx.targetExport)
+    ? isMatchingReExportSource(spec, { source: spec.parent.source, targetExport: ctx.targetExport })
     : isNodeFpTsExport(spec.local, ctx);
 
 const isFpTsExportReExport = (spec: TSESTree.ExportSpecifier, ctx: ExportContext) =>
@@ -262,10 +268,9 @@ const isImmediatelyInvokedFlow = (node: TSESTree.CallExpression, flowCtx: Export
   isNodeFpTsExport(node.callee.callee, flowCtx);
 
 const reportWhen = <N extends TSESTree.Node>(
-  node: N,
   predicate: Pred.Predicate<N>,
   onMatch: (n: N) => void,
-) => {
+) => (node: N) => {
   match(predicate(node))
     .with(true, () => { onMatch(node); })
     .with(false, () => {})
@@ -273,10 +278,9 @@ const reportWhen = <N extends TSESTree.Node>(
 };
 
 const buildExportContext = (
-  exportKind: "pipe" | "flow",
   typeChecker: O.Option<CheckerContext>,
   statements: ReadonlyArray<TSESTree.ProgramStatement>,
-) =>
+) => (exportKind: "pipe" | "flow") =>
   ({
     targetExport: exportKind,
     checkerCtx: typeChecker,
@@ -285,29 +289,29 @@ const buildExportContext = (
 
 const extractProgramBody = (sourceCode: Readonly<TSESLint.SourceCode>) => sourceCode.ast.body;
 
-const buildListeners = (
-  pipeCtx: ExportContext,
-  flowCtx: ExportContext,
-  sourceCode: Readonly<TSESLint.SourceCode>,
-  report: (node: TSESTree.Node, messageId: MessageIds) => void,
-) =>
+const resolveCheckerCtx = flow(
+  (context: Readonly<TSESLint.RuleContext<MessageIds, []>>) =>
+    ESLintUtils.getParserServices(context, true),
+  toCheckerContext,
+);
+
+type PipeListenersEnv = Readonly<{
+  readonly pipeCtx: ExportContext;
+  readonly flowCtx: ExportContext;
+  readonly sourceCode: Readonly<TSESLint.SourceCode>;
+  readonly report: (node: TSESTree.Node, messageId: MessageIds) => void;
+}>;
+
+const buildListeners = (env: PipeListenersEnv) =>
   ({
     CallExpression: (node) => {
-      reportWhen(node, (c) => isNodeFpTsExport(c.callee, pipeCtx), (n) => { report(n, "noFpTsPipe"); });
-      reportWhen(node, (c) => isImmediatelyInvokedFlow(c, flowCtx), (n) => { report(n, "immediatelyInvokedFlow"); });
+      reportWhen((c: TSESTree.CallExpression) => isNodeFpTsExport(c.callee, env.pipeCtx), (n) => { env.report(n, "noFpTsPipe"); })(node);
+      reportWhen((c: TSESTree.CallExpression) => isImmediatelyInvokedFlow(c, env.flowCtx), (n) => { env.report(n, "immediatelyInvokedFlow"); })(node);
     },
-    MemberExpression: (node) => {
-      reportWhen(node, (m) => isMemberExportRef(m, pipeCtx), (n) => { report(n, "noFpTsPipe"); });
-    },
-    Identifier: (node) => {
-      reportWhen(node, (id) => isIdentExportRef(id, pipeCtx), (n) => { report(n, "noFpTsPipe"); });
-    },
-    ImportSpecifier: (node) => {
-      reportWhen(node, (s) => isUnusedFpTsExportImport(s, sourceCode, pipeCtx), (n) => { report(n, "noFpTsPipe"); });
-    },
-    ExportSpecifier: (node) => {
-      reportWhen(node, (s) => isFpTsExportReExport(s, pipeCtx), (n) => { report(n, "noFpTsPipe"); });
-    },
+    MemberExpression: reportWhen((m: TSESTree.MemberExpression) => isMemberExportRef(m, env.pipeCtx), (n) => { env.report(n, "noFpTsPipe"); }),
+    Identifier: reportWhen((id: TSESTree.Identifier) => isIdentExportRef(id, env.pipeCtx), (n) => { env.report(n, "noFpTsPipe"); }),
+    ImportSpecifier: reportWhen((s: TSESTree.ImportSpecifier) => isUnusedFpTsExportImport(s, { sourceCode: env.sourceCode, ctx: env.pipeCtx }), (n) => { env.report(n, "noFpTsPipe"); }),
+    ExportSpecifier: reportWhen((s: TSESTree.ExportSpecifier) => isFpTsExportReExport(s, env.pipeCtx), (n) => { env.report(n, "noFpTsPipe"); }),
   }) satisfies TSESLint.RuleListener;
 
 export const noFpTsPipe = createRule<[], MessageIds>({
@@ -328,13 +332,15 @@ export const noFpTsPipe = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const checkerCtx = toCheckerContext(ESLintUtils.getParserServices(context, true));
-    const body = extractProgramBody(context.sourceCode);
-    return buildListeners(
-      buildExportContext("pipe", checkerCtx, body),
-      buildExportContext("flow", checkerCtx, body),
-      context.sourceCode,
-      (node, messageId) => { context.report({ node, messageId }); },
+    const makeCtx = buildExportContext(
+      resolveCheckerCtx(context),
+      extractProgramBody(context.sourceCode),
     );
+    return buildListeners({
+      pipeCtx: makeCtx("pipe"),
+      flowCtx: makeCtx("flow"),
+      sourceCode: context.sourceCode,
+      report: (node, messageId) => { context.report({ node, messageId }); },
+    });
   },
 });

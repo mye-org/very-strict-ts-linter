@@ -247,20 +247,18 @@ const mergeCounts = (a: AbstractionCounts, b: AbstractionCounts) => ({
   low: [...a.low, ...b.low],
 });
 
-const collectWithinBody = (
-  node: TSESTree.Node,
-  scope: "root" | "nested",
-  visitorKeys: TSESLint.SourceCode["visitorKeys"],
+const collectWithinBody =
+  (visitorKeys: TSESLint.SourceCode["visitorKeys"]) =>
   // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
-): ReadonlyArray<TSESTree.Node> =>
-  scope === "nested" && isFunctionNode(node)
-    ? [node]
-    : [
-        node,
-        ...RA.flatMap((child: TSESTree.Node) => collectWithinBody(child, "nested", visitorKeys))(
-          collectEstreeChildNodes(node, visitorKeys),
-        ),
-      ];
+  (node: TSESTree.Node, scope: "root" | "nested"): ReadonlyArray<TSESTree.Node> =>
+    scope === "nested" && isFunctionNode(node)
+      ? [node]
+      : [
+          node,
+          ...RA.flatMap((child: TSESTree.Node) =>
+            collectWithinBody(visitorKeys)(child, "nested"),
+          )(collectEstreeChildNodes(node, visitorKeys)),
+        ];
 
 const toLowCount = (name: string) => ({ high: [] satisfies ReadonlyArray<string>, low: [`${name}()`] });
 const toHighCount = (name: string) => ({ high: [`${name}()`], low: [] satisfies ReadonlyArray<string> });
@@ -345,7 +343,7 @@ const classifyNode = (node: TSESTree.Node, config: AnalysisConfig) =>
 
 const analyzeFunctionBody = (fn: FunctionNode, config: AnalysisConfig) => {
   const analyze = flow(
-    (body: TSESTree.Node) => collectWithinBody(body, "root", config.visitorKeys),
+    (body: TSESTree.Node) => collectWithinBody(config.visitorKeys)(body, "root"),
     RA.map((n: TSESTree.Node) => classifyNode(n, config)),
     RA.reduce(emptyCounts, mergeCounts),
   );
@@ -356,25 +354,23 @@ const takeTopThreeUnique = flow(RA.uniq(S.Eq), RA.takeLeft(3));
 const joinExamples = (items: ReadonlyArray<string>) => items.join(", ");
 const formatExamples = flow(takeTopThreeUnique, joinExamples);
 
-const reportIfMixed = (
-  node: TSESTree.Node,
-  counts: AbstractionCounts,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  match(counts.high.length > 0 && counts.low.length > 0)
-    .with(true, () => {
-      report({
-        node,
-        messageId: "mixedAbstractionLevels",
-        data: {
-          highExamples: formatExamples(counts.high),
-          lowExamples: formatExamples(counts.low),
-        },
-      });
-    })
-    .with(false, () => {})
-    .exhaustive();
-};
+const reportIfMixed =
+  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+  (node: TSESTree.Node, counts: AbstractionCounts) => {
+    match(counts.high.length > 0 && counts.low.length > 0)
+      .with(true, () => {
+        report({
+          node,
+          messageId: "mixedAbstractionLevels",
+          data: {
+            highExamples: formatExamples(counts.high),
+            lowExamples: formatExamples(counts.low),
+          },
+        });
+      })
+      .with(false, () => {})
+      .exhaustive();
+  };
 
 const toConfig = (
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
@@ -385,29 +381,29 @@ const toConfig = (
   visitorKeys,
 });
 
-const checkFlowNode = (
-  node: TSESTree.CallExpression,
-  config: AnalysisConfig,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  match(config.pipeSteps === "check" && isFlowCallExpression(node) && !hasEnclosingFunction(node))
-    .with(true, () => { reportIfMixed(node, classifyPipeCall(node, config.trivialProjections), report); })
-    .with(false, () => {})
-    .exhaustive();
-};
+const checkFlowNode =
+  (config: AnalysisConfig, report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+  (node: TSESTree.CallExpression) => {
+    match(config.pipeSteps === "check" && isFlowCallExpression(node) && !hasEnclosingFunction(node))
+      .with(true, () => {
+        reportIfMixed(report)(node, classifyPipeCall(node, config.trivialProjections));
+      })
+      .with(false, () => {})
+      .exhaustive();
+  };
 
 const buildListeners = (
   config: AnalysisConfig,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   const check = (node: FunctionNode) => {
-    reportIfMixed(node, analyzeFunctionBody(node, config), report);
+    reportIfMixed(report)(node, analyzeFunctionBody(node, config));
   };
   return {
     FunctionDeclaration: check,
     FunctionExpression: check,
     ArrowFunctionExpression: check,
-    CallExpression: (node: TSESTree.CallExpression) => { checkFlowNode(node, config, report); },
+    CallExpression: checkFlowNode(config, report),
   } satisfies TSESLint.RuleListener;
 };
 

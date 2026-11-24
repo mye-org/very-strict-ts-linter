@@ -6,6 +6,7 @@ import {
 } from "@typescript-eslint/utils";
 import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
+import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import { DEFAULT_TEST_PATTERNS } from "../analyzers/module-symbol-graph.js";
 import {
@@ -83,17 +84,18 @@ const resolveScopeOptions = (options: Options[0], testPatterns: ReadonlyArray<st
     (options.checkSameLevelDuplicates ?? true) ? ("enabled" as const) : ("disabled" as const),
 });
 
-const reportRedundantFindings = (
-  fileName: string,
-  options: Options[0],
-  testPatterns: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+type TestScopeEnv = Readonly<{
+  readonly options: Options[0];
+  readonly testPatterns: ReadonlyArray<string>;
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
+const reportRedundantFindings = (env: TestScopeEnv) => (fileName: string) => {
   RA.map((finding: RedundantTestFinding) => {
-    reportRedundantFinding(finding, report);
+    reportRedundantFinding(finding, env.report);
   })(
-    analyzeTestScope(services.program, resolveScopeOptions(options, testPatterns)).redundancyByFile[
+    analyzeTestScope(env.services.program, resolveScopeOptions(env.options, env.testPatterns)).redundancyByFile[
       fileName
     ] ?? [],
   );
@@ -105,40 +107,30 @@ const resolveProgramFileName = (
 ) => normalizeFilePath(services.esTreeNodeToTSNodeMap.get(programNode).fileName);
 
 const resolveMatchingTestFile = (
-  programNode: TSESTree.Program,
   testPatterns: ReadonlyArray<string>,
   services: ParserServicesWithTypeInformation,
 ) =>
-  O.fromPredicate((name: string) => isMatchingAnyPattern(name, testPatterns))(
-    resolveProgramFileName(programNode, services),
+  flow(
+    (programNode: TSESTree.Program) => resolveProgramFileName(programNode, services),
+    O.fromPredicate((name: string) => isMatchingAnyPattern(name, testPatterns)),
   );
 
-const checkProgram = (
-  programNode: TSESTree.Program,
-  options: Options[0],
-  testPatterns: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  O.map((fileName: string) => {
-    reportRedundantFindings(fileName, options, testPatterns, services, report);
-  })(resolveMatchingTestFile(programNode, testPatterns, services));
+const checkProgram = (env: TestScopeEnv) => (programNode: TSESTree.Program) => {
+  O.map(reportRedundantFindings(env))(
+    resolveMatchingTestFile(env.testPatterns, env.services)(programNode),
+  );
 };
 
 const buildTestScopeListeners = (
   options: Options[0],
   services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => ({
-  Program: (programNode: TSESTree.Program) => {
-    checkProgram(
-      programNode,
-      options,
-      options.testPatterns ?? DEFAULT_TEST_PATTERNS,
-      services,
-      report,
-    );
-  },
+) => (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => ({
+  Program: checkProgram({
+    options,
+    testPatterns: options.testPatterns ?? DEFAULT_TEST_PATTERNS,
+    services,
+    report,
+  }),
 });
 
 export const noRedundantTestScope = createRule<Options, MessageIds>({
@@ -175,7 +167,7 @@ export const noRedundantTestScope = createRule<Options, MessageIds>({
     ],
   },
   create: (context, [options]) =>
-    buildTestScopeListeners(options, ESLintUtils.getParserServices(context), (d) => {
+    buildTestScopeListeners(options, ESLintUtils.getParserServices(context))((d) => {
       context.report(d);
     }),
 });

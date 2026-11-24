@@ -198,52 +198,47 @@ const measureLineSpan = (node: TSESTree.Node) => extractEndLine(node) - extractS
 const measureStatementSpan = (first: TSESTree.Statement, last: TSESTree.Statement) =>
   extractEndLine(last) - extractStartLine(first) + 1;
 
-const checkPreReturnLineCount = (
-  stmts: ReadonlyArray<TSESTree.Statement>,
-  body: TSESTree.BlockStatement,
-  maxLines: number,
-  report: Reporter,
-) => {
-  const check = flow(
-    O.apS("first", RA.head(stmts)),
-    O.apS("last", RA.last(stmts)),
-    O.map(({ first, last }) => measureStatementSpan(first, last)),
-    O.filter((lines) => lines > maxLines),
-    O.map((lines) => {
-      report({
-        node: body,
-        messageId: "tooManyLogicLines",
-        data: { actual: toDecimalText(lines), max: toDecimalText(maxLines) },
-      });
-    }),
-  );
-  check(O.Do);
-};
+const checkPreReturnLineCount =
+  (maxLines: number, report: Reporter) =>
+  (stmts: ReadonlyArray<TSESTree.Statement>, body: TSESTree.BlockStatement) => {
+    const check = flow(
+      O.apS("first", RA.head(stmts)),
+      O.apS("last", RA.last(stmts)),
+      O.map(({ first, last }) => measureStatementSpan(first, last)),
+      O.filter((lines) => lines > maxLines),
+      O.map((lines) => {
+        report({
+          node: body,
+          messageId: "tooManyLogicLines",
+          data: { actual: toDecimalText(lines), max: toDecimalText(maxLines) },
+        });
+      }),
+    );
+    check(O.Do);
+  };
 
-const toLogicBudgetDescriptor = (
-  body: TSESTree.BlockStatement,
-  actual: number,
-  max: number,
-) => ({
-  node: body,
-  messageId: "tooManyLogicStatements" as const,
-  data: { actual: toDecimalText(actual), max: toDecimalText(max) },
-});
+const toLogicBudgetDescriptor =
+  (body: TSESTree.BlockStatement) =>
+  (actual: number, max: number) => ({
+    node: body,
+    messageId: "tooManyLogicStatements" as const,
+    data: { actual: toDecimalText(actual), max: toDecimalText(max) },
+  });
 
-const checkPreReturnBudget = (
-  body: TSESTree.BlockStatement,
-  opts: Options[0],
-  report: Reporter,
-) => {
-  const stmts = RA.takeLeftWhile(
-    (s: TSESTree.Statement) => s.type !== AST_NODE_TYPES.ReturnStatement,
-  )(body.body);
-  match(stmts.length > opts.maxLogicStatements)
-    .with(true, () => { report(toLogicBudgetDescriptor(body, stmts.length, opts.maxLogicStatements)); })
-    .with(false, () => {})
-    .exhaustive();
-  checkPreReturnLineCount(stmts, body, opts.maxLogicLines, report);
-};
+const checkPreReturnBudget =
+  (opts: Options[0], report: Reporter) =>
+  (body: TSESTree.BlockStatement) => {
+    const stmts = RA.takeLeftWhile(
+      (s: TSESTree.Statement) => s.type !== AST_NODE_TYPES.ReturnStatement,
+    )(body.body);
+    match(stmts.length > opts.maxLogicStatements)
+      .with(true, () => {
+        report(toLogicBudgetDescriptor(body)(stmts.length, opts.maxLogicStatements));
+      })
+      .with(false, () => {})
+      .exhaustive();
+    checkPreReturnLineCount(opts.maxLogicLines, report)(stmts, body);
+  };
 
 type TsxCheckEnv = {
   readonly opts: Options[0];
@@ -437,11 +432,15 @@ const extractBodyDeclarators = RA.flatMap((stmt: TSESTree.Statement) =>
   stmt.type === AST_NODE_TYPES.VariableDeclaration ? stmt.declarations : [],
 );
 
-const isBaseExemptDeclarator = (
-  d: TSESTree.VariableDeclarator,
-  env: TsxCheckEnv,
-  workletCapturedNames: ReadonlySet<string>,
-) =>
+const isBaseExemptDeclarator = ({
+  d,
+  env,
+  workletCapturedNames,
+}: Readonly<{
+  d: TSESTree.VariableDeclarator;
+  env: TsxCheckEnv;
+  workletCapturedNames: ReadonlySet<string>;
+}>) =>
   isHookCallExpr(O.fromNullable(d.init)) ||
   isJsxHelperInit(O.fromNullable(d.init)) ||
   isWorkletOrGestureInit(O.fromNullable(d.init), env.visitorKeys) ||
@@ -466,11 +465,15 @@ const collectSingleViewName = (
   return viewIds.length === 1 ? viewIds : ([] satisfies ReadonlyArray<string>);
 };
 
-const isPrimitiveViewDestructuring = (
-  d: TSESTree.VariableDeclarator,
-  sources: ReadonlySet<string>,
-  checkerCtx: O.Option<CheckerContext>,
-) =>
+const isPrimitiveViewDestructuring = ({
+  d,
+  sources,
+  checkerCtx,
+}: Readonly<{
+  d: TSESTree.VariableDeclarator;
+  sources: ReadonlySet<string>;
+  checkerCtx: O.Option<CheckerContext>;
+}>) =>
   d.id.type === AST_NODE_TYPES.ObjectPattern &&
   O.exists(
     (init: TSESTree.Expression) =>
@@ -478,40 +481,37 @@ const isPrimitiveViewDestructuring = (
   )(O.fromNullable(d.init)) &&
   isShallowPrimitiveObjectPattern(d.id, checkerCtx);
 
-const filterDerivedWithSources = (
-  declarators: ReadonlyArray<TSESTree.VariableDeclarator>,
-  isBaseExempt: (d: TSESTree.VariableDeclarator) => boolean,
-  sources: ReadonlySet<string>,
-  checkerCtx: O.Option<CheckerContext>,
-) =>
-  RA.filter(
-    (d: TSESTree.VariableDeclarator) =>
-      !isBaseExempt(d) && !isPrimitiveViewDestructuring(d, sources, checkerCtx),
-  )(declarators);
+const filterDerivedWithSources =
+  (sources: ReadonlySet<string>, checkerCtx: O.Option<CheckerContext>) =>
+  (
+    declarators: ReadonlyArray<TSESTree.VariableDeclarator>,
+    isBaseExempt: (d: TSESTree.VariableDeclarator) => boolean,
+  ) =>
+    RA.filter(
+      (d: TSESTree.VariableDeclarator) =>
+        !isBaseExempt(d) && !isPrimitiveViewDestructuring({ d, sources, checkerCtx }),
+    )(declarators);
 
-const collectDerivedWithCaptured = (
-  declarators: ReadonlyArray<TSESTree.VariableDeclarator>,
-  env: TsxCheckEnv,
-  captured: ReadonlySet<string>,
-) => {
-  const isBaseExempt = (d: TSESTree.VariableDeclarator) => isBaseExemptDeclarator(d, env, captured);
-  return filterDerivedWithSources(
-    declarators,
-    isBaseExempt,
-    new Set<string>([
-      ...collectUseMemoNames(declarators),
-      ...collectSingleViewName(declarators, isBaseExempt),
-    ]),
-    env.checkerCtx,
-  );
-};
+const collectDerivedWithCaptured =
+  (env: TsxCheckEnv) =>
+  (block: TSESTree.BlockStatement) => {
+    const declarators = extractBodyDeclarators(block.body);
+    const isBaseExempt = (d: TSESTree.VariableDeclarator) =>
+      isBaseExemptDeclarator({
+        d,
+        env,
+        workletCapturedNames: collectWorkletCapturedNames(block, env),
+      });
+    return filterDerivedWithSources(
+      new Set<string>([
+        ...collectUseMemoNames(declarators),
+        ...collectSingleViewName(declarators, isBaseExempt),
+      ]),
+      env.checkerCtx,
+    )(declarators, isBaseExempt);
+  };
 
-const collectDerivedDeclarators = (body: TSESTree.BlockStatement, env: TsxCheckEnv) =>
-  collectDerivedWithCaptured(
-    extractBodyDeclarators(body.body),
-    env,
-    collectWorkletCapturedNames(body, env),
-  );
+const collectDerivedDeclarators = collectDerivedWithCaptured;
 
 const reportIfObjectPattern = (env: TsxCheckEnv) => (d: TSESTree.VariableDeclarator) => {
   match(
@@ -530,30 +530,28 @@ const reportDestructuredView = (
   RA.map(reportIfObjectPattern(env))(derived);
 };
 
-const toTooManyDerivedDescriptor = (
-  body: TSESTree.BlockStatement,
-  actual: number,
-  max: number,
-) => ({
-  node: body,
-  messageId: "tooManyDerivedConsts" as const,
-  data: { actual: toDecimalText(actual), max: toDecimalText(max) },
-});
+const toTooManyDerivedDescriptor =
+  (body: TSESTree.BlockStatement) =>
+  (actual: number, max: number) => ({
+    node: body,
+    messageId: "tooManyDerivedConsts" as const,
+    data: { actual: toDecimalText(actual), max: toDecimalText(max) },
+  });
 
-const checkDerivedConsts = (body: TSESTree.BlockStatement, env: TsxCheckEnv) => {
-  const derived = collectDerivedDeclarators(body, env);
+const checkDerivedConsts = (env: TsxCheckEnv) => (block: TSESTree.BlockStatement) => {
+  const derived = collectDerivedDeclarators(env)(block);
   reportDestructuredView(derived, env);
   match(derived.length > env.opts.maxDerivedConsts)
     .with(true, () => {
-      env.report(toTooManyDerivedDescriptor(body, derived.length, env.opts.maxDerivedConsts));
+      env.report(toTooManyDerivedDescriptor(block)(derived.length, env.opts.maxDerivedConsts));
     })
     .with(false, () => {})
     .exhaustive();
 };
 
 const checkComponentBlock = (block: TSESTree.BlockStatement, env: TsxCheckEnv) => {
-  checkPreReturnBudget(block, env.opts, env.report);
-  checkDerivedConsts(block, env);
+  checkPreReturnBudget(env.opts, env.report)(block);
+  checkDerivedConsts(env)(block);
 };
 
 const isScheduleOnRnTargetFn = (node: FunctionNode, targets: ReadonlySet<string>) =>
@@ -609,26 +607,24 @@ const extractHookCallback = (node: TSESTree.CallExpression) => (name: string) =>
   return extract(node);
 };
 
-const checkSizedHookCall = (
-  node: TSESTree.CallExpression,
-  maxHookBodyLines: number,
-  report: Reporter,
-) => {
-  const check = flow(
-    resolveCalleeName,
-    O.filter((name) => SIZED_HOOKS.has(name)),
-    O.flatMap(extractHookCallback(node)),
-    O.filter(({ lines }) => lines > maxHookBodyLines),
-    O.map(({ name, fn, lines }) => {
-      report({
-        node: fn,
-        messageId: "fatHookCallback",
-        data: { hook: name, actual: toDecimalText(lines), max: toDecimalText(maxHookBodyLines) },
-      });
-    }),
-  );
-  check(node.callee);
-};
+const checkSizedHookCall =
+  (maxHookBodyLines: number, report: Reporter) =>
+  (node: TSESTree.CallExpression) => {
+    const check = flow(
+      resolveCalleeName,
+      O.filter((name) => SIZED_HOOKS.has(name)),
+      O.flatMap(extractHookCallback(node)),
+      O.filter(({ lines }) => lines > maxHookBodyLines),
+      O.map(({ name, fn, lines }) => {
+        report({
+          node: fn,
+          messageId: "fatHookCallback",
+          data: { hook: name, actual: toDecimalText(lines), max: toDecimalText(maxHookBodyLines) },
+        });
+      }),
+    );
+    check(node.callee);
+  };
 
 const isFpTsNamespaceReceiver = (callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.MemberExpression &&
@@ -654,11 +650,13 @@ const checkArrayTransformCall = (node: TSESTree.CallExpression, report: Reporter
     .exhaustive();
 };
 
-const toFatJsxHandlerDescriptor = (fn: AnonFunctionNode, lines: number, maxLines: number) => ({
-  node: fn,
-  messageId: "fatJsxHandler" as const,
-  data: { actual: toDecimalText(lines), max: toDecimalText(maxLines) },
-});
+const toFatJsxHandlerDescriptor =
+  (fn: AnonFunctionNode) =>
+  (lines: number, maxLines: number) => ({
+    node: fn,
+    messageId: "fatJsxHandler" as const,
+    data: { actual: toDecimalText(lines), max: toDecimalText(maxLines) },
+  });
 
 const extractJsxAttrCallback = flow(
   (node: TSESTree.JSXAttribute) => node.value,
@@ -671,20 +669,18 @@ const extractJsxAttrCallback = flow(
   O.map((fn) => ({ fn, lines: measureLineSpan(fn.body) })),
 );
 
-const checkJsxHandlerAttr = (
-  node: TSESTree.JSXAttribute,
-  maxHandlerLines: number,
-  report: Reporter,
-) => {
-  const check = flow(
-    extractJsxAttrCallback,
-    O.filter(({ lines }) => lines > maxHandlerLines),
-    O.map(({ fn, lines }) => {
-      report(toFatJsxHandlerDescriptor(fn, lines, maxHandlerLines));
-    }),
-  );
-  check(node);
-};
+const checkJsxHandlerAttr =
+  (maxHandlerLines: number, report: Reporter) =>
+  (node: TSESTree.JSXAttribute) => {
+    const check = flow(
+      extractJsxAttrCallback,
+      O.filter(({ lines }) => lines > maxHandlerLines),
+      O.map(({ fn, lines }) => {
+        report(toFatJsxHandlerDescriptor(fn)(lines, maxHandlerLines));
+      }),
+    );
+    check(node);
+  };
 
 const buildControlFlowListeners = (report: Reporter) => ({
   IfStatement: (node: TSESTree.IfStatement) => { report({ node, messageId: "forbiddenControlFlow", data: { kind: "if/else" } }); },
@@ -710,10 +706,10 @@ const buildTsxListeners = (env: TsxCheckEnv) => ({
   FunctionExpression: (node: TSESTree.FunctionExpression) => { checkComponentFunction(node, env); },
   ArrowFunctionExpression: (node: TSESTree.ArrowFunctionExpression) => { checkComponentFunction(node, env); },
   CallExpression: (node: TSESTree.CallExpression) => {
-    checkSizedHookCall(node, env.opts.maxHookBodyLines, env.report);
+    checkSizedHookCall(env.opts.maxHookBodyLines, env.report)(node);
     checkArrayTransformCall(node, env.report);
   },
-  JSXAttribute: (node: TSESTree.JSXAttribute) => { checkJsxHandlerAttr(node, env.opts.maxHandlerLines, env.report); },
+  JSXAttribute: checkJsxHandlerAttr(env.opts.maxHandlerLines, env.report),
   ConditionalExpression: (node: TSESTree.ConditionalExpression) => { checkNestedTernary(node, env.report); },
 });
 

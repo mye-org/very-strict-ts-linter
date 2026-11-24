@@ -91,56 +91,70 @@ const formatClusterPayload = (fields: ReadonlyArray<string>) => ({
   fields: fields.join(", "),
 });
 
+type LifecycleEnv = Readonly<{
+  readonly options: Options[0];
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
+type ClusterKind = "boolean" | "timestamp";
+
+const resolveClusterThreshold = (options: Options[0], kind: ClusterKind) =>
+  kind === "boolean" ? options.minBooleans : options.minNullableTimestamps;
+
+const resolveClusterMessageId = (kind: ClusterKind) =>
+  kind === "boolean" ? ("booleanFlagCluster" as const) : ("nullableTimestampCluster" as const);
+
+const extractMatchingMember =
+  (services: ParserServicesWithTypeInformation, kind: ClusterKind) => (m: PropertyMember) =>
+    match(kind)
+      .with("boolean", () => (isBooleanProperty(m, services) ? extractMemberName(m) : O.none))
+      .with("timestamp", () => (isNullableTimestampProperty(m, services) ? extractMemberName(m) : O.none))
+      .exhaustive();
+
 const reportCluster = (
+  env: LifecycleEnv,
+  kind: ClusterKind,
+) => (
   reportNode: TSESTree.Node,
   fields: ReadonlyArray<string>,
-  threshold: number,
-  messageId: MessageIds,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  match(fields.length >= threshold)
+  match(fields.length >= resolveClusterThreshold(env.options, kind))
     .with(true, () => {
-      report({ node: reportNode, messageId, data: formatClusterPayload(fields) });
+      env.report({
+        node: reportNode,
+        messageId: resolveClusterMessageId(kind),
+        data: formatClusterPayload(fields),
+      });
     })
     .with(false, () => {})
     .exhaustive();
 };
 
-const collectMatchingMemberNames = (
-  members: ReadonlyArray<PropertyMember>,
-  predicate: (m: PropertyMember) => boolean,
-) =>
-  RA.filterMap((m: PropertyMember) => (predicate(m) ? extractMemberName(m) : O.none))(members);
-
 const reportClusterFor = (
+  env: LifecycleEnv,
+  kind: ClusterKind,
+) => (
   reportNode: TSESTree.Node,
   members: ReadonlyArray<PropertyMember>,
-  threshold: number,
-  messageId: MessageIds,
-  predicate: (m: PropertyMember) => boolean,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  reportCluster(reportNode, collectMatchingMemberNames(members, predicate), threshold, messageId, report);
+  reportCluster(env, kind)(
+    reportNode,
+    RA.filterMap(extractMatchingMember(env.services, kind))(members),
+  );
 };
 
-const checkMembers = (
+const checkMembers = (env: LifecycleEnv) => (
   reportNode: TSESTree.Node,
   members: ReadonlyArray<PropertyMember>,
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  reportClusterFor(reportNode, members, options.minBooleans, "booleanFlagCluster", (m) => isBooleanProperty(m, services), report);
-  reportClusterFor(reportNode, members, options.minNullableTimestamps, "nullableTimestampCluster", (m) => isNullableTimestampProperty(m, services), report);
+  reportClusterFor(env, "boolean")(reportNode, members);
+  reportClusterFor(env, "timestamp")(reportNode, members);
 };
 
-const buildLifecycleListeners = (
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const buildLifecycleListeners = (env: LifecycleEnv) => {
   const run = (node: TSESTree.Node, raw: ReadonlyArray<TSESTree.TypeElement | TSESTree.ClassElement>) => {
-    checkMembers(node, extractPropertyMembers(raw), options, services, report);
+    checkMembers(env)(node, extractPropertyMembers(raw));
   };
   return {
     TSTypeLiteral: (node: TSESTree.TSTypeLiteral) => { run(node, node.members); },
@@ -176,5 +190,9 @@ export const noLifecycleFlagClusters = createRule<Options, MessageIds>({
     defaultOptions: [{ minBooleans: 3, minNullableTimestamps: 3 }],
   },
   create: (context, [options]) =>
-    buildLifecycleListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    buildLifecycleListeners({
+      options,
+      services: ESLintUtils.getParserServices(context),
+      report: (d) => { context.report(d); },
+    }),
 });

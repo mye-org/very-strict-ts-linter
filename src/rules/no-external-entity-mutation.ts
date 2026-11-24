@@ -53,17 +53,22 @@ const isExternalProjectTsType = (type: ts.Type, currentFile: string): boolean =>
   (type.isIntersection() &&
     RA.some((member: ts.Type) => isExternalProjectTsType(member, currentFile))(type.types));
 
+type EntityMutationEnv = Readonly<{
+  readonly sourceFile: ts.SourceFile;
+  readonly services: ParserServicesWithTypeInformation;
+  readonly options: Options[0];
+  readonly visitorKeys: TSESLint.SourceCode["visitorKeys"];
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
 const resolveExpressionTsType = (
   target: TSESTree.Expression,
   services: ParserServicesWithTypeInformation,
 ) =>
   services.program.getTypeChecker().getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(target));
 
-const isExternalProjectEntityType = (
-  target: TSESTree.Expression,
-  currentFile: string,
-  services: ParserServicesWithTypeInformation,
-) => isExternalProjectTsType(resolveExpressionTsType(target, services), currentFile);
+const isExternalExpr = (expr: TSESTree.Expression, env: EntityMutationEnv) =>
+  isExternalProjectTsType(resolveExpressionTsType(expr, env.services), env.sourceFile.fileName);
 
 const extractMemberUpdate = (node: TSESTree.Node) =>
   node.type === AST_NODE_TYPES.UpdateExpression && node.argument.type === AST_NODE_TYPES.MemberExpression
@@ -110,33 +115,24 @@ const formatExternalMutationPayload = (target: string, count: number) => ({
   count: String(count),
 });
 
-const filterExternalTarget = (
-  items: ReadonlyArray<TargetAssignment>,
-  minMutations: number,
-  currentFile: string,
-  services: ParserServicesWithTypeInformation,
-) =>
-  O.filter(
-    (first: TargetAssignment) =>
-      items.length >= minMutations &&
-      isExternalProjectEntityType(first.targetNode, currentFile, services),
-  )(RA.head<TargetAssignment>(items));
+const filterExternalTarget = (env: EntityMutationEnv) =>
+  flow(
+    O.fromPredicate((items: ReadonlyArray<TargetAssignment>) => items.length >= env.options.minMutations),
+    O.flatMap(RA.head<TargetAssignment>),
+    O.filter((first: TargetAssignment) => isExternalExpr(first.targetNode, env)),
+  );
 
-const reportTargetMutations = (
+const reportTargetMutations = (env: EntityMutationEnv) => (
   targetName: string,
   items: ReadonlyArray<TargetAssignment>,
-  minMutations: number,
-  currentFile: string,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   O.map((first: TargetAssignment) => {
-    report({
+    env.report({
       node: first.member,
       messageId: "externalMutation",
       data: formatExternalMutationPayload(targetName, items.length),
     });
-  })(filterExternalTarget(items, minMutations, currentFile, services));
+  })(filterExternalTarget(env)(items));
 };
 
 const collectBodyAssignments = (
@@ -152,29 +148,17 @@ const collectBodyMutationEntries = (
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
 ) => groupMutationEntries(collectBodyAssignments(body, visitorKeys));
 
-const checkFunctionMutations = (
-  fn: FunctionBodyNode,
-  options: Options[0],
-  currentFile: string,
-  visitorKeys: TSESLint.SourceCode["visitorKeys"],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const checkFunctionMutations = (env: EntityMutationEnv) => (fn: FunctionBodyNode) => {
   RA.map(([targetName, items]: readonly [string, ReadonlyArray<TargetAssignment>]) => {
-    reportTargetMutations(targetName, items, options.minMutations, currentFile, services, report);
-  })(collectBodyMutationEntries(fn.body, visitorKeys));
+    reportTargetMutations(env)(targetName, items);
+  })(collectBodyMutationEntries(fn.body, env.visitorKeys));
 };
 
-const isExternalSetterMember = (
-  member: TSESTree.MemberExpression,
-  currentFile: string,
-  services: ParserServicesWithTypeInformation,
-) =>
+const isSetterMemberCall = (member: TSESTree.MemberExpression) =>
   !member.computed &&
   member.property.type === AST_NODE_TYPES.Identifier &&
   member.object.type !== AST_NODE_TYPES.ThisExpression &&
-  isSetterMethodName(member.property.name) &&
-  isExternalProjectEntityType(member.object, currentFile, services);
+  isSetterMethodName(member.property.name);
 
 const extractSetterMethodName = (member: TSESTree.MemberExpression) =>
   member.property.type === AST_NODE_TYPES.Identifier ? O.some(member.property.name) : O.none;
@@ -183,18 +167,14 @@ const extractMemberCallee = O.fromPredicate(
   (c: TSESTree.Expression): c is TSESTree.MemberExpression => c.type === AST_NODE_TYPES.MemberExpression,
 );
 
-const checkSetterCall = (
-  node: TSESTree.CallExpression,
-  currentFile: string,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const checkSetterCall = (env: EntityMutationEnv) => (node: TSESTree.CallExpression) => {
   const resolveSetterName = flow(
     extractMemberCallee,
-    O.filter((m: TSESTree.MemberExpression) => isExternalSetterMember(m, currentFile, services)),
+    O.filter(isSetterMemberCall),
+    O.filter((m: TSESTree.MemberExpression) => isExternalExpr(m.object, env)),
     O.flatMap(extractSetterMethodName),
   );
-  O.map((method: string) => { report({ node, messageId: "setterAbuse", data: { method } }); })(
+  O.map((method: string) => { env.report({ node, messageId: "setterAbuse", data: { method } }); })(
     resolveSetterName(node.callee),
   );
 };
@@ -224,15 +204,19 @@ export const noExternalEntityMutation = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => {
     const services = ESLintUtils.getParserServices(context);
-    const report = (d: TSESLint.ReportDescriptor<MessageIds>) => { context.report(d); };
-    const checkFn = (fn: FunctionBodyNode) => {
-      checkFunctionMutations(fn, options, context.filename, context.sourceCode.visitorKeys, services, report);
+    const env: EntityMutationEnv = {
+      sourceFile: services.esTreeNodeToTSNodeMap.get(context.sourceCode.ast).getSourceFile(),
+      services,
+      options,
+      visitorKeys: context.sourceCode.visitorKeys,
+      report: (d: TSESLint.ReportDescriptor<MessageIds>) => { context.report(d); },
     };
+    const checkFn = checkFunctionMutations(env);
     return {
       FunctionDeclaration: checkFn,
       FunctionExpression: checkFn,
       ArrowFunctionExpression: checkFn,
-      CallExpression: (node) => { checkSetterCall(node, context.filename, services, report); },
+      CallExpression: checkSetterCall(env),
     };
   },
 });

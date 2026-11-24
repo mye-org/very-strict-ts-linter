@@ -168,8 +168,7 @@ const extractFilePipelines = flow(
 
 const collectAllProgramPipelines = flow(collectProjectSourceFiles, RA.flatMap(extractFilePipelines));
 
-const collectProgramPipelines = (program: ts.Program) =>
-  memoizeByProgram(program, occurrenceCache, collectAllProgramPipelines);
+const collectProgramPipelines = memoizeByProgram(occurrenceCache, collectAllProgramPipelines);
 
 const groupBySignature = RNEA.groupBy((occ: PipelineOccurrence) => occ.signature);
 
@@ -186,21 +185,19 @@ const toSiteList = RA.map((o: PipelineOccurrence) => ({
 
 const readFirstOccurrence = (list: ReadonlyArray<PipelineOccurrence>) => O.fromNullable(list[0]);
 
-const toCluster = (
-  signature: string,
-  group: ReadonlyArray<PipelineOccurrence>,
-  minOccurrences: number,
-) => {
-  const uniqueLocations = deduplicateOccurrences(group);
-  return uniqueLocations.length >= minOccurrences
-    ? O.map((first: PipelineOccurrence) => ({
-        signature,
-        preview: first.preview,
-        stepCount: first.stepCount,
-        sites: toSiteList(uniqueLocations),
-      }))(readFirstOccurrence(uniqueLocations))
-    : O.none;
-};
+const toCluster =
+  (minOccurrences: number) =>
+  ([signature, group]: readonly [string, ReadonlyArray<PipelineOccurrence>]) => {
+    const uniqueLocations = deduplicateOccurrences(group);
+    return uniqueLocations.length >= minOccurrences
+      ? O.map((first: PipelineOccurrence) => ({
+          signature,
+          preview: first.preview,
+          stepCount: first.stepCount,
+          sites: toSiteList(uniqueLocations),
+        }))(readFirstOccurrence(uniqueLocations))
+      : O.none;
+  };
 
 const expandClusterSites = (cluster: SkeletonCluster) =>
   RA.map((site: SkeletonSite) => [makeLocationKey(site.location), cluster] as const)(cluster.sites);
@@ -218,9 +215,15 @@ const buildSkeletonAnalysis = (groups: ReadonlyArray<SkeletonCluster>) => ({
   locationIndex: indexClustersByLocation(groups),
 });
 
-type SkeletonThresholds = Readonly<
+export type SkeletonThresholds = Readonly<
   Record<"minSteps" | "minDistinctCombinators" | "minOccurrences", number>
 >;
+
+const DEFAULT_SKELETON_THRESHOLDS: SkeletonThresholds = {
+  minSteps: 4,
+  minDistinctCombinators: 3,
+  minOccurrences: 2,
+};
 
 const computeSkeletonDuplicationsForThresholds = (thresholds: SkeletonThresholds) =>
   flow(
@@ -232,7 +235,7 @@ const computeSkeletonDuplicationsForThresholds = (thresholds: SkeletonThresholds
     ),
     groupBySignature,
     (rec: Readonly<Record<string, ReadonlyArray<PipelineOccurrence>>>) => RR.toEntries(rec),
-    RA.filterMap(([sig, group]) => toCluster(sig, group, thresholds.minOccurrences)),
+    RA.filterMap(toCluster(thresholds.minOccurrences)),
     buildSkeletonAnalysis,
   );
 
@@ -241,15 +244,11 @@ const makeSkeletonCacheKey = (thresholds: SkeletonThresholds) =>
 
 export const analyzeSkeletonDuplications = (
   program: ts.Program,
-  minSteps = 4,
-  minDistinctCombinators = 3,
-  minOccurrences = 2,
+  thresholds: Partial<SkeletonThresholds> = {},
 ): SkeletonDuplicationAnalysis => {
-  const thresholds = { minSteps, minDistinctCombinators, minOccurrences };
+  const resolved: SkeletonThresholds = { ...DEFAULT_SKELETON_THRESHOLDS, ...thresholds };
   return memoizeByProgramAndKey(
-    program,
-    makeSkeletonCacheKey(thresholds),
     analysisCache,
-    computeSkeletonDuplicationsForThresholds(thresholds),
-  );
+    computeSkeletonDuplicationsForThresholds(resolved),
+  )(program, makeSkeletonCacheKey(resolved));
 };

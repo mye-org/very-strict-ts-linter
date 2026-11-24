@@ -169,19 +169,17 @@ const resolveNodeSymbolDecl = (tsNode: ts.Node, checker: ts.TypeChecker) => {
   return resolve(tsNode);
 };
 
-const resolveFirstDeclFile = (
-  tsNode: ts.Node,
-  type: ts.Type,
-  checker: ts.TypeChecker,
-) => {
-  const resolve = flow(
-    resolveAliasDecl,
-    O.alt(() => resolveTypeDecl(type)),
-    O.alt(() => resolveNodeSymbolDecl(tsNode, checker)),
-    O.map((decl: ts.Declaration) => decl.getSourceFile().fileName),
-  );
-  return resolve(type);
-};
+const resolveFirstDeclFile =
+  (checker: ts.TypeChecker) =>
+  (tsNode: ts.Node, type: ts.Type) => {
+    const resolve = flow(
+      resolveAliasDecl,
+      O.alt(() => resolveTypeDecl(type)),
+      O.alt(() => resolveNodeSymbolDecl(tsNode, checker)),
+      O.map((decl: ts.Declaration) => decl.getSourceFile().fileName),
+    );
+    return resolve(type);
+  };
 
 const isExternalLibraryType = (
   node: TSESTree.Node,
@@ -192,7 +190,7 @@ const isExternalLibraryType = (
   const type = checker.getTypeAtLocation(tsNode);
   return (
     !BUILTIN_MAP_OR_RECORD.has(type.aliasSymbol?.name ?? type.getSymbol()?.name ?? "") &&
-    O.exists(isNodeModulesFile)(resolveFirstDeclFile(tsNode, type, checker))
+    O.exists(isNodeModulesFile)(resolveFirstDeclFile(checker)(tsNode, type))
   );
 };
 
@@ -250,28 +248,27 @@ const isObjectKeysOnFiniteObject = (
     O.fromNullable(node.arguments[0]),
   );
 
-const checkCallExpression = (
-  node: TSESTree.CallExpression,
-  services: ParserServicesWithTypeInformation,
-  report: (n: TSESTree.Node, id: MessageIds) => void,
-) => {
-  match({
-    isMapGet: isWideMapGetWithFiniteKey(node, services),
-    isObjectKeys: isObjectKeysOnFiniteObject(node, services),
-  })
-    .with({ isMapGet: true }, () => { report(node, "preferFiniteRecordLookup"); })
-    .with({ isObjectKeys: true }, () => { report(node, "noObjectKeysWidening"); })
-    .with(P._, () => {})
-    .exhaustive();
-};
+const checkCallExpression =
+  (
+    services: ParserServicesWithTypeInformation,
+    report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
+  ) =>
+  (node: TSESTree.CallExpression) => {
+    match({
+      isMapGet: isWideMapGetWithFiniteKey(node, services),
+      isObjectKeys: isObjectKeysOnFiniteObject(node, services),
+    })
+      .with({ isMapGet: true }, () => { report({ node, messageId: "preferFiniteRecordLookup" }); })
+      .with({ isObjectKeys: true }, () => { report({ node, messageId: "noObjectKeysWidening" }); })
+      .with(P._, () => {})
+      .exhaustive();
+  };
 
-const reportOpt = (
-  node: TSESTree.Node,
-  msg: O.Option<MessageIds>,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
-) => {
-  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
-};
+const reportOpt =
+  (report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void) =>
+  (node: TSESTree.Node, msg: O.Option<MessageIds>) => {
+    O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
+  };
 
 export const preferExhaustiveRecord = createRule<[], MessageIds>({
   name: "prefer-exhaustive-record",
@@ -294,11 +291,12 @@ export const preferExhaustiveRecord = createRule<[], MessageIds>({
   },
   create: (context) => {
     const services = ESLintUtils.getParserServices(context);
-    const rep = (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => { context.report(d); };
+    const reportFn = (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => { context.report(d); };
+    const rep = reportOpt(reportFn);
     return {
-      TSTypeReference: (node) => { reportOpt(node, isPartialFiniteRecordNode(node, services) ? O.some("noPartialFiniteRecord") : O.none, rep); },
-      MemberExpression: (node) => { reportOpt(node, isWideRecordIndexedByFiniteKey(node, services) ? O.some("preferFiniteRecordLookup") : O.none, rep); },
-      CallExpression: (node) => { checkCallExpression(node, services, (n, messageId) => { context.report({ node: n, messageId }); }); },
+      TSTypeReference: (node) => { rep(node, isPartialFiniteRecordNode(node, services) ? O.some("noPartialFiniteRecord") : O.none); },
+      MemberExpression: (node) => { rep(node, isWideRecordIndexedByFiniteKey(node, services) ? O.some("preferFiniteRecordLookup") : O.none); },
+      CallExpression: checkCallExpression(services, reportFn),
     };
   },
 });

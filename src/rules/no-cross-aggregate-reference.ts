@@ -64,17 +64,23 @@ const formatAggregateRefPayload = (current: string, target: string) => ({
   idName: `${target}Id`,
 });
 
+type AggregateCheckEnv = Readonly<{
+  readonly services: ParserServicesWithTypeInformation;
+  readonly aggregateRoots: ReadonlySet<string>;
+  readonly report: ReportFn;
+}>;
+
 const reportTargetIfCrossAggregate = (
+  env: AggregateCheckEnv,
+) => (
   member: MemberNode,
   currentAggregate: string,
-  aggregateRoots: ReadonlySet<string>,
-  report: ReportFn,
 ) =>
   flow(
     resolveTsTypeName,
-    O.filter((target) => target !== currentAggregate && aggregateRoots.has(target)),
+    O.filter((target) => target !== currentAggregate && env.aggregateRoots.has(target)),
     O.map((target) => {
-      report({
+      env.report({
         node: member,
         messageId: "crossAggregateReference",
         data: formatAggregateRefPayload(currentAggregate, target),
@@ -94,54 +100,49 @@ const resolveMemberContainerTypes = (
 ) => unwrapContainerTsTypes(resolveMemberTsType(member, services), services.program.getTypeChecker());
 
 const checkPropertyMember = (
+  env: AggregateCheckEnv,
+) => (
   member: MemberNode,
   currentAggregate: string,
-  aggregateRoots: ReadonlySet<string>,
-  services: ParserServicesWithTypeInformation,
-  report: ReportFn,
 ) => {
-  RA.map(reportTargetIfCrossAggregate(member, currentAggregate, aggregateRoots, report))(
-    resolveMemberContainerTypes(member, services),
+  RA.map(reportTargetIfCrossAggregate(env)(member, currentAggregate))(
+    resolveMemberContainerTypes(member, env.services),
   );
 };
 
 const checkAllPropertyMembers = (
+  env: AggregateCheckEnv,
+) => (
   members: ReadonlyArray<MemberNode>,
   aggName: string,
-  aggregateRoots: ReadonlySet<string>,
-  services: ParserServicesWithTypeInformation,
-  report: ReportFn,
 ) => {
   RA.map((m: MemberNode) => {
-    checkPropertyMember(m, aggName, aggregateRoots, services, report);
+    checkPropertyMember(env)(m, aggName);
   })(members);
 };
 
 const checkAggregateMembers = (
+  env: AggregateCheckEnv,
+) => (
   name: O.Option<string>,
   members: ReadonlyArray<MemberNode>,
-  aggregateRoots: ReadonlySet<string>,
-  services: ParserServicesWithTypeInformation,
-  report: ReportFn,
 ) => {
   O.map((aggName: string) => {
-    checkAllPropertyMembers(members, aggName, aggregateRoots, services, report);
-  })(O.filter((aggName: string) => aggregateRoots.has(aggName))(name));
+    checkAllPropertyMembers(env)(members, aggName);
+  })(O.filter((aggName: string) => env.aggregateRoots.has(aggName))(name));
 };
 
 const buildAggregateRefListeners = (
-  services: ParserServicesWithTypeInformation,
-  aggregateRoots: ReadonlySet<string>,
-  report: ReportFn,
+  env: AggregateCheckEnv,
 ) => ({
   TSTypeAliasDeclaration: (node: TSESTree.TSTypeAliasDeclaration) => {
-    checkAggregateMembers(O.some(node.id.name), extractTypeLiteralMembers(node.typeAnnotation), aggregateRoots, services, report);
+    checkAggregateMembers(env)(O.some(node.id.name), extractTypeLiteralMembers(node.typeAnnotation));
   },
   TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => {
-    checkAggregateMembers(O.some(node.id.name), RA.filter(isPropSig)(node.body.body), aggregateRoots, services, report);
+    checkAggregateMembers(env)(O.some(node.id.name), RA.filter(isPropSig)(node.body.body));
   },
   ClassDeclaration: (node: TSESTree.ClassDeclaration) => {
-    checkAggregateMembers(O.fromNullable(node.id?.name), RA.filter(isClassPropDef)(node.body.body), aggregateRoots, services, report);
+    checkAggregateMembers(env)(O.fromNullable(node.id?.name), RA.filter(isClassPropDef)(node.body.body));
   },
 });
 
@@ -176,10 +177,13 @@ export const noCrossAggregateReference = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => {
     const services = ESLintUtils.getParserServices(context);
-    return buildAggregateRefListeners(
+    return buildAggregateRefListeners({
       services,
-      analyzeAggregateGraph(services.program, options.aggregateRoots, options.aggregatePathPatterns).aggregateRoots,
-      (d) => { context.report(d); },
-    );
+      aggregateRoots: analyzeAggregateGraph(services.program, {
+        explicitOptionRoots: options.aggregateRoots,
+        aggregatePathPatterns: options.aggregatePathPatterns,
+      }).aggregateRoots,
+      report: (d) => { context.report(d); },
+    });
   },
 });

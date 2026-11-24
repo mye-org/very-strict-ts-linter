@@ -65,11 +65,18 @@ const formatHopFields = (hops: number, maxHops: number) => ({
   max: String(maxHops),
 });
 
+type TrainWreckEnv = Readonly<{
+  readonly options: Options[0];
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
 const reportIfExceedsMaxHops = (
-  node: TSESTree.MemberExpression,
-  hops: number,
   maxHops: number,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => (
+  node: TSESTree.MemberExpression,
+  hops: number,
 ) => {
   match(hops > maxHops)
     .with(true, () => {
@@ -83,28 +90,17 @@ const reportIfExceedsMaxHops = (
     .exhaustive();
 };
 
-const checkMemberChain = (
-  node: TSESTree.MemberExpression,
-  maxHops: number,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const checkMemberChain = (env: TrainWreckEnv) => (node: TSESTree.MemberExpression) => {
   match(isOutermostPropertyChain(node))
     .with(true, () => {
-      reportIfExceedsMaxHops(node, countPropertyHops(node, services), maxHops, report);
+      reportIfExceedsMaxHops(env.options.maxHops, env.report)(node, countPropertyHops(node, env.services));
     })
     .with(false, () => {})
     .exhaustive();
 };
 
-const buildTrainWreckListeners = (
-  maxHops: number,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => ({
-  MemberExpression: (node: TSESTree.MemberExpression) => {
-    checkMemberChain(node, maxHops, services, report);
-  },
+const buildTrainWreckListeners = (env: TrainWreckEnv) => ({
+  MemberExpression: checkMemberChain(env),
 });
 
 export const noTrainWreckNavigation = createRule<Options, MessageIds>({
@@ -129,7 +125,11 @@ export const noTrainWreckNavigation = createRule<Options, MessageIds>({
     defaultOptions: [{ maxHops: 2 }],
   },
   create: (context, [options]) =>
-    buildTrainWreckListeners(options.maxHops, ESLintUtils.getParserServices(context), (d) => {
-      context.report(d);
+    buildTrainWreckListeners({
+      options,
+      services: ESLintUtils.getParserServices(context),
+      report: (d) => {
+        context.report(d);
+      },
     }),
 });

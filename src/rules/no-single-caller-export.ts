@@ -5,6 +5,7 @@ import {
   TSESLint,
   TSESTree,
 } from "@typescript-eslint/utils";
+import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
@@ -86,11 +87,16 @@ const toTestOnlyDescriptor = (
   },
 });
 
+type SingleCallerEnv = Readonly<{
+  readonly options: Options[0];
+  readonly services: ParserServicesWithTypeInformation;
+  readonly reportFinding: (finding: EncapsulationFinding) => void;
+}>;
+
 const reportEncapsulationFinding = (
   cwd: string,
-  finding: EncapsulationFinding,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+) => (finding: EncapsulationFinding) => {
   match(finding)
     .with({ kind: "singleCallerExport" }, (f) => { report(toSingleCallerDescriptor(cwd, f)); })
     .with({ kind: "testOnlyExport" }, (f) => { report(toTestOnlyDescriptor(cwd, f)); })
@@ -137,71 +143,56 @@ const serializeSingleCallerOptions = (options: SingleCallerOptions) =>
   ]);
 
 const computeSingleCaller = (program: ts.Program, resolved: SingleCallerOptions) =>
-  analyzeSingleCallerExports(
-    program,
-    () => analyzeProgramPurity(program, resolved.purityOptions),
-    resolved,
-  );
+  analyzeSingleCallerExports(program, {
+    purityAnalysis: () => analyzeProgramPurity(program, resolved.purityOptions),
+    options: O.some(resolved),
+  });
 
 const runCachedSingleCallerAnalysis = (
   program: ts.Program,
   resolved: SingleCallerOptions,
 ) =>
-  memoizeByProgramAndKey(
+  memoizeByProgramAndKey(singleCallerCache, (p) => computeSingleCaller(p, resolved))(
     program,
     serializeSingleCallerOptions(resolved),
-    singleCallerCache,
-    (p) => computeSingleCaller(p, resolved),
   );
 
 const isEligibleTargetFile = (
   sf: ts.SourceFile,
-  fileName: string,
   resolved: SingleCallerOptions,
-) =>
-  !isBarrelFile(sf) &&
-  !isMatchingAnyPattern(fileName, resolved.testPatterns) &&
-  !isMatchingAnyPattern(fileName, resolved.entryPoints);
-
-const reportFileFindings = (
-  fileName: string,
-  resolved: SingleCallerOptions,
-  cwd: string,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  RA.map((finding: EncapsulationFinding) => {
-    reportEncapsulationFinding(cwd, finding, report);
-  })(runCachedSingleCallerAnalysis(services.program, resolved).byFile[fileName] ?? []);
+  const fileName = normalizeFilePath(sf.fileName);
+  return (
+    !isBarrelFile(sf) &&
+    !isMatchingAnyPattern(fileName, resolved.testPatterns) &&
+    !isMatchingAnyPattern(fileName, resolved.entryPoints)
+  );
 };
 
-const checkProgram = (
-  programNode: TSESTree.Program,
-  options: Options[0],
-  cwd: string,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+const reportFileFindings = (env: SingleCallerEnv) => (
+  sf: ts.SourceFile,
+  resolved: SingleCallerOptions,
 ) => {
-  const sf = services.esTreeNodeToTSNodeMap.get(programNode);
-  const fileName = normalizeFilePath(sf.fileName);
-  const resolved = resolveAnalyzerOptions(options);
-  match(isEligibleTargetFile(sf, fileName, resolved))
+  RA.map(env.reportFinding)(
+    runCachedSingleCallerAnalysis(env.services.program, resolved).byFile[
+      normalizeFilePath(sf.fileName)
+    ] ?? [],
+  );
+};
+
+const checkProgram = (env: SingleCallerEnv) => (programNode: TSESTree.Program) => {
+  const sf = env.services.esTreeNodeToTSNodeMap.get(programNode);
+  const resolved = resolveAnalyzerOptions(env.options);
+  match(isEligibleTargetFile(sf, resolved))
     .with(true, () => {
-      reportFileFindings(fileName, resolved, cwd, services, report);
+      reportFileFindings(env)(sf, resolved);
     })
     .with(false, () => {})
     .exhaustive();
 };
 
-const buildSingleCallerListeners = (
-  options: Options[0],
-  cwd: string,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => ({
-  Program: (programNode: TSESTree.Program) => {
-    checkProgram(programNode, options, cwd, services, report);
-  },
+const buildSingleCallerListeners = (env: SingleCallerEnv) => ({
+  Program: checkProgram(env),
 });
 
 export const noSingleCallerExport = createRule<Options, MessageIds>({
@@ -250,7 +241,9 @@ export const noSingleCallerExport = createRule<Options, MessageIds>({
     ],
   },
   create: (context, [options]) =>
-    buildSingleCallerListeners(options, context.cwd, ESLintUtils.getParserServices(context), (d) => {
-      context.report(d);
+    buildSingleCallerListeners({
+      options,
+      services: ESLintUtils.getParserServices(context),
+      reportFinding: reportEncapsulationFinding(context.cwd, (d) => { context.report(d); }),
     }),
 });

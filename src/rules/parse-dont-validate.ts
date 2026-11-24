@@ -79,18 +79,16 @@ const resolveSignatureOption = (checker: ts.TypeChecker) =>
     O.fromNullable,
   );
 
-const resolveFunctionSignature = (
-  node: FunctionNode,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
-  const resolve = flow(
-    (n: FunctionNode) => services.esTreeNodeToTSNodeMap.get(n),
-    O.fromPredicate(ts.isFunctionLike),
-    O.flatMap(resolveSignatureOption(checker)),
-  );
-  return resolve(node);
-};
+const resolveFunctionSignature =
+  (services: ParserServicesWithTypeInformation, checker: ts.TypeChecker) =>
+  (node: FunctionNode) => {
+    const resolve = flow(
+      (n: FunctionNode) => services.esTreeNodeToTSNodeMap.get(n),
+      O.fromPredicate(ts.isFunctionLike),
+      O.flatMap(resolveSignatureOption(checker)),
+    );
+    return resolve(node);
+  };
 
 const isInvalidValidateReturn = (
   node: FunctionNode,
@@ -100,7 +98,7 @@ const isInvalidValidateReturn = (
   return (
     !isTypePredicateAnnotation(O.fromNullable(node.returnType)) &&
     O.exists((sig: ts.Signature) => isInvalidValidateSignature(sig, checker))(
-      resolveFunctionSignature(node, services, checker),
+      resolveFunctionSignature(services, checker)(node),
     )
   );
 };
@@ -168,11 +166,15 @@ const isShotgunRangeCheck = (
 const isStringLiteralArg = (a: TSESTree.CallExpressionArgument) =>
   a.type === AST_NODE_TYPES.Literal && typeof a.value === "string";
 
-const isShotgunMemberCall = (
-  callee: TSESTree.MemberExpression,
-  arg0: O.Option<TSESTree.CallExpressionArgument>,
-  services: ParserServicesWithTypeInformation,
-) =>
+const isShotgunMemberCall = ({
+  callee,
+  arg0,
+  services,
+}: Readonly<{
+  callee: TSESTree.MemberExpression;
+  arg0: O.Option<TSESTree.CallExpressionArgument>;
+  services: ParserServicesWithTypeInformation;
+}>) =>
   callee.property.type === AST_NODE_TYPES.Identifier &&
   match({
     isIncludes: INCLUDES_METHODS.has(callee.property.name),
@@ -193,15 +195,13 @@ const isShotgunCallCheck = (
   services: ParserServicesWithTypeInformation,
 ) =>
   c.callee.type === AST_NODE_TYPES.MemberExpression &&
-  isShotgunMemberCall(c.callee, O.fromNullable(c.arguments[0]), services);
+  isShotgunMemberCall({ callee: c.callee, arg0: O.fromNullable(c.arguments[0]), services });
 
-const reportOpt = (
-  node: TSESTree.Node,
-  msg: O.Option<MessageIds>,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
-) => {
-  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
-};
+const reportOpt =
+  (report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void) =>
+  (node: TSESTree.Node, msg: O.Option<MessageIds>) => {
+    O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
+  };
 
 export const parseDontValidate = createRule<[], MessageIds>({
   name: "parse-dont-validate",
@@ -222,14 +222,14 @@ export const parseDontValidate = createRule<[], MessageIds>({
   },
   create: (context) => {
     const services = ESLintUtils.getParserServices(context);
-    const rep = (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => { context.report(d); };
-    const checkFn = (node: FunctionNode) => { reportOpt(node, isValidateWithoutParse(node, services) ? O.some("parseDontValidateFunction") : O.none, rep); };
+    const rep = reportOpt((d) => { context.report(d); });
+    const checkFn = (node: FunctionNode) => { rep(node, isValidateWithoutParse(node, services) ? O.some("parseDontValidateFunction") : O.none); };
     return {
       FunctionDeclaration: checkFn,
       FunctionExpression: checkFn,
       ArrowFunctionExpression: checkFn,
-      BinaryExpression: (node) => { reportOpt(node, isShotgunEligibleContext(node) && isShotgunRangeCheck(node, services) ? O.some("noShotgunValidation") : O.none, rep); },
-      CallExpression: (node) => { reportOpt(node, isShotgunEligibleContext(node) && isShotgunCallCheck(node, services) ? O.some("noShotgunValidation") : O.none, rep); },
+      BinaryExpression: (node) => { rep(node, isShotgunEligibleContext(node) && isShotgunRangeCheck(node, services) ? O.some("noShotgunValidation") : O.none); },
+      CallExpression: (node) => { rep(node, isShotgunEligibleContext(node) && isShotgunCallCheck(node, services) ? O.some("noShotgunValidation") : O.none); },
     };
   },
 });

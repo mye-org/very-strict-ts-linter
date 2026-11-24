@@ -105,22 +105,23 @@ const formatDepthFields = (depth: number) => ({
   depth: String(depth),
 });
 
-const checkNestedCall = (
-  node: TSESTree.CallExpression,
-  maxNestingDepth: number,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
-) => {
-  match(isReportableNestedCall(node, maxNestingDepth))
-    .with(true, () => {
-      report({
-        node,
-        messageId: "preferFlowComposition",
-        data: formatDepthFields(computeMaxCallNestingDepth(node)),
-      });
-    })
-    .with(false, () => {})
-    .exhaustive();
-};
+const checkNestedCall =
+  (
+    maxNestingDepth: number,
+    report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds; data: Readonly<Record<string, string>> }>) => void,
+  ) =>
+  (node: TSESTree.CallExpression) => {
+    match(isReportableNestedCall(node, maxNestingDepth))
+      .with(true, () => {
+        report({
+          node,
+          messageId: "preferFlowComposition",
+          data: formatDepthFields(computeMaxCallNestingDepth(node)),
+        });
+      })
+      .with(false, () => {})
+      .exhaustive();
+  };
 
 export const preferFunctionComposition = createRule<Options, MessageIds>({
   name: "prefer-function-composition",
@@ -141,6 +142,6 @@ export const preferFunctionComposition = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => ({
     ArrowFunctionExpression: (node) => { checkFlowArrow(node, (d) => { context.report(d); }); },
-    CallExpression: (node) => { checkNestedCall(node, options.maxNestingDepth ?? 2, (d) => { context.report(d); }); },
+    CallExpression: checkNestedCall(options.maxNestingDepth ?? 2, (d) => { context.report(d); }),
   }),
 });

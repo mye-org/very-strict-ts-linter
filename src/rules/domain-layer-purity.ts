@@ -105,10 +105,9 @@ const isZeroArgNewDate = (node: TSESTree.NewExpression) =>
   node.arguments.length === 0;
 
 const checkImportNode = (
-  node: TSESTree.ImportDeclaration,
   forbiddenImports: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+) => (node: TSESTree.ImportDeclaration) => {
   match(isForbiddenImportSource(node.source.value, forbiddenImports))
     .with(true, () => {
       report({ node: node.source, messageId: "forbiddenDomainImport", data: { source: node.source.value } });
@@ -119,10 +118,8 @@ const checkImportNode = (
 
 const checkWhenImpure = (
   expr: string,
-  target: TSESTree.Node,
-  predicate: () => boolean,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+) => (target: TSESTree.Node, predicate: () => boolean) => {
   match(predicate())
     .with(true, () => {
       report({ node: target, messageId: "impureDomainRuntime", data: { expr } });
@@ -135,15 +132,15 @@ const buildPurityListeners = (
   forbiddenImports: ReadonlyArray<string>,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => ({
-  ImportDeclaration: (node: TSESTree.ImportDeclaration) => { checkImportNode(node, forbiddenImports, report); },
+  ImportDeclaration: checkImportNode(forbiddenImports, report),
   CallExpression: (node: TSESTree.CallExpression) => {
-    checkWhenImpure("impure runtime call", node, () => isImpureMemberCall(node.callee) || isImpureDirectCall(node.callee), report);
+    checkWhenImpure("impure runtime call", report)(node, () => isImpureMemberCall(node.callee) || isImpureDirectCall(node.callee));
   },
   NewExpression: (node: TSESTree.NewExpression) => {
-    checkWhenImpure("new Date()", node, () => isZeroArgNewDate(node), report);
+    checkWhenImpure("new Date()", report)(node, () => isZeroArgNewDate(node));
   },
   MemberExpression: (node: TSESTree.MemberExpression) => {
-    checkWhenImpure("process.env", node, () => isProcessEnvAccess(node), report);
+    checkWhenImpure("process.env", report)(node, () => isProcessEnvAccess(node));
   },
 });
 
@@ -183,9 +180,8 @@ export const domainLayerPurity = createRule<Options, MessageIds>({
   create: (context, [options]) =>
     shouldLintDomainFile(
       options.enforceEverywhere ? "everywhere" : "domain-only",
-      context.filename,
       options.domainPatterns,
-    )
+    )(context.filename)
       ? buildPurityListeners(options.forbiddenImports, (d) => { context.report(d); })
       : {},
 });

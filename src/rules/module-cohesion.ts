@@ -4,6 +4,7 @@ import {
   TSESLint,
   TSESTree,
 } from "@typescript-eslint/utils";
+import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
@@ -46,36 +47,40 @@ const resolveCohesionOptions = (options: Options[0]) => ({
 });
 
 const evaluateProgramCohesion = (
-  node: TSESTree.Program,
   services: ParserServicesWithTypeInformation,
   options: Options[0],
 ) =>
-  analyzeFileCohesion(
-    services.esTreeNodeToTSNodeMap.get(node),
-    services.program.getTypeChecker(),
-    resolveCohesionOptions(options),
+  flow(
+    (node: TSESTree.Program) => services.esTreeNodeToTSNodeMap.get(node),
+    (sf) =>
+      analyzeFileCohesion(sf, {
+        checker: services.program.getTypeChecker(),
+        options: O.some(resolveCohesionOptions(options)),
+      }),
   );
 
 const reportIfDisconnected = (
+  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+) => (
   node: TSESTree.Program,
   result: FileCohesionResult,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  match(result.isCohesive)
-    .with(true, () => {})
-    .with(false, () => {
-      report({ node, messageId: "disconnectedExportClusters", data: formatCohesionPayload(result.clusters) });
+  match(result)
+    .with({ isCohesive: true }, () => {})
+    .with({ isCohesive: false }, (matched) => {
+      report({ node, messageId: "disconnectedExportClusters", data: formatCohesionPayload(matched.clusters) });
     })
     .exhaustive();
 };
 
 const checkProgramCohesion = (
-  node: TSESTree.Program,
   services: ParserServicesWithTypeInformation,
   options: Options[0],
+) => (
+  node: TSESTree.Program,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  reportIfDisconnected(node, evaluateProgramCohesion(node, services, options), report);
+  reportIfDisconnected(report)(node, evaluateProgramCohesion(services, options)(node));
 };
 
 export const moduleCohesion = createRule<Options, MessageIds>({
@@ -109,7 +114,7 @@ export const moduleCohesion = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => ({
     Program: (node: TSESTree.Program) => {
-      checkProgramCohesion(node, ESLintUtils.getParserServices(context), options, (d) => { context.report(d); });
+      checkProgramCohesion(ESLintUtils.getParserServices(context), options)(node, (d) => { context.report(d); });
     },
   }),
 });

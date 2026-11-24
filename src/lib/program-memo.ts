@@ -62,69 +62,76 @@ const matchEntryFingerprint = <V>(fp: string) =>
 const lookupCachedEntry = <V>(cache: WeakMap<object, StoredEntry<V>>, keyObj: object) =>
   O.fromNullable(cache.get(keyObj));
 
-const matchFallbackByFingerprint = <V>(
-  cache: WeakMap<object, StoredEntry<V>>,
-  keyObj: object,
-  fp: string,
-) => matchEntryFingerprint<V>(fp)(lookupCachedEntry(cache, keyObj));
+const matchFallbackByFingerprint =
+  (fp: string) =>
+  <V>(cache: WeakMap<object, StoredEntry<V>>, keyObj: object) =>
+    matchEntryFingerprint<V>(fp)(lookupCachedEntry(cache, keyObj));
 
-const storeSingleValue = <A>(
-  program: ts.Program,
-  fingerprint: string,
-  cache: WeakMap<ts.Program, A>,
-  value: A,
-) => {
-  cache.set(program, value);
-  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value erasure without unknown
-  fallbackSingleCache.set(cache, [fingerprint, value as never]);
-  return value;
-};
-
-const lookupSingleByFingerprint = <A>(
-  program: ts.Program,
-  cache: WeakMap<ts.Program, A>,
-  compute: (p: ts.Program) => A,
-) => {
-  const fp = resolveProgramFingerprint(program);
-  return O.match(
-    () => storeSingleValue(program, fp, cache, compute(program)),
-    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value recovery without unknown
-    (cached: never) => storeSingleValue(program, fp, cache, cached as A),
-  )(matchFallbackByFingerprint(fallbackSingleCache, cache, fp));
-};
-
-export const memoizeByProgram = <A>(
-  program: ts.Program,
-  cache: WeakMap<ts.Program, A>,
-  compute: (p: ts.Program) => A,
-): A => cache.get(program) ?? lookupSingleByFingerprint(program, cache, compute);
-
-const computeAndStoreKeyed = <A>(
-  program: ts.Program,
-  key: string,
-  cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
-  existing: Readonly<Record<string, A>>,
-  compute: (p: ts.Program) => A,
-) => {
-  const value = compute(program);
-  const nextEntries = { ...existing, [key]: value };
-  cache.set(program, nextEntries);
-  fallbackKeyedCache.set(cache, [
-    resolveProgramFingerprint(program),
+const storeSingleValue =
+  (program: ts.Program, fingerprint: string) =>
+  <A>(cache: WeakMap<ts.Program, A>, value: A) => {
+    cache.set(program, value);
     // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value erasure without unknown
-    nextEntries as Readonly<Record<string, never>>,
-  ]);
-  return value;
+    fallbackSingleCache.set(cache, [fingerprint, value as never]);
+    return value;
+  };
+
+export type MemoizeByProgramInput<A> = Readonly<{
+  program: ts.Program;
+  cache: WeakMap<ts.Program, A>;
+  compute: (p: ts.Program) => A;
+}>;
+
+const lookupSingleByFingerprint = <A>({
+  program,
+  cache,
+  compute,
+}: MemoizeByProgramInput<A>) => {
+  const fp = resolveProgramFingerprint(program);
+  const store = storeSingleValue(program, fp);
+  return O.match(
+    () => store(cache, compute(program)),
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value recovery without unknown
+    (cached: never) => store(cache, cached as A),
+  )(matchFallbackByFingerprint(fp)(fallbackSingleCache, cache));
 };
 
-const attachHydratedEntries = <A>(
-  program: ts.Program,
-  cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
-  entries: Readonly<Record<string, A>>,
-) => {
-  cache.set(program, entries);
-  return entries;
-};
+export const memoizeByProgram =
+  <A>(
+    cache: WeakMap<ts.Program, A>,
+    compute: (p: ts.Program) => A,
+  ): ((program: ts.Program) => A) =>
+  (program: ts.Program) =>
+    cache.get(program) ?? lookupSingleByFingerprint({ program, cache, compute });
+
+type KeyedMemoConfig<A> = Readonly<{
+  cache: WeakMap<ts.Program, Readonly<Record<string, A>>>;
+  compute: (p: ts.Program) => A;
+}>;
+
+const computeAndStoreKeyed =
+  <A>({ cache, compute }: KeyedMemoConfig<A>, existing: Readonly<Record<string, A>>) =>
+  (program: ts.Program, key: string) => {
+    const value = compute(program);
+    const nextEntries = { ...existing, [key]: value };
+    cache.set(program, nextEntries);
+    fallbackKeyedCache.set(cache, [
+      resolveProgramFingerprint(program),
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value erasure without unknown
+      nextEntries as Readonly<Record<string, never>>,
+    ]);
+    return value;
+  };
+
+const attachHydratedEntries =
+  (program: ts.Program) =>
+  <A>(
+    cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
+    entries: Readonly<Record<string, A>>,
+  ) => {
+    cache.set(program, entries);
+    return entries;
+  };
 
 const emptyKeyedRecord = <A>() => ({}) satisfies Readonly<Record<string, A>>;
 
@@ -134,9 +141,11 @@ const hydrateKeyedEntries = <A>(
 ) =>
   flow(
     resolveProgramFingerprint,
-    (fp) => matchFallbackByFingerprint(fallbackKeyedCache, cache, fp),
-    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value recovery without unknown
-    O.map((entries) => attachHydratedEntries(program, cache, entries as Readonly<Record<string, A>>)),
+    (fp) => matchFallbackByFingerprint(fp)(fallbackKeyedCache, cache),
+    O.map((entries) =>
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- heterogeneous WeakMap value recovery without unknown
+      attachHydratedEntries(program)(cache, entries as Readonly<Record<string, A>>),
+    ),
     O.getOrElse(emptyKeyedRecord<A>),
   );
 
@@ -145,27 +154,20 @@ const hydrateKeyedFromFingerprint = <A>(
   cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
 ) => hydrateKeyedEntries(program, cache)(program);
 
-const lookupOrStoreKeyed = <A>(
-  program: ts.Program,
-  key: string,
-  cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
-  existing: Readonly<Record<string, A>>,
-  compute: (p: ts.Program) => A,
-) =>
-  O.getOrElse(() => computeAndStoreKeyed(program, key, cache, existing, compute))(
-    RR.lookup(key)(existing),
-  );
+const lookupOrStoreKeyed =
+  <A>(config: KeyedMemoConfig<A>, existing: Readonly<Record<string, A>>) =>
+  (program: ts.Program, key: string) =>
+    O.getOrElse(() => computeAndStoreKeyed(config, existing)(program, key))(
+      RR.lookup(key)(existing),
+    );
 
-export const memoizeByProgramAndKey = <A>(
-  program: ts.Program,
-  key: string,
-  cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
-  compute: (p: ts.Program) => A,
-): A =>
-  lookupOrStoreKeyed(
-    program,
-    key,
-    cache,
-    cache.get(program) ?? hydrateKeyedFromFingerprint(program, cache),
-    compute,
-  );
+export const memoizeByProgramAndKey =
+  <A>(
+    cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
+    compute: (p: ts.Program) => A,
+  ): ((program: ts.Program, key: string) => A) =>
+  (program: ts.Program, key: string) =>
+    lookupOrStoreKeyed(
+      { cache, compute },
+      cache.get(program) ?? hydrateKeyedFromFingerprint(program, cache),
+    )(program, key);

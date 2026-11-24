@@ -108,14 +108,18 @@ const findInfraCallTarget = (
   infraSet: ReadonlySet<string>,
 ) => (node.type === AST_NODE_TYPES.CallExpression ? matchInfraTarget(node, infraSet) : O.none);
 
-const reportInfraTargets = (
+type SideEffectEnv = Readonly<{
+  readonly infraSet: ReadonlySet<string>;
+  readonly visitorKeys: TSESLint.SourceCode["visitorKeys"];
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
+const reportInfraTargets = (env: SideEffectEnv) => (
   nodes: ReadonlyArray<TSESTree.Node>,
-  infraSet: ReadonlySet<string>,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  const targets = RA.filterMap((n: TSESTree.Node) => findInfraCallTarget(n, infraSet))(nodes);
+  const targets = RA.filterMap((n: TSESTree.Node) => findInfraCallTarget(n, env.infraSet))(nodes);
   RA.map(({ node, target }: (typeof targets)[number]) => {
-    report({ node, messageId: "inlineInfraSideEffect", data: { target } });
+    env.report({ node, messageId: "inlineInfraSideEffect", data: { target } });
   })(targets);
 };
 
@@ -127,27 +131,16 @@ const collectBodyNodes = (
     ? RA.flatMap((s: TSESTree.Statement) => collectNodesInFunction(s, visitorKeys))(fn.body.body)
     : EMPTY_NODES;
 
-const checkFunctionSideEffects = (
-  fn: FunctionNode,
-  infraSet: ReadonlySet<string>,
-  visitorKeys: TSESLint.SourceCode["visitorKeys"],
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  const nodes = collectBodyNodes(fn, visitorKeys);
+const checkFunctionSideEffects = (env: SideEffectEnv) => (fn: FunctionNode) => {
+  const nodes = collectBodyNodes(fn, env.visitorKeys);
   match(hasDomainStateMutation(nodes))
-    .with(true, () => { reportInfraTargets(nodes, infraSet, report); })
+    .with(true, () => { reportInfraTargets(env)(nodes); })
     .with(false, () => {})
     .exhaustive();
 };
 
-const buildSideEffectListeners = (
-  infraSet: ReadonlySet<string>,
-  visitorKeys: TSESLint.SourceCode["visitorKeys"],
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  const check = (fn: FunctionNode) => {
-    checkFunctionSideEffects(fn, infraSet, visitorKeys, report);
-  };
+const buildSideEffectListeners = (env: SideEffectEnv) => {
+  const check = checkFunctionSideEffects(env);
   return {
     FunctionDeclaration: check,
     FunctionExpression: check,
@@ -179,9 +172,9 @@ export const noInlineInfraSideEffects = createRule<Options, MessageIds>({
     defaultOptions: [{ infraTargets: DEFAULT_INFRA_TARGETS }],
   },
   create: (context, [options]) =>
-    buildSideEffectListeners(
-      new Set(RA.map(normalizeTargetName)(options.infraTargets)),
-      context.sourceCode.visitorKeys,
-      (d) => { context.report(d); },
-    ),
+    buildSideEffectListeners({
+      infraSet: new Set(RA.map(normalizeTargetName)(options.infraTargets)),
+      visitorKeys: context.sourceCode.visitorKeys,
+      report: (d) => { context.report(d); },
+    }),
 });

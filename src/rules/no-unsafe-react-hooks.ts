@@ -184,16 +184,15 @@ const checkExpressionArrowEffect = (
   cb: TSESTree.ArrowFunctionExpression,
   { hook, env }: HookCheckTarget,
 ) => {
-  match(cb.body)
-    .with({ type: AST_NODE_TYPES.BlockStatement }, () => {})
-    .with(P._, (body) => {
+  match(cb)
+    .with({ body: { type: AST_NODE_TYPES.BlockStatement } }, () => {})
+    .with({ body: P.select(), async: true }, () => {
+      env.report({ node: cb, messageId: "expressionEffectReturnsPromise", data: { hook } });
+    })
+    .with({ body: P.select() }, (body) => {
       O.map((messageId: MessageIds) => {
         env.report({ node: cb, messageId, data: { hook } });
-      })(
-        cb.async
-          ? O.some<MessageIds>("expressionEffectReturnsPromise")
-          : classifyEffectReturn(body, env.checkerCtx),
-      );
+      })(classifyEffectReturn(body, env.checkerCtx));
     })
     .exhaustive();
 };
@@ -234,24 +233,32 @@ const isPrimitiveInContext = (node: TSESTree.Node) =>
 const isKnownPrimitiveNode = (node: TSESTree.Node, checkerCtx: O.Option<CheckerContext>) =>
   O.exists(isPrimitiveInContext(node))(checkerCtx);
 
-const isUnstableCallResult = (
-  expr: TSESTree.Expression,
-  typedNode: TSESTree.Node,
-  checkerCtx: O.Option<CheckerContext>,
-) =>
+const isUnstableCallResult = ({
+  expr,
+  typedNode,
+  checkerCtx,
+}: Readonly<{
+  expr: TSESTree.Expression;
+  typedNode: TSESTree.Node;
+  checkerCtx: O.Option<CheckerContext>;
+}>) =>
   expr.type === AST_NODE_TYPES.CallExpression &&
   !isHookCallExpr(O.some(expr)) &&
   !isKnownPrimitiveNode(typedNode, checkerCtx);
 
-const isUnstableRenderValue = (
-  expr: TSESTree.Expression,
-  typedNode: TSESTree.Node,
-  checkerCtx: O.Option<CheckerContext>,
-) => {
+const isUnstableRenderValue = ({
+  expr,
+  typedNode,
+  checkerCtx,
+}: Readonly<{
+  expr: TSESTree.Expression;
+  typedNode: TSESTree.Node;
+  checkerCtx: O.Option<CheckerContext>;
+}>) => {
   const unwrapped = unwrapTsExpression(expr);
   return (
     UNSTABLE_EXPR_TYPES.has(unwrapped.type) ||
-    isUnstableCallResult(unwrapped, typedNode, checkerCtx)
+    isUnstableCallResult({ expr: unwrapped, typedNode, checkerCtx })
   );
 };
 
@@ -289,7 +296,7 @@ const extractRenderTimeVarInit = (variable: TSESLint.Scope.Variable) =>
 const extractUnstableVarInit = (id: TSESTree.Identifier, ctx: DepCheckContext) =>
   flow(
     extractRenderTimeVarInit,
-    O.filter((init) => isUnstableRenderValue(init, id, ctx.env.checkerCtx)),
+    O.filter((init) => isUnstableRenderValue({ expr: init, typedNode: id, checkerCtx: ctx.env.checkerCtx })),
   );
 
 const checkIdentifierDependency = (id: TSESTree.Identifier, ctx: DepCheckContext) => {
@@ -306,18 +313,16 @@ const checkIdentifierDependency = (id: TSESTree.Identifier, ctx: DepCheckContext
   reportIfUnstable(findVariableInScope(ctx.scope, id.name));
 };
 
-const checkInlineDependency = (
-  unwrapped: TSESTree.Expression,
-  expr: TSESTree.Expression,
-  { hook, env }: DepCheckContext,
-) => {
-  match(isUnstableRenderValue(unwrapped, expr, env.checkerCtx))
-    .with(true, () => {
-      env.report({ node: expr, messageId: "unstableInlineHookDependency", data: { hook } });
-    })
-    .with(false, () => {})
-    .exhaustive();
-};
+const checkInlineDependency =
+  ({ hook, env }: DepCheckContext) =>
+  (unwrapped: TSESTree.Expression, expr: TSESTree.Expression) => {
+    match(isUnstableRenderValue({ expr: unwrapped, typedNode: expr, checkerCtx: env.checkerCtx }))
+      .with(true, () => {
+        env.report({ node: expr, messageId: "unstableInlineHookDependency", data: { hook } });
+      })
+      .with(false, () => {})
+      .exhaustive();
+  };
 
 const checkDependencyExpr = (expr: TSESTree.Expression, ctx: DepCheckContext) => {
   match(unwrapTsExpression(expr))
@@ -325,7 +330,7 @@ const checkDependencyExpr = (expr: TSESTree.Expression, ctx: DepCheckContext) =>
       checkIdentifierDependency(id, ctx);
     })
     .with(P._, (other) => {
-      checkInlineDependency(other, expr, ctx);
+      checkInlineDependency(ctx)(other, expr);
     })
     .exhaustive();
 };

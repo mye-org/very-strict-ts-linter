@@ -64,49 +64,46 @@ const resolveNodePrimitiveKind = (
   services: ParserServicesWithTypeInformation,
 ) => resolveBarePrimitiveOrLiteralKind(resolveNodeTsType(reportNode, services));
 
+type UnitSuffixEnv = Readonly<{
+  readonly suffixes: ReadonlyArray<string>;
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
 const reportIfBarePrimitive = (
-  reportNode: TSESTree.Node,
-  name: string,
-  suffix: string,
-  vo: string,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+  env: UnitSuffixEnv,
+  suggestion: Readonly<Record<"suffix" | "vo", string>>,
+) => (reportNode: TSESTree.Node, name: string) => {
   O.map((primitiveKind: string) => {
-    report({
+    env.report({
       node: reportNode,
       messageId: "unitSuffixedPrimitive",
-      data: { name, suffix, primitiveKind, suggestedVo: vo },
+      data: {
+        name,
+        suffix: suggestion.suffix,
+        primitiveKind,
+        suggestedVo: suggestion.vo,
+      },
     });
-  })(resolveNodePrimitiveKind(reportNode, services));
+  })(resolveNodePrimitiveKind(reportNode, env.services));
 };
 
-const checkSuffixAndPrimitive = (
-  reportNode: TSESTree.Node,
-  name: string,
-  customSuffixes: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  O.map(({ suffix, vo }: Readonly<Record<"suffix" | "vo", string>>) => {
-    reportIfBarePrimitive(reportNode, name, suffix, vo, services, report);
-  })(matchSuffixSuggestion(name, customSuffixes));
+const checkSuffixAndPrimitive = (env: UnitSuffixEnv) => (reportNode: TSESTree.Node, name: string) => {
+  O.map((suggestion: Readonly<Record<"suffix" | "vo", string>>) => {
+    reportIfBarePrimitive(env, suggestion)(reportNode, name);
+  })(matchSuffixSuggestion(name, env.suffixes));
 };
 
-const checkNamedTypedNode = (
-  reportNode: TSESTree.Node,
-  name: string,
-  customSuffixes: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const checkNamedTypedNode = (env: UnitSuffixEnv) => (reportNode: TSESTree.Node, name: string) => {
   match(isInsideNewtypeDefinition(reportNode))
     .with(true, () => {})
     .with(false, () => {
-      checkSuffixAndPrimitive(reportNode, name, customSuffixes, services, report);
+      checkSuffixAndPrimitive(env)(reportNode, name);
     })
     .exhaustive();
 };
+
+type NodeChecker = (reportNode: TSESTree.Node, name: string) => void;
 
 const resolvePropertyKeyName = (key: TSESTree.PropertyName) =>
   key.type === AST_NODE_TYPES.Identifier ? O.some(key.name) : O.none;
@@ -119,14 +116,9 @@ const extractParamId = (param: TSESTree.Parameter) =>
     .with(P._, () => NONE_IDENTIFIER)
     .exhaustive();
 
-const checkParam = (
-  param: TSESTree.Parameter,
-  customSuffixes: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const checkParam = (checkNode: NodeChecker) => (param: TSESTree.Parameter) => {
   O.map((node: TSESTree.Identifier) => {
-    checkNamedTypedNode(node, node.name, customSuffixes, services, report);
+    checkNode(node, node.name);
   })(extractParamId(param));
 };
 
@@ -137,55 +129,41 @@ const extractNonFnDeclaratorId = (node: TSESTree.VariableDeclarator) =>
     ? O.some(node.id)
     : O.none;
 
-const checkVariableDeclarator = (
-  node: TSESTree.VariableDeclarator,
-  suffixes: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const checkVariableDeclarator = (checkNode: NodeChecker) => (node: TSESTree.VariableDeclarator) => {
   O.map((id: TSESTree.Identifier) => {
-    checkNamedTypedNode(id, id.name, suffixes, services, report);
+    checkNode(id, id.name);
   })(extractNonFnDeclaratorId(node));
 };
 
 const makePropChecker =
-  (
-    suffixes: ReadonlyArray<string>,
-    services: ParserServicesWithTypeInformation,
-    report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-  ) =>
+  (checkNode: NodeChecker) =>
   (node: TSESTree.TSPropertySignature | TSESTree.PropertyDefinition) => {
     O.map((name: string) => {
-      checkNamedTypedNode(node, name, suffixes, services, report);
+      checkNode(node, name);
     })(resolvePropertyKeyName(node.key));
   };
 
 const makeFnParamChecker =
-  (
-    suffixes: ReadonlyArray<string>,
-    services: ParserServicesWithTypeInformation,
-    report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-  ) =>
+  (checkNode: NodeChecker) =>
   (node: { readonly params: ReadonlyArray<TSESTree.Parameter> }) => {
-    RA.map((p: TSESTree.Parameter) => {
-      checkParam(p, suffixes, services, report);
-    })(node.params);
+    RA.map(checkParam(checkNode))(node.params);
   };
 
-const makeListeners = (
-  suffixes: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => ({
-  TSPropertySignature: makePropChecker(suffixes, services, report),
-  PropertyDefinition: makePropChecker(suffixes, services, report),
-  VariableDeclarator: (node: TSESTree.VariableDeclarator) => { checkVariableDeclarator(node, suffixes, services, report); },
-  FunctionDeclaration: makeFnParamChecker(suffixes, services, report),
-  FunctionExpression: makeFnParamChecker(suffixes, services, report),
-  ArrowFunctionExpression: makeFnParamChecker(suffixes, services, report),
-  TSFunctionType: makeFnParamChecker(suffixes, services, report),
-  TSMethodSignature: makeFnParamChecker(suffixes, services, report),
-});
+const makeListeners = (env: UnitSuffixEnv) => {
+  const checkNode = checkNamedTypedNode(env);
+  const propChecker = makePropChecker(checkNode);
+  const fnParamChecker = makeFnParamChecker(checkNode);
+  return {
+    TSPropertySignature: propChecker,
+    PropertyDefinition: propChecker,
+    VariableDeclarator: checkVariableDeclarator(checkNode),
+    FunctionDeclaration: fnParamChecker,
+    FunctionExpression: fnParamChecker,
+    ArrowFunctionExpression: fnParamChecker,
+    TSFunctionType: fnParamChecker,
+    TSMethodSignature: fnParamChecker,
+  };
+};
 
 export const noUnitSuffixedPrimitives = createRule<Options, MessageIds>({
   name: "no-unit-suffixed-primitives",
@@ -211,5 +189,9 @@ export const noUnitSuffixedPrimitives = createRule<Options, MessageIds>({
     defaultOptions: [{ suffixes: [] }],
   },
   create: (context, [options]) =>
-    makeListeners(options.suffixes, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    makeListeners({
+      suffixes: options.suffixes,
+      services: ESLintUtils.getParserServices(context),
+      report: (d) => { context.report(d); },
+    }),
 });

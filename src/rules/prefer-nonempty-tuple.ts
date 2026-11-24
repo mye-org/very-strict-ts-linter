@@ -38,24 +38,27 @@ const isNonTupleArrayType = (type: ts.Type, checker: ts.TypeChecker) => {
 };
 
 const resolvePatternTargetNode = (pattern: TSESTree.ArrayPattern) =>
-  match(pattern.parent)
-    .with({ type: AST_NODE_TYPES.VariableDeclarator }, (d) => O.fromNullable(d.init))
-    .with({ type: AST_NODE_TYPES.AssignmentPattern }, (a) => O.some(a.left))
+  match(pattern)
+    .with({ parent: { type: AST_NODE_TYPES.VariableDeclarator, init: P.select() } }, O.fromNullable)
+    .with({ parent: { type: AST_NODE_TYPES.AssignmentPattern, left: P.select() } }, O.some)
     .with(P._, () => O.some<TSESTree.Node>(pattern))
     .exhaustive();
 
 const resolveTargetType = (
-  target: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) => checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(target));
+) =>
+  flow(
+    (target: TSESTree.Node) => services.esTreeNodeToTSNodeMap.get(target),
+    (tsNode) => checker.getTypeAtLocation(tsNode),
+  );
 
 const isTargetNonTuple = (
   target: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
 ) => {
   const checker = services.program.getTypeChecker();
-  return isNonTupleArrayType(resolveTargetType(target, services, checker), checker);
+  return isNonTupleArrayType(resolveTargetType(services, checker)(target), checker);
 };
 
 const isNonTupleDestructuring = (
@@ -167,14 +170,12 @@ const isParamArrayIdentifier = (
   );
 };
 
-const pickCheckedTarget = (
-  target: O.Option<TSESTree.Identifier>,
-  threshold: number,
-  node: TSESTree.BinaryExpression,
-) =>
-  isFixedArityThreshold(threshold) || isInFailureTernaryGuard(node)
-    ? target
-    : O.none;
+const pickCheckedTarget =
+  (node: TSESTree.BinaryExpression) =>
+  (target: O.Option<TSESTree.Identifier>, threshold: number) =>
+    isFixedArityThreshold(threshold) || isInFailureTernaryGuard(node)
+      ? target
+      : O.none;
 
 const extractCheckedArrayTarget = (node: TSESTree.BinaryExpression) =>
   LENGTH_OPERATORS.has(node.operator) && node.left.type !== AST_NODE_TYPES.PrivateIdentifier
@@ -185,10 +186,10 @@ const extractCheckedArrayTarget = (node: TSESTree.BinaryExpression) =>
         leftNum: resolveNumericLiteralValue(node.left),
       })
         .with({ leftLen: { _tag: "Some" }, rightNum: { _tag: "Some" } }, ({ leftLen, rightNum }) =>
-          pickCheckedTarget(leftLen, rightNum.value, node),
+          pickCheckedTarget(node)(leftLen, rightNum.value),
         )
         .with({ rightLen: { _tag: "Some" }, leftNum: { _tag: "Some" } }, ({ rightLen, leftNum }) =>
-          pickCheckedTarget(rightLen, leftNum.value, node),
+          pickCheckedTarget(node)(rightLen, leftNum.value),
         )
         .otherwise(() => O.none)
     : O.none;
@@ -202,13 +203,11 @@ const isRuntimeArrayLengthCheck = (
     extractCheckedArrayTarget(node),
   );
 
-const reportOpt = (
-  node: TSESTree.Node,
-  msg: O.Option<MessageIds>,
-  report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void,
-) => {
-  O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
-};
+const reportOpt =
+  (report: (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => void) =>
+  (node: TSESTree.Node, msg: O.Option<MessageIds>) => {
+    O.map((messageId: MessageIds) => { report({ node, messageId }); })(msg);
+  };
 
 export const preferNonemptyTuple = createRule<[], MessageIds>({
   name: "prefer-nonempty-tuple",
@@ -229,10 +228,10 @@ export const preferNonemptyTuple = createRule<[], MessageIds>({
   },
   create: (context) => {
     const services = ESLintUtils.getParserServices(context);
-    const rep = (d: Readonly<{ node: TSESTree.Node; messageId: MessageIds }>) => { context.report(d); };
+    const rep = reportOpt((d) => { context.report(d); });
     return {
-      ArrayPattern: (node) => { reportOpt(node, isNonTupleDestructuring(node, services) ? O.some("preferTupleDestructuring") : O.none, rep); },
-      BinaryExpression: (node) => { reportOpt(node, isRuntimeArrayLengthCheck(node, services) ? O.some("preferNonEmptyOrFixedTuple") : O.none, rep); },
+      ArrayPattern: (node) => { rep(node, isNonTupleDestructuring(node, services) ? O.some("preferTupleDestructuring") : O.none); },
+      BinaryExpression: (node) => { rep(node, isRuntimeArrayLengthCheck(node, services) ? O.some("preferNonEmptyOrFixedTuple") : O.none); },
     };
   },
 });

@@ -22,19 +22,24 @@ const formatDiscriminantFields = (cluster: DiscriminantCluster) => ({
   literals: cluster.literals.join(", "),
 });
 
+type DiscriminantEnv = Readonly<{
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
 const reportDiscriminant = (
+  env: DiscriminantEnv,
+) => (
   node: TSESTree.Node,
   byLocation: Readonly<Record<string, DiscriminantCluster>>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   O.map((cluster: DiscriminantCluster) => {
-    report({
+    env.report({
       node,
       messageId: "stringlyTypedDiscriminant",
       data: formatDiscriminantFields(cluster),
     });
-  })(O.fromNullable(byLocation[resolveNodeLocationKey(node, services)]));
+  })(O.fromNullable(byLocation[resolveNodeLocationKey(node, env.services)]));
 };
 
 const isWithProperty = (member: TSESTree.MemberExpression) =>
@@ -50,13 +55,13 @@ const extractFirstArgOfWithCall = flow(
 );
 
 const checkWithCall = (
+  env: DiscriminantEnv,
+) => (
   node: TSESTree.CallExpression,
   byLocation: Readonly<Record<string, DiscriminantCluster>>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   O.map((arg0: TSESTree.CallExpressionArgument) => {
-    reportDiscriminant(arg0, byLocation, services, report);
+    reportDiscriminant(env)(arg0, byLocation);
   })(extractFirstArgOfWithCall(node));
 };
 
@@ -85,13 +90,16 @@ export const noStringlyTypedDiscriminants = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => {
     const services = ESLintUtils.getParserServices(context);
-    const report = (d: TSESLint.ReportDescriptor<MessageIds>) => { context.report(d); };
+    const env: DiscriminantEnv = {
+      services,
+      report: (d) => { context.report(d); },
+    };
     const resolveByLoc = () => analyzeStringlyTypedDiscriminants(services.program, options.minBranches).byLocation;
-    const check = (node: TSESTree.Node) => { reportDiscriminant(node, resolveByLoc(), services, report); };
+    const check = (node: TSESTree.Node) => { reportDiscriminant(env)(node, resolveByLoc()); };
     return {
       BinaryExpression: check,
       SwitchCase: check,
-      CallExpression: (node) => { checkWithCall(node, resolveByLoc(), services, report); },
+      CallExpression: (node) => { checkWithCall(env)(node, resolveByLoc()); },
     };
   },
 });

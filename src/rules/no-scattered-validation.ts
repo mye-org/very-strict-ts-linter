@@ -33,31 +33,27 @@ const collectFileRegexes = flow(
   RA.filterMap(toRegexEntry),
 );
 
-const resolveProgramRegexes = (program: ts.Program) =>
-  memoizeByProgram(
-    program,
-    regexCountCache,
-    flow(collectProjectSourceFiles, RA.flatMap(collectFileRegexes)),
-  );
+const resolveProgramRegexes = memoizeByProgram(
+  regexCountCache,
+  flow(collectProjectSourceFiles, RA.flatMap(collectFileRegexes)),
+);
 
 const countUniqueFiles = flow(RA.uniq(S.Eq), RA.size);
 
 const collectMatchingRegexFiles = (
   pattern: string,
-  program: ts.Program,
-  voPatterns: ReadonlyArray<string>,
+  env: ValidationEnv,
 ) =>
   RA.filterMap((entry: Readonly<Record<"text" | "file", string>>) =>
-    entry.text === pattern && !isMatchingAnyPattern(entry.file, voPatterns)
+    entry.text === pattern && !isMatchingAnyPattern(entry.file, env.voPatterns)
       ? O.some(entry.file)
       : O.none,
-  )(resolveProgramRegexes(program));
+  )(resolveProgramRegexes(env.services.program));
 
 const isDuplicatedNonVoRegex = (
   pattern: string,
-  program: ts.Program,
-  voPatterns: ReadonlyArray<string>,
-) => countUniqueFiles(collectMatchingRegexFiles(pattern, program, voPatterns)) >= 2;
+  env: ValidationEnv,
+) => countUniqueFiles(collectMatchingRegexFiles(pattern, env)) >= 2;
 
 const isFunctionLikeAstNode = (p: TSESTree.Node) =>
   p.type === AST_NODE_TYPES.FunctionDeclaration ||
@@ -95,10 +91,13 @@ const resolveFunctionLikeTsNode = (
 ) => O.fromPredicate(ts.isFunctionLike)(services.esTreeNodeToTSNodeMap.get(fn));
 
 const resolveFunctionSignature = (
-  fn: TSESTree.Node,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
-) => O.flatMap(lookupSignature(checker))(resolveFunctionLikeTsNode(fn, services));
+) =>
+  flow(
+    (fn: TSESTree.Node) => resolveFunctionLikeTsNode(fn, services),
+    O.flatMap(lookupSignature(checker)),
+  );
 
 const hasBrandedReturnType = (
   fn: TSESTree.Node,
@@ -106,7 +105,7 @@ const hasBrandedReturnType = (
 ) => {
   const checker = services.program.getTypeChecker();
   return O.exists((sig: ts.Signature) => isBrandedSignature(sig, checker))(
-    resolveFunctionSignature(fn, services, checker),
+    resolveFunctionSignature(services, checker)(fn),
   );
 };
 
@@ -122,13 +121,15 @@ const hasVoFactoryAncestor = (
       hasVoFactoryAncestor(p, services),
   )(O.fromNullable(node.parent));
 
-const isInsideVoFactory = (
-  node: TSESTree.Node,
-  fileName: string,
-  voPatterns: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-) =>
-  isMatchingAnyPattern(fileName, voPatterns) || hasVoFactoryAncestor(node, services);
+type ValidationEnv = Readonly<{
+  readonly sourceFile: ts.SourceFile;
+  readonly voPatterns: ReadonlyArray<string>;
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
+const isInsideVoFactory = (node: TSESTree.Node, env: ValidationEnv) =>
+  isMatchingAnyPattern(env.sourceFile.fileName, env.voPatterns) || hasVoFactoryAncestor(node, env.services);
 
 const hasMemberPropertyIn = (
   member: TSESTree.MemberExpression,
@@ -178,25 +179,22 @@ const isRegexLiteral = (node: TSESTree.Literal) => "regex" in node && Boolean(no
 
 const isScatteredRegexLiteral = (
   node: TSESTree.Literal,
-  program: ts.Program,
-  voPatterns: ReadonlyArray<string>,
-  voScope: VoScope,
+  target: Readonly<{ readonly voScope: VoScope; readonly env: ValidationEnv }>,
 ) =>
   isRegexLiteral(node) &&
-  voScope === "non-vo" &&
+  target.voScope === "non-vo" &&
   ((isInsideFunctionLike(node) && isRegexValidationCall(node)) ||
-    isDuplicatedNonVoRegex(node.raw, program, voPatterns));
+    isDuplicatedNonVoRegex(node.raw, target.env));
 
 const checkLiteralNode = (
+  env: ValidationEnv,
+) => (
   node: TSESTree.Literal,
-  program: ts.Program,
-  voPatterns: ReadonlyArray<string>,
   voScope: VoScope,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  match(isScatteredRegexLiteral(node, program, voPatterns, voScope))
+  match(isScatteredRegexLiteral(node, { voScope, env }))
     .with(true, () => {
-      report({ node, messageId: "scatteredRegex", data: { pattern: node.raw } });
+      env.report({ node, messageId: "scatteredRegex", data: { pattern: node.raw } });
     })
     .with(false, () => {})
     .exhaustive();
@@ -206,38 +204,33 @@ const reportValidationCall = (
   node: TSESTree.CallExpression,
   report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
-  match(node.callee)
-    .with({ type: AST_NODE_TYPES.Identifier }, (id) => {
-      report({ node, messageId: "scatteredValidationCall", data: { name: id.name } });
+  match(node)
+    .with({ callee: { type: AST_NODE_TYPES.Identifier } }, (matched) => {
+      report({ node: matched, messageId: "scatteredValidationCall", data: { name: matched.callee.name } });
     })
     .with(P._, () => {})
     .exhaustive();
 };
 
 const checkCallNode = (
+  env: ValidationEnv,
+) => (
   node: TSESTree.CallExpression,
   voScope: VoScope,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   match({
     voScope,
     isNorm: isTrimCaseChain(node),
-    isVal: isValidationHelperCall(node, services),
+    isVal: isValidationHelperCall(node, env.services),
   })
-    .with({ voScope: "non-vo", isNorm: true }, () => { report({ node, messageId: "scatteredNormalization" }); })
-    .with({ voScope: "non-vo", isVal: true }, () => { reportValidationCall(node, report); })
+    .with({ voScope: "non-vo", isNorm: true }, () => { env.report({ node, messageId: "scatteredNormalization" }); })
+    .with({ voScope: "non-vo", isVal: true }, () => { reportValidationCall(node, env.report); })
     .with(P._, () => {})
     .exhaustive();
 };
 
-const resolveVoScope = (
-  node: TSESTree.Node,
-  fileName: string,
-  voPatterns: ReadonlyArray<string>,
-  services: ParserServicesWithTypeInformation,
-) =>
-  isInsideVoFactory(node, fileName, voPatterns, services)
+const resolveVoScope = (env: ValidationEnv) => (node: TSESTree.Node) =>
+  isInsideVoFactory(node, env)
     ? ("vo" as const)
     : ("non-vo" as const);
 
@@ -270,14 +263,16 @@ export const noScatteredValidation = createRule<Options, MessageIds>({
   },
   create: (context, [options]) => {
     const services = ESLintUtils.getParserServices(context);
-    const resolveScope = (node: TSESTree.Node) =>
-      resolveVoScope(node, context.filename, options.valueObjectPathPatterns, services);
-    const report = (d: TSESLint.ReportDescriptor<MessageIds>) => { context.report(d); };
+    const env: ValidationEnv = {
+      sourceFile: services.esTreeNodeToTSNodeMap.get(context.sourceCode.ast).getSourceFile(),
+      voPatterns: options.valueObjectPathPatterns,
+      services,
+      report: (d) => { context.report(d); },
+    };
+    const resolveScope = resolveVoScope(env);
     return {
-      Literal: (node) => {
-        checkLiteralNode(node, services.program, options.valueObjectPathPatterns, resolveScope(node), report);
-      },
-      CallExpression: (node) => { checkCallNode(node, resolveScope(node), services, report); },
+      Literal: (node) => { checkLiteralNode(env)(node, resolveScope(node)); },
+      CallExpression: (node) => { checkCallNode(env)(node, resolveScope(node)); },
     };
   },
 });

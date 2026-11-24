@@ -17,22 +17,19 @@ const isExemptAsyncFn = (node: AnyFunctionNode) =>
   O.exists(isUnsafeOrMustName)(resolveDirectFunctionName(node));
 
 const reportWhen = <N extends TSESTree.Node>(
-  node: N,
   predicate: Pred.Predicate<N>,
   onMatch: (n: N) => void,
-) => {
+) => (node: N) => {
   O.map(onMatch)(O.fromPredicate(predicate)(node));
 };
 
 const makeAsyncFnChecker =
-  (reportAsync: (n: AnyFunctionNode) => void) => (node: AnyFunctionNode) => {
-    reportWhen(node, (n) => n.async && !isExemptAsyncFn(n), reportAsync);
-  };
+  (reportAsync: (n: AnyFunctionNode) => void) =>
+    reportWhen((n: AnyFunctionNode) => n.async && !isExemptAsyncFn(n), reportAsync);
 
 const makeAwaitChecker =
-  (reportAwait: (n: TSESTree.Node) => void) => (node: TSESTree.Node) => {
-    reportWhen(node, (n) => !isInsideUnsafeOrMustFunction(n), reportAwait);
-  };
+  (reportAwait: (n: TSESTree.Node) => void) =>
+    reportWhen((n: TSESTree.Node) => !isInsideUnsafeOrMustFunction(n), reportAwait);
 
 const buildVisitors = (
   reportAsync: (n: AnyFunctionNode) => void,
@@ -44,12 +41,14 @@ const buildVisitors = (
     FunctionExpression: checkAsyncFn,
     ArrowFunctionExpression: checkAsyncFn,
     AwaitExpression: makeAwaitChecker(reportAwait),
-    ForOfStatement: (node: TSESTree.ForOfStatement) => {
-      reportWhen(node, (n) => n.await && !isInsideUnsafeOrMustFunction(n), reportAwait);
-    },
-    VariableDeclaration: (node: TSESTree.VariableDeclaration) => {
-      reportWhen(node, (n) => n.kind === "await using" && !isInsideUnsafeOrMustFunction(n), reportAwait);
-    },
+    ForOfStatement: reportWhen(
+      (n: TSESTree.ForOfStatement) => n.await && !isInsideUnsafeOrMustFunction(n),
+      reportAwait,
+    ),
+    VariableDeclaration: reportWhen(
+      (n: TSESTree.VariableDeclaration) => n.kind === "await using" && !isInsideUnsafeOrMustFunction(n),
+      reportAwait,
+    ),
   };
 };
 

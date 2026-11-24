@@ -71,27 +71,29 @@ const isModelDeclaration = (
 ): node is ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration =>
   ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node);
 
-const buildModelDefIfLarge = (
-  node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration,
-  name: string,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) => {
-  const props = extractPropNames(checker.getTypeAtLocation(node));
-  return props.length >= 4
-    ? O.some<ModelDef>({
-        modelKey: makeModelKey(sf.fileName, name),
-        modelName: name,
-        location: resolveTsNodeLocation(node, sf),
-        fields: new Set(props),
-      })
-    : O.none;
-};
+const buildModelDefIfLarge =
+  (checker: ts.TypeChecker) =>
+  (
+    node: ts.TypeAliasDeclaration | ts.InterfaceDeclaration | ts.ClassDeclaration,
+    sf: ts.SourceFile,
+  ) => {
+    const name = node.name?.text ?? "";
+    const props = extractPropNames(checker.getTypeAtLocation(node));
+    return props.length >= 4
+      ? O.some<ModelDef>({
+          modelKey: makeModelKey(sf.fileName, name),
+          modelName: name,
+          location: resolveTsNodeLocation(node, sf),
+          fields: new Set(props),
+        })
+      : O.none;
+  };
 
-const extractModelDef = (node: ts.Node, sf: ts.SourceFile, checker: ts.TypeChecker) =>
-  isModelDeclaration(node) && node.name
-    ? buildModelDefIfLarge(node, node.name.text, sf, checker)
-    : O.none;
+const extractModelDef =
+  (checker: ts.TypeChecker) => (node: ts.Node, sf: ts.SourceFile) =>
+    isModelDeclaration(node) && node.name
+      ? buildModelDefIfLarge(checker)(node, sf)
+      : O.none;
 
 const resolveModelKeyForType = (type: ts.Type) => {
   const nameOpt = resolveTsTypeName(type);
@@ -112,33 +114,25 @@ type EdgeExtractionContext = Readonly<{
 
 const hasModelField = (
   models: Readonly<Record<string, ModelDef>>,
-  modelKey: string,
-  fieldName: string,
+  { modelKey, fieldName }: Readonly<Record<"modelKey" | "fieldName", string>>,
 ) => O.exists((m: ModelDef) => m.fields.has(fieldName))(RR.lookup(modelKey, models));
 
-const resolveMatchingModelEdge = (
-  modulePath: string,
-  fieldName: string,
-  models: Readonly<Record<string, ModelDef>>,
-) =>
-  flow(
-    resolveModelKeyForType,
-    O.filter((modelKey: string) => hasModelField(models, modelKey, fieldName)),
-    O.map((modelKey: string) => ({ modelKey, modulePath, field: fieldName })),
-  );
+const resolveMatchingModelEdge =
+  (models: Readonly<Record<string, ModelDef>>) => (modulePath: string, fieldName: string) =>
+    flow(
+      resolveModelKeyForType,
+      O.filter((modelKey: string) => hasModelField(models, { modelKey, fieldName })),
+      O.map((modelKey: string) => ({ modelKey, modulePath, field: fieldName })),
+    );
 
-const extractPropAccessEdge = (
-  node: ts.PropertyAccessExpression,
-  modulePath: string,
-  { candidateFieldNames, models, checker }: EdgeExtractionContext,
-) =>
-  candidateFieldNames.has(node.name.text) && !isIgnoredReceiver(node.expression)
-    ? resolveMatchingModelEdge(
-        modulePath,
-        node.name.text,
-        models,
-      )(checker.getTypeAtLocation(node.expression))
-    : O.none;
+const extractPropAccessEdge =
+  ({ candidateFieldNames, models, checker }: EdgeExtractionContext) =>
+  (node: ts.PropertyAccessExpression, modulePath: string) =>
+    candidateFieldNames.has(node.name.text) && !isIgnoredReceiver(node.expression)
+      ? resolveMatchingModelEdge(models)(modulePath, node.name.text)(
+          checker.getTypeAtLocation(node.expression),
+        )
+      : O.none;
 
 const resolveExplicitBindingName = (propName: ts.PropertyName) =>
   ts.isIdentifier(propName) ? O.some(propName.text) : O.none;
@@ -178,49 +172,39 @@ const resolveEdgesForModelKey = (
     ),
   );
 
-const resolveBindingEdgesForFields = (
-  pattern: ts.ObjectBindingPattern,
-  target: BindingEdgeTarget,
-  { models, checker }: EdgeExtractionContext,
-) => resolveEdgesForModelKey(target, models)(checker.getTypeAtLocation(pattern));
+const resolveBindingEdgesForFields =
+  ({ models, checker }: EdgeExtractionContext) =>
+  (pattern: ts.ObjectBindingPattern, target: BindingEdgeTarget) =>
+    resolveEdgesForModelKey(target, models)(checker.getTypeAtLocation(pattern));
 
-const extractBindingEdges = (
-  pattern: ts.ObjectBindingPattern,
-  modulePath: string,
-  ctx: EdgeExtractionContext,
-) => {
-  const fields = RA.filter((f: string) => ctx.candidateFieldNames.has(f))(
-    RA.filterMap(resolveBindingFieldName)(pattern.elements),
-  );
-  return fields.length === 0
-    ? ([] satisfies ReadonlyArray<AccessEdge>)
-    : resolveBindingEdgesForFields(pattern, { fields, modulePath }, ctx);
-};
+const extractBindingEdges =
+  (ctx: EdgeExtractionContext) => (pattern: ts.ObjectBindingPattern, modulePath: string) => {
+    const fields = RA.filter((f: string) => ctx.candidateFieldNames.has(f))(
+      RA.filterMap(resolveBindingFieldName)(pattern.elements),
+    );
+    return fields.length === 0
+      ? ([] satisfies ReadonlyArray<AccessEdge>)
+      : resolveBindingEdgesForFields(ctx)(pattern, { fields, modulePath });
+  };
 
-const extractFilePropAccessEdges = (
-  nodes: ReadonlyArray<ts.Node>,
-  modulePath: string,
-  ctx: EdgeExtractionContext,
-) =>
-  RA.filterMap((n: ts.PropertyAccessExpression) => extractPropAccessEdge(n, modulePath, ctx))(
-    RA.filter(ts.isPropertyAccessExpression)(nodes),
-  );
+const extractFilePropAccessEdges =
+  (ctx: EdgeExtractionContext) => (nodes: ReadonlyArray<ts.Node>, modulePath: string) =>
+    RA.filterMap((n: ts.PropertyAccessExpression) => extractPropAccessEdge(ctx)(n, modulePath))(
+      RA.filter(ts.isPropertyAccessExpression)(nodes),
+    );
 
-const extractFileBindingEdges = (
-  nodes: ReadonlyArray<ts.Node>,
-  modulePath: string,
-  ctx: EdgeExtractionContext,
-) =>
-  RA.flatMap((n: ts.ObjectBindingPattern) => extractBindingEdges(n, modulePath, ctx))(
-    RA.filter(ts.isObjectBindingPattern)(nodes),
-  );
+const extractFileBindingEdges =
+  (ctx: EdgeExtractionContext) => (nodes: ReadonlyArray<ts.Node>, modulePath: string) =>
+    RA.flatMap((n: ts.ObjectBindingPattern) => extractBindingEdges(ctx)(n, modulePath))(
+      RA.filter(ts.isObjectBindingPattern)(nodes),
+    );
 
 const extractEdgesFromFile = (ctx: EdgeExtractionContext) => (sf: ts.SourceFile) => {
   const nodes = collectTsNodes(sf, sf);
   const modulePath = normalizeFilePath(sf.fileName);
   return [
-    ...extractFilePropAccessEdges(nodes, modulePath, ctx),
-    ...extractFileBindingEdges(nodes, modulePath, ctx),
+    ...extractFilePropAccessEdges(ctx)(nodes, modulePath),
+    ...extractFileBindingEdges(ctx)(nodes, modulePath),
   ];
 };
 
@@ -229,7 +213,7 @@ const collectFileNodes = (sf: ts.SourceFile) => collectTsNodes(sf, sf);
 const extractFileModels = (checker: ts.TypeChecker) =>
   flow(
     (sf: ts.SourceFile) => ({ sf, nodes: collectFileNodes(sf) }),
-    ({ sf, nodes }) => RA.filterMap((n: ts.Node) => extractModelDef(n, sf, checker))(nodes),
+    ({ sf, nodes }) => RA.filterMap((n: ts.Node) => extractModelDef(checker)(n, sf))(nodes),
   );
 
 const indexModelsByKey = flow(
@@ -245,20 +229,18 @@ const collectCandidateFieldNames = (models: Readonly<Record<string, ModelDef>>) 
     RA.flatMap(([, m]: readonly [string, ModelDef]) => Array.from(m.fields))(RR.toEntries(models)),
   );
 
-const collectEdgesByModel = (
-  files: ReadonlyArray<ts.SourceFile>,
-  models: Readonly<Record<string, ModelDef>>,
-  checker: ts.TypeChecker,
-) =>
-  RNEA.groupBy((edge: AccessEdge) => edge.modelKey)(
-    RA.flatMap(
-      extractEdgesFromFile({
-        candidateFieldNames: collectCandidateFieldNames(models),
-        models,
-        checker,
-      }),
-    )(files),
-  );
+const collectEdgesByModel =
+  (checker: ts.TypeChecker) =>
+  (files: ReadonlyArray<ts.SourceFile>, models: Readonly<Record<string, ModelDef>>) =>
+    RNEA.groupBy((edge: AccessEdge) => edge.modelKey)(
+      RA.flatMap(
+        extractEdgesFromFile({
+          candidateFieldNames: collectCandidateFieldNames(models),
+          models,
+          checker,
+        }),
+      )(files),
+    );
 
 const collectProgramPolysemyGraph = (program: ts.Program) => {
   const checker = program.getTypeChecker();
@@ -266,29 +248,28 @@ const collectProgramPolysemyGraph = (program: ts.Program) => {
   const models = collectModelsFromFiles(files, checker);
   return {
     models,
-    edgesByModel: collectEdgesByModel(files, models, checker),
+    edgesByModel: collectEdgesByModel(checker)(files, models),
   };
 };
 
-const resolveProgramPolysemyGraph = (program: ts.Program) =>
-  memoizeByProgram(program, polysemyCache, collectProgramPolysemyGraph);
+const resolveProgramPolysemyGraph = memoizeByProgram(polysemyCache, collectProgramPolysemyGraph);
 
 const countSharedFields = (a: ReadonlyArray<string>, setB: ReadonlySet<string>) =>
   RA.filter((x: string) => setB.has(x))(a).length;
 
-const computeJaccard = (a: ReadonlyArray<string>, b: ReadonlyArray<string>, unionSize: number) =>
-  unionSize === 0 ? 1 : countSharedFields(a, new Set(b)) / unionSize;
-
-const jaccardSimilarity = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
-  computeJaccard(a, b, new Set([...a, ...b]).size);
+const jaccardSimilarity = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) => {
+  const unionSize = new Set([...a, ...b]).size;
+  return unionSize === 0 ? 1 : countSharedFields(a, new Set(b)) / unionSize;
+};
 
 type IndexedCluster = Readonly<Record<"idx", number> & { readonly cluster: ModuleFieldUsage }>;
 
 const hasLaterLowOverlap = (
-  indexed: ReadonlyArray<IndexedCluster>,
-  idx1: number,
-  c1: ModuleFieldUsage,
-  maxOverlap: number,
+  { idx: idx1, cluster: c1 }: IndexedCluster,
+  {
+    indexed,
+    maxOverlap,
+  }: Readonly<Record<"maxOverlap", number> & { readonly indexed: ReadonlyArray<IndexedCluster> }>,
 ) =>
   RA.some(
     ({ idx: idx2, cluster: c2 }: IndexedCluster) =>
@@ -296,9 +277,7 @@ const hasLaterLowOverlap = (
   )(indexed);
 
 const hasOverlapBelow = (indexed: ReadonlyArray<IndexedCluster>, maxOverlap: number) =>
-  RA.some(({ idx: idx1, cluster: c1 }: IndexedCluster) =>
-    hasLaterLowOverlap(indexed, idx1, c1, maxOverlap),
-  )(indexed);
+  RA.some((entry: IndexedCluster) => hasLaterLowOverlap(entry, { indexed, maxOverlap }))(indexed);
 
 const hasDisjointPair = (clusters: ReadonlyArray<ModuleFieldUsage>, maxOverlap: number) =>
   hasOverlapBelow(
@@ -396,21 +375,22 @@ const extractPolysemyFindings = (thresholds: PolysemyThresholds) =>
 const computePolysemyIndexForThresholds = (thresholds: PolysemyThresholds) =>
   flow(resolveProgramPolysemyGraph, extractPolysemyFindings(thresholds), indexPolysemyFindings);
 
-const makePolysemyCacheKey = (
-  minFields: number,
-  minClusterFields: number,
-  maxOverlap: number,
-) => `${String(minFields)}:${String(minClusterFields)}:${String(maxOverlap)}`;
+const DEFAULT_POLYSEMY_THRESHOLDS: PolysemyThresholds = {
+  minFields: 4,
+  minClusterFields: 2,
+  maxOverlap: 0.2,
+};
+
+const makePolysemyCacheKey = (thresholds: PolysemyThresholds) =>
+  `${String(thresholds.minFields)}:${String(thresholds.minClusterFields)}:${String(thresholds.maxOverlap)}`;
 
 export const analyzePolysemy = (
   program: ts.Program,
-  minFields = 4,
-  minClusterFields = 2,
-  maxOverlap = 0.2,
-): PolysemyIndex =>
-  memoizeByProgramAndKey(
-    program,
-    makePolysemyCacheKey(minFields, minClusterFields, maxOverlap),
+  thresholds: Partial<PolysemyThresholds> = {},
+): PolysemyIndex => {
+  const resolved: PolysemyThresholds = { ...DEFAULT_POLYSEMY_THRESHOLDS, ...thresholds };
+  return memoizeByProgramAndKey(
     polysemyIndexCache,
-    computePolysemyIndexForThresholds({ minFields, minClusterFields, maxOverlap }),
-  );
+    computePolysemyIndexForThresholds(resolved),
+  )(program, makePolysemyCacheKey(resolved));
+};

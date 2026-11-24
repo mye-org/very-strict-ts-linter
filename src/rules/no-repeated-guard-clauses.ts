@@ -27,45 +27,41 @@ const formatClusterFields = (cluster: GuardCluster) => ({
   preview: cluster.preview,
 });
 
+type GuardClauseEnv = Readonly<{
+  readonly options: Options[0];
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
 const reportRepeatedGuard = (
+  env: GuardClauseEnv,
+) => (
   node: TSESTree.LogicalExpression,
   byLocation: Readonly<Record<string, ReadonlyArray<GuardCluster>>>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   O.map((cluster: GuardCluster) => {
-    report({
+    env.report({
       node,
       messageId: "repeatedGuardClause",
       data: formatClusterFields(cluster),
     });
-  })(O.fromNullable(byLocation[resolveLogicalLocationKey(node, services)]?.[0]));
+  })(O.fromNullable(byLocation[resolveLogicalLocationKey(node, env.services)]?.[0]));
 };
 
-const checkLogicalExpr = (
-  node: TSESTree.LogicalExpression,
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const checkLogicalExpr = (env: GuardClauseEnv) => (node: TSESTree.LogicalExpression) => {
   O.map((n: TSESTree.LogicalExpression) => {
-    reportRepeatedGuard(
+    reportRepeatedGuard(env)(
       n,
-      analyzeGuardClauses(services.program, options.minClauses, options.minOccurrences).byLocation,
-      services,
-      report,
+      analyzeGuardClauses(env.services.program, {
+        minClauses: env.options.minClauses,
+        minOccurrences: env.options.minOccurrences,
+      }).byLocation,
     );
   })(O.fromPredicate(isTopLevelLogical)(node));
 };
 
-const buildGuardListeners = (
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => ({
-  LogicalExpression: (node: TSESTree.LogicalExpression) => {
-    checkLogicalExpr(node, options, services, report);
-  },
+const buildGuardListeners = (env: GuardClauseEnv) => ({
+  LogicalExpression: checkLogicalExpr(env),
 });
 
 export const noRepeatedGuardClauses = createRule<Options, MessageIds>({
@@ -93,5 +89,9 @@ export const noRepeatedGuardClauses = createRule<Options, MessageIds>({
     defaultOptions: [{ minClauses: 2, minOccurrences: 2 }],
   },
   create: (context, [options]) =>
-    buildGuardListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    buildGuardListeners({
+      options,
+      services: ESLintUtils.getParserServices(context),
+      report: (d) => { context.report(d); },
+    }),
 });

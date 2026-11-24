@@ -26,26 +26,30 @@ const resolveSpreadTarget = flow(
   O.map((spread) => spread.argument),
 );
 
-const isChildPropertyAccess = (
-  innerTarget: TSESTree.Expression,
-  outerTarget: TSESTree.Expression,
-  propKey: string,
-) =>
+const isChildPropertyAccess = ([
+  innerTarget,
+  outerTarget,
+  propKey,
+]: readonly [TSESTree.Expression, TSESTree.Expression, string]) =>
   innerTarget.type === AST_NODE_TYPES.MemberExpression &&
   !innerTarget.computed &&
   innerTarget.property.type === AST_NODE_TYPES.Identifier &&
   innerTarget.property.name === propKey &&
   isSameEsTreeAccessExpr(innerTarget.object, outerTarget);
 
-const isMatchingNestedSpreadObj = (
-  prop: TSESTree.Property,
-  obj: TSESTree.ObjectExpression,
-  outerTarget: TSESTree.Expression,
-) =>
+const isMatchingNestedSpreadObj = ({
+  prop,
+  obj,
+  outerTarget,
+}: Readonly<{
+  prop: TSESTree.Property;
+  obj: TSESTree.ObjectExpression;
+  outerTarget: TSESTree.Expression;
+}>) =>
   obj.properties.length >= 2 &&
   match([resolveStaticPropertyKey(prop), resolveSpreadTarget(obj)] as const)
-    .with([{ _tag: "Some" }, { _tag: "Some" }], ([{ value: key }, { value: innerTarget }]) =>
-      isChildPropertyAccess(innerTarget, outerTarget, key),
+    .with([{ _tag: "Some" }, { _tag: "Some" }], ([{ value: propKey }, { value: innerTarget }]) =>
+      isChildPropertyAccess([innerTarget, outerTarget, propKey]),
     )
     .otherwise(() => false);
 
@@ -55,7 +59,7 @@ const isMatchingNestedSpreadProp = (
 ) =>
   prop.type === AST_NODE_TYPES.Property &&
   prop.value.type === AST_NODE_TYPES.ObjectExpression &&
-  isMatchingNestedSpreadObj(prop, prop.value, outerTarget);
+  isMatchingNestedSpreadObj({ prop, obj: prop.value, outerTarget });
 
 const extractNestedSpreadObject = (
   prop: TSESTree.ObjectLiteralElement,
@@ -104,27 +108,23 @@ const isInsideMatchingParentSpread = (node: TSESTree.ObjectExpression) =>
   node.parent.value === node &&
   isChildOfMatchingSpreadObj(node.parent);
 
-const reportIfDeepSpread = (
-  depth: number,
-  minDepth: number,
-  report: (depth: number) => void,
-) => {
-  match(depth >= minDepth)
-    .with(true, () => { report(depth); })
-    .with(false, () => {})
-    .exhaustive();
-};
+const reportIfDeepSpread =
+  (minDepth: number, report: (node: TSESTree.ObjectExpression, depth: number) => void) =>
+  (node: TSESTree.ObjectExpression, depth: number) => {
+    match(depth >= minDepth)
+      .with(true, () => { report(node, depth); })
+      .with(false, () => {})
+      .exhaustive();
+  };
 
-const checkObjectExpression = (
-  node: TSESTree.ObjectExpression,
-  minDepth: number,
-  report: (depth: number) => void,
-) => {
-  match(isInsideMatchingParentSpread(node))
-    .with(false, () => { reportIfDeepSpread(computeSpreadDepth(node), minDepth, report); })
-    .with(true, () => {})
-    .exhaustive();
-};
+const checkObjectExpression =
+  (minDepth: number, report: (node: TSESTree.ObjectExpression, depth: number) => void) =>
+  (node: TSESTree.ObjectExpression) => {
+    match(isInsideMatchingParentSpread(node))
+      .with(false, () => { reportIfDeepSpread(minDepth, report)(node, computeSpreadDepth(node)); })
+      .with(true, () => {})
+      .exhaustive();
+  };
 
 const formatSpreadDepthFields = (depth: number, minDepth: number) => ({
   depth: String(depth),
@@ -155,14 +155,12 @@ export const preferLensOverNestedSpread = createRule<Options, MessageIds>({
     defaultOptions: [{ minDepth: 2 }],
   },
   create: (context, [options]) => ({
-    ObjectExpression: (node) => {
-      checkObjectExpression(node, options.minDepth, (depth) => {
-        context.report({
-          node,
-          messageId: "preferLens",
-          data: formatSpreadDepthFields(depth, options.minDepth),
-        });
+    ObjectExpression: checkObjectExpression(options.minDepth, (node, depth) => {
+      context.report({
+        node,
+        messageId: "preferLens",
+        data: formatSpreadDepthFields(depth, options.minDepth),
       });
-    },
+    }),
   }),
 });

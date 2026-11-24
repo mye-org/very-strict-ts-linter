@@ -36,32 +36,36 @@ const resolveModelKey = (
   services: ParserServicesWithTypeInformation,
 ) => resolveTsLocationKey(services.esTreeNodeToTSNodeMap.get(node));
 
+type PolysemyEnv = Readonly<{
+  readonly options: Options[0];
+  readonly services: ParserServicesWithTypeInformation;
+  readonly report: (d: TSESLint.ReportDescriptor<MessageIds>) => void;
+}>;
+
 const checkModelNode = (
+  env: PolysemyEnv,
+) => (
   node: ModelDeclNode,
   byLocation: Readonly<Record<string, PolysemyFinding>>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
 ) => {
   O.map((finding: PolysemyFinding) => {
-    report({
+    env.report({
       node: node.id ?? node,
       messageId: "modelPolysemy",
       data: { model: finding.modelName, clusters: formatClusters(finding) },
     });
-  })(O.fromNullable(byLocation[resolveModelKey(node, services)]));
+  })(O.fromNullable(byLocation[resolveModelKey(node, env.services)]));
 };
 
-const buildPolysemyListeners = (
-  options: Options[0],
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
+const buildPolysemyListeners = (env: PolysemyEnv) => {
   const check = (node: ModelDeclNode) => {
-    checkModelNode(
+    checkModelNode(env)(
       node,
-      analyzePolysemy(services.program, options.minFields, options.minClusterFields, options.maxOverlap).byLocation,
-      services,
-      report,
+      analyzePolysemy(env.services.program, {
+        minFields: env.options.minFields,
+        minClusterFields: env.options.minClusterFields,
+        maxOverlap: env.options.maxOverlap,
+      }).byLocation,
     );
   };
   return {
@@ -97,5 +101,9 @@ export const noModelPolysemy = createRule<Options, MessageIds>({
     defaultOptions: [{ minFields: 4, minClusterFields: 2, maxOverlap: 0.2 }],
   },
   create: (context, [options]) =>
-    buildPolysemyListeners(options, ESLintUtils.getParserServices(context), (d) => { context.report(d); }),
+    buildPolysemyListeners({
+      options,
+      services: ESLintUtils.getParserServices(context),
+      report: (d) => { context.report(d); },
+    }),
 });

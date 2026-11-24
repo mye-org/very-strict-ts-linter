@@ -168,26 +168,23 @@ const makeSlotKey = (fnKey: string, paramIndex: number) => `${fnKey}#${String(pa
 const resolveParamSymbol = (id: ts.Identifier, checker: ts.TypeChecker) =>
   O.fromNullable(checker.getSymbolAtLocation(id));
 
-const extractParamSlot = (
-  param: ts.ParameterDeclaration,
-  index: number,
-  checker: ts.TypeChecker,
-) =>
-  match(param.name)
-    .when(ts.isIdentifier, (paramId) => {
-      const typeOpt = resolveContextTypeName(param, checker);
-      const symOpt = resolveParamSymbol(paramId, checker);
-      return O.isSome(typeOpt) && O.isSome(symOpt)
-        ? O.some<ParamSlot>({
-            index,
-            name: paramId.text,
-            typeName: typeOpt.value,
-            symbol: symOpt.value,
-          })
-        : O.none;
-    })
-    .with(P._, () => O.none)
-    .exhaustive();
+const extractParamSlot =
+  (checker: ts.TypeChecker) => (param: ts.ParameterDeclaration, index: number) =>
+    match(param)
+      .with({ name: P.when(ts.isIdentifier) }, (p) => {
+        const typeOpt = resolveContextTypeName(p, checker);
+        const symOpt = resolveParamSymbol(p.name, checker);
+        return O.isSome(typeOpt) && O.isSome(symOpt)
+          ? O.some<ParamSlot>({
+              index,
+              name: p.name.text,
+              typeName: typeOpt.value,
+              symbol: symOpt.value,
+            })
+          : O.none;
+      })
+      .with(P._, () => O.none)
+      .exhaustive();
 
 const toParamArray = (params: ts.NodeArray<ts.ParameterDeclaration>) => Array.from(params);
 
@@ -195,53 +192,54 @@ const collectParamSlots = (
   params: ts.NodeArray<ts.ParameterDeclaration>,
   checker: ts.TypeChecker,
 ) =>
-  RA.filterMapWithIndex((idx, p: ts.ParameterDeclaration) => extractParamSlot(p, idx, checker))(
-    toParamArray(params),
-  );
+  RA.filterMapWithIndex((idx, p: ts.ParameterDeclaration) =>
+    extractParamSlot(checker)(p, idx),
+  )(toParamArray(params));
 
-const buildFunctionEntry = (spec: NamedTsFunction, sf: ts.SourceFile, checker: ts.TypeChecker) => ({
-  key: makeFnKey(sf, spec.name),
-  name: spec.name,
-  fnBody: spec.fnBody,
-  sf,
-  location: resolveTsNodeLocation(spec.locNode, sf),
-  paramSlots: collectParamSlots(spec.paramNodes, checker),
-});
+const buildFunctionEntry =
+  (checker: ts.TypeChecker) => (spec: NamedTsFunction, sf: ts.SourceFile) => ({
+    key: makeFnKey(sf, spec.name),
+    name: spec.name,
+    fnBody: spec.fnBody,
+    sf,
+    location: resolveTsNodeLocation(spec.locNode, sf),
+    paramSlots: collectParamSlots(spec.paramNodes, checker),
+  });
 
-const extractNamedFunction = (node: ts.Node, sf: ts.SourceFile, checker: ts.TypeChecker) =>
-  O.map((spec: NamedTsFunction) => buildFunctionEntry(spec, sf, checker))(
-    extractNamedTsFunction(node),
-  );
+const extractNamedFunction =
+  (checker: ts.TypeChecker) => (node: ts.Node, sf: ts.SourceFile) =>
+    O.map((spec: NamedTsFunction) => buildFunctionEntry(checker)(spec, sf))(
+      extractNamedTsFunction(node),
+    );
 
 const hasCallArgument = (call: ts.CallExpression, id: ts.Identifier) => call.arguments.includes(id);
 
 const isDirectCallArgument = (id: ts.Identifier) =>
   ts.isCallExpression(id.parent) && hasCallArgument(id.parent, id);
 
-const findParamReferences = (fn: FunctionEntry, slot: ParamSlot, checker: ts.TypeChecker) =>
-  RA.filter(
-    (n: ts.Node): n is ts.Identifier =>
-      ts.isIdentifier(n) &&
-      n.text === slot.name &&
-      checker.getSymbolAtLocation(n) === slot.symbol,
-  )(collectTsNodes(fn.fnBody, fn.sf));
+const findParamReferences =
+  (checker: ts.TypeChecker) => (fn: FunctionEntry, slot: ParamSlot) =>
+    RA.filter(
+      (n: ts.Node): n is ts.Identifier =>
+        ts.isIdentifier(n) &&
+        n.text === slot.name &&
+        checker.getSymbolAtLocation(n) === slot.symbol,
+    )(collectTsNodes(fn.fnBody, fn.sf));
 
 const makeDeclFnKey = (decl: ts.Declaration, name: string) =>
   makeFnKey(decl.getSourceFile(), name);
 
-const lookupDeclByName = (
-  decl: ts.Declaration,
-  name: string,
-  fnByKey: Readonly<Record<string, FunctionEntry>>,
-) => RR.lookup(makeDeclFnKey(decl, name), fnByKey);
+const lookupDeclByName =
+  (fnByKey: Readonly<Record<string, FunctionEntry>>) => (decl: ts.Declaration, name: string) =>
+    RR.lookup(makeDeclFnKey(decl, name), fnByKey);
 
 const lookupDeclEntry = (decl: ts.Declaration, fnByKey: Readonly<Record<string, FunctionEntry>>) =>
   match(decl)
     .when(ts.isFunctionDeclaration, (fn) =>
-      fn.name ? lookupDeclByName(fn, fn.name.text, fnByKey) : O.none,
+      fn.name ? lookupDeclByName(fnByKey)(fn, fn.name.text) : O.none,
     )
     .when(ts.isVariableDeclaration, (v) =>
-      ts.isIdentifier(v.name) ? lookupDeclByName(v, v.name.text, fnByKey) : O.none,
+      ts.isIdentifier(v.name) ? lookupDeclByName(fnByKey)(v, v.name.text) : O.none,
     )
     .otherwise(() => O.none);
 
@@ -254,50 +252,42 @@ const resolveSymbolDecl = (sym: ts.Symbol) =>
 const lookupCalleeSymbol = (call: ts.CallExpression, checker: ts.TypeChecker) =>
   O.fromNullable(checker.getSymbolAtLocation(call.expression));
 
-const resolveCalleeFromSymbol = (
-  fnByKey: Readonly<Record<string, FunctionEntry>>,
-  checker: ts.TypeChecker,
-) =>
+type DrillingGraphEnv = Readonly<{
+  fnByKey: Readonly<Record<string, FunctionEntry>>;
+  checker: ts.TypeChecker;
+}>;
+
+const resolveCalleeFromSymbol = ({ fnByKey, checker }: DrillingGraphEnv) =>
   flow(
     (sym: ts.Symbol) => resolveAliasSymbol(sym, checker),
     resolveSymbolDecl,
     O.flatMap((decl: ts.Declaration) => lookupDeclEntry(decl, fnByKey)),
   );
 
-const resolveCalleeFn = (
-  call: ts.CallExpression,
-  fnByKey: Readonly<Record<string, FunctionEntry>>,
-  checker: ts.TypeChecker,
-) => O.flatMap(resolveCalleeFromSymbol(fnByKey, checker))(lookupCalleeSymbol(call, checker));
+const resolveCalleeFn = (call: ts.CallExpression, env: DrillingGraphEnv) =>
+  O.flatMap(resolveCalleeFromSymbol(env))(lookupCalleeSymbol(call, env.checker));
 
-const matchTargetSlotEdge = (
-  fromNode: string,
-  target: FunctionEntry,
-  argIdx: number,
-  typeName: string,
-) =>
-  O.map((targetSlot: ParamSlot) => ({
-    fromNode,
-    toNode: makeSlotKey(target.key, targetSlot.index),
-  }))(
-    RA.findFirst((p: ParamSlot) => p.index === argIdx && p.typeName === typeName)(target.paramSlots),
-  );
+const matchTargetSlotEdge =
+  (fromNode: string, typeName: string) => (target: FunctionEntry, argIdx: number) =>
+    O.map((targetSlot: ParamSlot) => ({
+      fromNode,
+      toNode: makeSlotKey(target.key, targetSlot.index),
+    }))(
+      RA.findFirst((p: ParamSlot) => p.index === argIdx && p.typeName === typeName)(
+        target.paramSlots,
+      ),
+    );
 
 const findArgumentIndex = (call: ts.CallExpression, id: ts.Identifier) =>
   call.arguments.indexOf(id);
 
 const matchTargetWithSlot = (
-  fn: FunctionEntry,
-  slot: ParamSlot,
-  call: ts.CallExpression,
-  id: ts.Identifier,
+  query: SlotEdgeQuery & Readonly<{ call: ts.CallExpression }>,
   target: FunctionEntry,
 ) =>
-  matchTargetSlotEdge(
-    makeSlotKey(fn.key, slot.index),
+  matchTargetSlotEdge(makeSlotKey(query.fn.key, query.slot.index), query.slot.typeName)(
     target,
-    findArgumentIndex(call, id),
-    slot.typeName,
+    findArgumentIndex(query.call, query.id),
   );
 
 type SlotEdgeQuery = Readonly<{
@@ -312,13 +302,13 @@ const matchSlotEdgeWithCall = (query: SlotEdgeQuery) =>
   flow(
     (call: ts.CallExpression) => ({
       call,
-      targetOpt: resolveCalleeFn(call, query.fnByKey, query.checker),
+      targetOpt: resolveCalleeFn(call, { fnByKey: query.fnByKey, checker: query.checker }),
     }),
     ({ call, targetOpt }) =>
       O.flatMap((target: FunctionEntry) =>
         target.key === query.fn.key
           ? O.none
-          : matchTargetWithSlot(query.fn, query.slot, call, query.id, target),
+          : matchTargetWithSlot({ ...query, call }, target),
       )(targetOpt),
   );
 
@@ -327,15 +317,12 @@ const toForwardEdge = (query: SlotEdgeQuery) =>
     .when(ts.isCallExpression, (call) => matchSlotEdgeWithCall(query)(call))
     .otherwise(() => O.none);
 
-const collectSlotEdges = (
-  fn: FunctionEntry,
-  slot: ParamSlot,
-  fnByKey: Readonly<Record<string, FunctionEntry>>,
-  checker: ts.TypeChecker,
-) => {
-  const refs = findParamReferences(fn, slot, checker);
+const collectSlotEdges = (env: DrillingGraphEnv) => (fn: FunctionEntry, slot: ParamSlot) => {
+  const refs = findParamReferences(env.checker)(fn, slot);
   return refs.length > 0 && RA.every(isDirectCallArgument)(refs)
-    ? RA.filterMap((id: ts.Identifier) => toForwardEdge({ fn, slot, id, fnByKey, checker }))(refs)
+    ? RA.filterMap((id: ts.Identifier) =>
+        toForwardEdge({ fn, slot, id, fnByKey: env.fnByKey, checker: env.checker }),
+      )(refs)
     : ([] satisfies ReadonlyArray<ForwardEdge>);
 };
 
@@ -377,19 +364,13 @@ const buildIncomingCount = flow(
 );
 
 const collectFileEntries = (sf: ts.SourceFile, checker: ts.TypeChecker) =>
-  RA.filterMap((n: ts.Node) => extractNamedFunction(n, sf, checker))(collectTsNodes(sf, sf));
+  RA.filterMap((n: ts.Node) => extractNamedFunction(checker)(n, sf))(collectTsNodes(sf, sf));
 
-const collectFnEdges = (
-  fn: FunctionEntry,
-  fnByKey: Readonly<Record<string, FunctionEntry>>,
-  checker: ts.TypeChecker,
-) => RA.flatMap((slot: ParamSlot) => collectSlotEdges(fn, slot, fnByKey, checker))(fn.paramSlots);
+const collectFnEdges = (env: DrillingGraphEnv) => (fn: FunctionEntry) =>
+  RA.flatMap((slot: ParamSlot) => collectSlotEdges(env)(fn, slot))(fn.paramSlots);
 
-const collectAllEdges = (
-  entries: ReadonlyArray<FunctionEntry>,
-  fnByKey: Readonly<Record<string, FunctionEntry>>,
-  checker: ts.TypeChecker,
-) => RA.flatMap((fn: FunctionEntry) => collectFnEdges(fn, fnByKey, checker))(entries);
+const collectAllEdges = (entries: ReadonlyArray<FunctionEntry>, env: DrillingGraphEnv) =>
+  RA.flatMap(collectFnEdges(env))(entries);
 
 const buildProgramGraph = (program: ts.Program) => {
   const checker = program.getTypeChecker();
@@ -397,7 +378,7 @@ const buildProgramGraph = (program: ts.Program) => {
     collectProjectSourceFiles(program),
   );
   const fnByKey = indexFunctions(entries);
-  const edges = collectAllEdges(entries, fnByKey, checker);
+  const edges = collectAllEdges(entries, { fnByKey, checker });
   return {
     fnByKey,
     slotMeta: indexSlotMeta(entries),
@@ -424,29 +405,26 @@ type PathWalkRequest = Readonly<
   }
 >;
 
-const advanceNeighborState = (
-  state: NeighborSweepState,
-  next: string,
-  env: WalkEnv,
-) => {
-  const child = walkLongestPath({ nodeId: next, env, memo: state.memo });
-  return {
-    bestSuffix: pickLongerPath(state.bestSuffix, child.path),
-    memo: child.memo,
-    cycleStatus: state.cycleStatus,
+const advanceNeighborState =
+  (env: WalkEnv) => (state: NeighborSweepState, next: string) => {
+    const child = walkLongestPath({ nodeId: next, env, memo: state.memo });
+    return {
+      bestSuffix: pickLongerPath(state.bestSuffix, child.path),
+      memo: child.memo,
+      cycleStatus: state.cycleStatus,
+    };
   };
-};
 
 const sweepNeighbor = (env: WalkEnv) => (state: NeighborSweepState, next: string) =>
   env.visiting.has(next)
     ? { ...state, cycleStatus: "cycle" as const }
-    : advanceNeighborState(state, next, env);
+    : advanceNeighborState(env)(state, next);
 
 const finalizeNodePath = (nodeId: string, outcome: NeighborSweepState) => {
   const path = [nodeId, ...outcome.bestSuffix];
-  return match(outcome.cycleStatus)
-    .with("clean", () => ({ path, memo: { ...outcome.memo, [nodeId]: path } }))
-    .with("cycle", () => ({ path, memo: outcome.memo }))
+  return match(outcome)
+    .with({ cycleStatus: "clean" }, ({ memo }) => ({ path, memo: { ...memo, [nodeId]: path } }))
+    .with({ cycleStatus: "cycle" }, ({ memo }) => ({ path, memo }))
     .exhaustive();
 };
 
@@ -576,10 +554,7 @@ const analyzeProgramGraph = (minDepth: number) =>
   );
 
 const computeContextDrillingForMinDepth = (minDepth: number) =>
-  flow(
-    (program: ts.Program) => memoizeByProgram(program, graphCache, buildProgramGraph),
-    analyzeProgramGraph(minDepth),
-  );
+  flow(memoizeByProgram(graphCache, buildProgramGraph), analyzeProgramGraph(minDepth));
 
 const makeDrillingCacheKey = (minDepth: number) => String(minDepth);
 
@@ -588,8 +563,6 @@ export const analyzeContextDrilling = (
   minDepth = 3,
 ): ContextDrillingAnalysis =>
   memoizeByProgramAndKey(
-    program,
-    makeDrillingCacheKey(minDepth),
     analysisCache,
     computeContextDrillingForMinDepth(minDepth),
-  );
+  )(program, makeDrillingCacheKey(minDepth));

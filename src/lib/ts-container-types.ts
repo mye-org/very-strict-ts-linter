@@ -39,14 +39,12 @@ const resolveContainerTypeArgs = (type: ts.Type, checker: ts.TypeChecker) => {
     : ([] satisfies ReadonlyArray<ts.Type>);
 };
 
-const unwrapArgList = (
-  args: ReadonlyArray<ts.Type>,
-  fallback: ts.Type,
-  checker: ts.TypeChecker,
-) =>
-  args.length > 0
-    ? RA.flatMap((arg: ts.Type) => unwrapContainerTsTypes(arg, checker))(args)
-    : [fallback];
+const unwrapArgList =
+  (checker: ts.TypeChecker) =>
+  (args: ReadonlyArray<ts.Type>, fallback: ts.Type) =>
+    args.length > 0
+      ? RA.flatMap((arg: ts.Type) => unwrapContainerTsTypes(arg, checker))(args)
+      : [fallback];
 
 const isMeaningfulUnionMember = (m: ts.Type) => (m.flags & IGNORED_UNION_FLAGS) === 0;
 
@@ -59,4 +57,4 @@ const unwrapMeaningfulUnionMembers = (checker: ts.TypeChecker) =>
 export const unwrapContainerTsTypes = (type: ts.Type, checker: ts.TypeChecker): ReadonlyArray<ts.Type> =>
   type.isUnion()
     ? unwrapMeaningfulUnionMembers(checker)(type.types)
-    : unwrapArgList(resolveContainerTypeArgs(type, checker), type, checker);
+    : unwrapArgList(checker)(resolveContainerTypeArgs(type, checker), type);

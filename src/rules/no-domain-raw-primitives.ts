@@ -7,15 +7,20 @@ import { createRule } from "../lib/rule-factory.js";
 
 type MessageIds = "rawStringOrNumber" | "rawBoolean";
 
+type PrimitiveReportDescriptor = Readonly<{
+  readonly node: TSESTree.Node;
+  readonly messageId: MessageIds;
+  readonly payload: O.Option<Readonly<Record<string, string>>>;
+}>;
+
 const reportPrimitiveType = (
-  typeNode: TSESTree.TypeNode,
   reportStringOrNumber: (node: TSESTree.Node, kind: string) => void,
   reportBoolean: (node: TSESTree.Node) => void,
-) => {
-  match(typeNode.type)
-    .with(AST_NODE_TYPES.TSStringKeyword, () => { reportStringOrNumber(typeNode, "string"); })
-    .with(AST_NODE_TYPES.TSNumberKeyword, () => { reportStringOrNumber(typeNode, "number"); })
-    .with(AST_NODE_TYPES.TSBooleanKeyword, () => { reportBoolean(typeNode); })
+) => (typeNode: TSESTree.TypeNode) => {
+  match(typeNode)
+    .with({ type: AST_NODE_TYPES.TSStringKeyword }, (matched) => { reportStringOrNumber(matched, "string"); })
+    .with({ type: AST_NODE_TYPES.TSNumberKeyword }, (matched) => { reportStringOrNumber(matched, "number"); })
+    .with({ type: AST_NODE_TYPES.TSBooleanKeyword }, reportBoolean)
     .with(P._, () => {})
     .exhaustive();
 };
@@ -27,41 +32,31 @@ const extractDomainTypeNode = flow(
 
 const checkTypeNode = (
   typeAnnotation: O.Option<TSESTree.TSTypeAnnotation>,
-  report: (node: TSESTree.Node, messageId: MessageIds, payload: O.Option<Readonly<Record<string, string>>>) => void,
+  report: (d: PrimitiveReportDescriptor) => void,
 ) => {
-  O.map((typeNode: TSESTree.TypeNode) => {
+  O.map(
     reportPrimitiveType(
-      typeNode,
-      (n, kind) => { report(n, "rawStringOrNumber", O.some({ kind })); },
-      (n) => { report(n, "rawBoolean", O.none); },
-    );
-  })(extractDomainTypeNode(typeAnnotation));
+      (n, kind) => { report({ node: n, messageId: "rawStringOrNumber", payload: O.some({ kind }) }); },
+      (n) => { report({ node: n, messageId: "rawBoolean", payload: O.none }); },
+    ),
+  )(extractDomainTypeNode(typeAnnotation));
 };
 
 const reportWithPayload = (
   reportPlain: (node: TSESTree.Node, messageId: MessageIds) => void,
-  reportPayload: (node: TSESTree.Node, messageId: MessageIds, payload: Readonly<Record<string, string>>) => void,
-  node: TSESTree.Node,
-  messageId: MessageIds,
-  payload: O.Option<Readonly<Record<string, string>>>,
-) => {
+  reportPayload: (descriptor: PrimitiveReportDescriptor, payload: Readonly<Record<string, string>>) => void,
+) => (descriptor: PrimitiveReportDescriptor) => {
   O.match(
-    () => { reportPlain(node, messageId); },
-    (d: Readonly<Record<string, string>>) => { reportPayload(node, messageId, d); },
-  )(payload);
+    () => { reportPlain(descriptor.node, descriptor.messageId); },
+    (d: Readonly<Record<string, string>>) => { reportPayload(descriptor, d); },
+  )(descriptor.payload);
 };
 
-const makeReporter =
-  (reportFn: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
-  (node: TSESTree.Node, messageId: MessageIds, payload: O.Option<Readonly<Record<string, string>>>) => {
-    reportWithPayload(
-      (n, id) => { reportFn({ node: n, messageId: id }); },
-      (n, id, d) => { reportFn({ node: n, messageId: id, data: d }); },
-      node,
-      messageId,
-      payload,
-    );
-  };
+const makeReporter = (reportFn: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+  reportWithPayload(
+    (n, id) => { reportFn({ node: n, messageId: id }); },
+    (descriptor, d) => { reportFn({ node: descriptor.node, messageId: descriptor.messageId, data: d }); },
+  );
 
 export const noDomainRawPrimitives = createRule<[], MessageIds>({
   name: "no-domain-raw-primitives",

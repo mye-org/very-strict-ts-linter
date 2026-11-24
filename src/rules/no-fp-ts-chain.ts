@@ -99,12 +99,11 @@ const resolveSymbolForNode = (node: TSESTree.Node, ctx: CheckerContext) =>
 
 const isNodeFpTsExportByType = (
   node: TSESTree.Node,
-  checkerCtx: CheckerContext,
-  targetName: BannedExportName,
+  opts: Readonly<{ readonly checkerCtx: CheckerContext; readonly targetName: BannedExportName }>,
 ) =>
   O.exists((targetSymbol: ts.Symbol) =>
-    isFpTsExportSymbol({ targetSymbol, checker: checkerCtx.checker, targetName }),
-  )(resolveSymbolForNode(node, checkerCtx));
+    isFpTsExportSymbol({ targetSymbol, checker: opts.checkerCtx.checker, targetName: opts.targetName }),
+  )(resolveSymbolForNode(node, opts.checkerCtx));
 
 const isValueFpTsImport = (node: TSESTree.Node): node is TSESTree.ImportDeclaration =>
   node.type === AST_NODE_TYPES.ImportDeclaration &&
@@ -147,17 +146,16 @@ const collectFpTsImports = (
 
 const isStaticExportMember = (
   node: TSESTree.MemberExpression,
-  namespaces: ReadonlySet<string>,
-  targetName: BannedExportName,
+  opts: Readonly<{ readonly namespaces: ReadonlySet<string>; readonly targetName: BannedExportName }>,
 ) =>
   match(node)
     .with(
       {
         computed: false,
         object: { type: AST_NODE_TYPES.Identifier },
-        property: { type: AST_NODE_TYPES.Identifier, name: targetName },
+        property: { type: AST_NODE_TYPES.Identifier, name: opts.targetName },
       },
-      (m) => namespaces.has(m.object.name),
+      (m) => opts.namespaces.has(m.object.name),
     )
     .with(P._, () => false)
     .exhaustive();
@@ -166,16 +164,16 @@ const isNodeFpTsExportByAst = (node: TSESTree.Node, ctx: ExportCheckContext) =>
   match(node)
     .with({ type: AST_NODE_TYPES.Identifier }, (id) => ctx.imports.locals.has(id.name))
     .with({ type: AST_NODE_TYPES.MemberExpression }, (mem) =>
-      isStaticExportMember(mem, ctx.imports.namespaces, ctx.targetExport),
+      isStaticExportMember(mem, { namespaces: ctx.imports.namespaces, targetName: ctx.targetExport }),
     )
     .with(P._, () => false)
     .exhaustive();
 
 const isNodeFpTsExport = (node: TSESTree.Node, ctx: ExportCheckContext) =>
-  match(ctx.typeCheckerCtx)
-    .with({ _tag: "None" }, () => isNodeFpTsExportByAst(node, ctx))
-    .with({ _tag: "Some" }, ({ value }) =>
-      isNodeFpTsExportByType(node, value, ctx.targetExport),
+  match(ctx)
+    .with({ typeCheckerCtx: { _tag: "None" } }, (matched) => isNodeFpTsExportByAst(node, matched))
+    .with({ typeCheckerCtx: { _tag: "Some" } }, (matched) =>
+      isNodeFpTsExportByType(node, { checkerCtx: matched.typeCheckerCtx.value, targetName: matched.targetExport }),
     )
     .exhaustive();
 
@@ -207,28 +205,26 @@ const isMatchingImportedIdent = (spec: TSESTree.ImportSpecifier, targetName: str
 
 const isUnusedFpTsExportImport = (
   spec: TSESTree.ImportSpecifier,
-  sourceCode: Readonly<TSESLint.SourceCode>,
-  ctx: ExportCheckContext,
+  importCtx: Readonly<{ readonly sourceCode: Readonly<TSESLint.SourceCode>; readonly ctx: ExportCheckContext }>,
 ) =>
-  isMatchingImportedIdent(spec, ctx.targetExport) &&
+  isMatchingImportedIdent(spec, importCtx.ctx.targetExport) &&
   isValueFpTsImport(spec.parent) &&
-  hasNoReadReferences(O.fromNullable(sourceCode.getDeclaredVariables(spec)[0]));
+  hasNoReadReferences(O.fromNullable(importCtx.sourceCode.getDeclaredVariables(spec)[0]));
 
 const isMatchingReExportSource = (
-  source: TSESTree.StringLiteral,
   spec: TSESTree.ExportSpecifier,
-  targetName: BannedExportName,
+  reExportCtx: Readonly<{ readonly source: TSESTree.StringLiteral; readonly targetName: BannedExportName }>,
 ) =>
-  isFpTsImportSource(source.value) &&
+  isFpTsImportSource(reExportCtx.source.value) &&
   spec.local.type === AST_NODE_TYPES.Identifier &&
-  spec.local.name === targetName;
+  spec.local.name === reExportCtx.targetName;
 
 const resolveParentSource = (spec: TSESTree.ExportSpecifier) => spec.parent.source;
 
 const isSourceExportMatch = (spec: TSESTree.ExportSpecifier, ctx: ExportCheckContext) => {
   const source = resolveParentSource(spec);
   return source
-    ? isMatchingReExportSource(source, spec, ctx.targetExport)
+    ? isMatchingReExportSource(spec, { source, targetName: ctx.targetExport })
     : isNodeFpTsExport(spec.local, ctx);
 };
 
@@ -238,10 +234,9 @@ const isFpTsExportReExport = (spec: TSESTree.ExportSpecifier, ctx: ExportCheckCo
   isSourceExportMatch(spec, ctx);
 
 const reportWhen = <N extends TSESTree.Node>(
-  node: N,
   predicate: Pred.Predicate<N>,
   onMatch: (n: N) => void,
-) => {
+) => (node: N) => {
   O.map(onMatch)(O.fromPredicate(predicate)(node));
 };
 
@@ -254,16 +249,13 @@ const isIdentExportRef = (node: TSESTree.Identifier, ctx: ExportCheckContext) =>
 const buildListeners = (
   ctx: ExportCheckContext,
   sourceCode: Readonly<TSESLint.SourceCode>,
-  report: (node: TSESTree.Node) => void,
-) =>
+) => (report: (node: TSESTree.Node) => void) =>
   ({
-    CallExpression: (n) => { reportWhen(n, (c) => isNodeFpTsExport(c.callee, ctx), report); },
-    MemberExpression: (n) => { reportWhen(n, (m) => isMemberExportRef(m, ctx), report); },
-    Identifier: (n) => { reportWhen(n, (id) => isIdentExportRef(id, ctx), report); },
-    ImportSpecifier: (n) => {
-      reportWhen(n, (s) => isUnusedFpTsExportImport(s, sourceCode, ctx), report);
-    },
-    ExportSpecifier: (n) => { reportWhen(n, (s) => isFpTsExportReExport(s, ctx), report); },
+    CallExpression: reportWhen((c: TSESTree.CallExpression) => isNodeFpTsExport(c.callee, ctx), report),
+    MemberExpression: reportWhen((m: TSESTree.MemberExpression) => isMemberExportRef(m, ctx), report),
+    Identifier: reportWhen((id: TSESTree.Identifier) => isIdentExportRef(id, ctx), report),
+    ImportSpecifier: reportWhen((s: TSESTree.ImportSpecifier) => isUnusedFpTsExportImport(s, { sourceCode, ctx }), report),
+    ExportSpecifier: reportWhen((s: TSESTree.ExportSpecifier) => isFpTsExportReExport(s, ctx), report),
   }) satisfies TSESLint.RuleListener;
 
 const buildBannedFpTsExportListeners = <MessageIds extends string>(
@@ -278,8 +270,7 @@ const buildBannedFpTsExportListeners = <MessageIds extends string>(
       imports: collectFpTsImports(context.sourceCode, targetExport),
     },
     context.sourceCode,
-    (node) => { context.report({ node, messageId }); },
-  );
+  )((node) => { context.report({ node, messageId }); });
 
 export const noFpTsChain = createRule<[], MessageIds>({
   name: "no-fp-ts-chain",

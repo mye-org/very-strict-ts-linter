@@ -115,12 +115,9 @@ const findBannedDirectory = (directories: ReadonlyArray<string>, cfg: RuleCheckC
     ),
   );
 
-const isAllowedFile = (fileName: string, stem: string, allowedSet: ReadonlySet<string>) =>
-  allowedSet.has(fileName) || allowedSet.has(stem);
-
 const findBannedFileName = (fileName: string, cfg: RuleCheckConfig) => {
   const stem = stripFileExtensions(fileName);
-  return isAllowedFile(fileName, stem, cfg.allowedSet)
+  return cfg.allowedSet.has(fileName) || cfg.allowedSet.has(stem)
     ? O.none
     : O.map((term: string) => ({ fileName, term }))(findEdgeBannedTerm(stem, cfg.bannedSet));
 };
@@ -130,18 +127,17 @@ const findBannedDirectoryInInit = (
   cfg: RuleCheckConfig,
 ) => O.flatMap((dirs: ReadonlyArray<string>) => findBannedDirectory(dirs, cfg))(dirsOpt);
 
-const checkDirectoryNames = (
+const checkDirectoryNames = (cfg: RuleCheckConfig) => (
   program: TSESTree.Program,
   dirsOpt: O.Option<ReadonlyArray<string>>,
-  cfg: RuleCheckConfig,
 ) => {
-  match(cfg.directoryNames)
-    .with("check", () => {
+  match(cfg)
+    .with({ directoryNames: "check" }, (matched) => {
       O.map((data: ReturnType<typeof findBannedDirectory> extends O.Option<infer T> ? T : never) => {
-        cfg.report({ node: program, messageId: "genericDirectoryName", data });
-      })(findBannedDirectoryInInit(dirsOpt, cfg));
+        matched.report({ node: program, messageId: "genericDirectoryName", data });
+      })(findBannedDirectoryInInit(dirsOpt, matched));
     })
-    .with("skip", () => {})
+    .with({ directoryNames: "skip" }, () => {})
     .exhaustive();
 };
 
@@ -150,29 +146,27 @@ const findBannedFileNameInLast = (
   cfg: RuleCheckConfig,
 ) => O.flatMap((fileName: string) => findBannedFileName(fileName, cfg))(fileNameOpt);
 
-const checkFileName = (
+const checkFileName = (cfg: RuleCheckConfig) => (
   program: TSESTree.Program,
   fileNameOpt: O.Option<string>,
-  cfg: RuleCheckConfig,
 ) => {
-  match(cfg.fileNames)
-    .with("check", () => {
+  match(cfg)
+    .with({ fileNames: "check" }, (matched) => {
       O.map((data: ReturnType<typeof findBannedFileName> extends O.Option<infer T> ? T : never) => {
-        cfg.report({ node: program, messageId: "genericFileName", data });
-      })(findBannedFileNameInLast(fileNameOpt, cfg));
+        matched.report({ node: program, messageId: "genericFileName", data });
+      })(findBannedFileNameInLast(fileNameOpt, matched));
     })
-    .with("skip", () => {})
+    .with({ fileNames: "skip" }, () => {})
     .exhaustive();
 };
 
-const checkProgramPath = (
+const checkProgramPath = (cfg: RuleCheckConfig) => (
   program: TSESTree.Program,
   location: FileLocation,
-  cfg: RuleCheckConfig,
 ) => {
   O.map((segments: ReadonlyArray<string>) => {
-    checkDirectoryNames(program, RA.init<string>(segments), cfg);
-    checkFileName(program, RA.last<string>(segments), cfg);
+    checkDirectoryNames(cfg)(program, RA.init<string>(segments));
+    checkFileName(cfg)(program, RA.last<string>(segments));
   })(splitInspectableSegments(location));
 };
 
@@ -214,7 +208,7 @@ const buildIdentifierListeners = (cfg: RuleCheckConfig) => ({
 });
 
 const buildListeners = (location: FileLocation, cfg: RuleCheckConfig) => ({
-  Program: (node: TSESTree.Program) => { checkProgramPath(node, location, cfg); },
+  Program: (node: TSESTree.Program) => { checkProgramPath(cfg)(node, location); },
   ...(cfg.identifiers === "check" ? buildIdentifierListeners(cfg) : {}),
 });
 

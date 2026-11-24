@@ -11,9 +11,12 @@ export const isUnsafeOrMustName = (name: string): boolean =>
 const resolveNamedParentKey = (gp: TSESTree.Node) =>
   match(gp)
     .with({ type: AST_NODE_TYPES.VariableDeclarator, id: { type: AST_NODE_TYPES.Identifier } }, (d) => O.some(d.id.name))
-    .with({ type: AST_NODE_TYPES.Property, key: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.key.name))
-    .with({ type: AST_NODE_TYPES.MethodDefinition, key: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.key.name))
-    .with({ type: AST_NODE_TYPES.PropertyDefinition, key: { type: AST_NODE_TYPES.Identifier } }, (p) => O.some(p.key.name))
+    .with(
+      { type: AST_NODE_TYPES.Property, key: { type: AST_NODE_TYPES.Identifier } },
+      { type: AST_NODE_TYPES.MethodDefinition, key: { type: AST_NODE_TYPES.Identifier } },
+      { type: AST_NODE_TYPES.PropertyDefinition, key: { type: AST_NODE_TYPES.Identifier } },
+      (p) => O.some(p.key.name),
+    )
     .with(P._, () => O.none)
     .exhaustive();
 

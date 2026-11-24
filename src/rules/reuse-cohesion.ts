@@ -45,8 +45,10 @@ const joinWithComma = (items: ReadonlyArray<string>) => items.join(", ");
 const joinWithPipe = (items: ReadonlyArray<string>) => items.join(" | ");
 const toDecimalText = (value: number) => String(value);
 
-const formatGroupSummary = (label: string, exportsText: string, consumersText: string) =>
-  `Group ${label} [${exportsText}] -> ${consumersText}`;
+const formatGroupSummary =
+  (label: string) =>
+  (exportsText: string, consumersText: string) =>
+    `Group ${label} [${exportsText}] -> ${consumersText}`;
 
 const formatConsumers = (consumers: ReadonlyArray<string>, cwd: string) => {
   const format = flow(
@@ -56,34 +58,33 @@ const formatConsumers = (consumers: ReadonlyArray<string>, cwd: string) => {
   return format(consumers);
 };
 
-const formatGroup = (group: ConsumerExportGroup, index: number, cwd: string) =>
-  formatGroupSummary(
-    toDecimalText(index + 1),
-    joinWithComma(group.exports),
-    formatConsumers(group.consumers, cwd),
-  );
+const formatGroup =
+  (cwd: string) =>
+  (index: number, group: ConsumerExportGroup) =>
+    formatGroupSummary(toDecimalText(index + 1))(
+      joinWithComma(group.exports),
+      formatConsumers(group.consumers, cwd),
+    );
 
 const formatAllGroups = (groups: ReadonlyArray<ConsumerExportGroup>, cwd: string) => {
   const format = flow(
-    RA.mapWithIndex((idx: number, g: ConsumerExportGroup) => formatGroup(g, idx, cwd)),
+    RA.mapWithIndex(formatGroup(cwd)),
     joinWithPipe,
   );
   return format(groups);
 };
 
-const toDisjointGroupDescriptor = (
-  node: TSESTree.Program,
-  finding: CommonReuseFinding,
-  cwd: string,
-) => ({
-  node,
-  messageId: "disjointConsumerGroups" as const,
-  data: {
-    exportCount: toDecimalText(finding.exportCount),
-    groupCount: toDecimalText(finding.groups.length),
-    groups: formatAllGroups(finding.groups, cwd),
-  },
-});
+const toDisjointGroupDescriptor =
+  (cwd: string) =>
+  (node: TSESTree.Program, finding: CommonReuseFinding) => ({
+    node,
+    messageId: "disjointConsumerGroups" as const,
+    data: {
+      exportCount: toDecimalText(finding.exportCount),
+      groupCount: toDecimalText(finding.groups.length),
+      groups: formatAllGroups(finding.groups, cwd),
+    },
+  });
 
 const resolveCohesionOptions = (options: Options[0]) => ({
   minExports: options.minExports ?? 5,
@@ -107,40 +108,36 @@ const analyzeByFile =
   (program: ts.Program) =>
   (resolved: CommonReuseOptions) =>
     memoizeByProgramAndKey(
-      program,
-      serializeCommonReuseOptions(resolved),
       commonReuseCache,
       (p) => analyzeCommonReuseCohesion(p, resolved),
-    ).byFile;
+    )(program, serializeCommonReuseOptions(resolved)).byFile;
 
 const lookupByFileName =
   (fileName: string) => (byFile: Readonly<Record<string, CommonReuseFinding>>) =>
     O.fromNullable(byFile[fileName]);
 
-const lookupCohesionFinding = (
-  programNode: TSESTree.Program,
-  services: ParserServicesWithTypeInformation,
-  options: Options[0],
-) => {
-  const lookup = flow(
-    resolveCohesionOptions,
-    analyzeByFile(services.program),
-    lookupByFileName(resolveProgramFileName(programNode, services)),
-  );
-  return lookup(options);
-};
+const lookupCohesionFinding =
+  (services: ParserServicesWithTypeInformation, options: Options[0]) =>
+  (programNode: TSESTree.Program) => {
+    const lookup = flow(
+      resolveCohesionOptions,
+      analyzeByFile(services.program),
+      lookupByFileName(resolveProgramFileName(programNode, services)),
+    );
+    return lookup(options);
+  };
 
-const inspectProgramCohesion = (
-  programNode: TSESTree.Program,
-  services: ParserServicesWithTypeInformation,
-  options: Options[0],
-  cwd: string,
-  report: Reporter,
-) => {
-  O.map((finding: CommonReuseFinding) => {
-    report(toDisjointGroupDescriptor(programNode, finding, cwd));
-  })(lookupCohesionFinding(programNode, services, options));
-};
+const inspectProgramCohesion =
+  (
+    services: ParserServicesWithTypeInformation,
+    options: Options[0],
+  ) =>
+  (cwd: string, report: Reporter) =>
+  (programNode: TSESTree.Program) => {
+    O.map((finding: CommonReuseFinding) => {
+      report(toDisjointGroupDescriptor(cwd)(programNode, finding));
+    })(lookupCohesionFinding(services, options)(programNode));
+  };
 
 export const commonReuseCohesion = createRule<Options, MessageIds>({
   name: "common-reuse-cohesion",
@@ -172,16 +169,11 @@ export const commonReuseCohesion = createRule<Options, MessageIds>({
     ],
   },
   create: (context, [options]) => ({
-    Program: (programNode: TSESTree.Program) => {
-      inspectProgramCohesion(
-        programNode,
-        ESLintUtils.getParserServices(context),
-        options,
-        context.cwd,
-        (d) => {
-          context.report(d);
-        },
-      );
-    },
+    Program: inspectProgramCohesion(ESLintUtils.getParserServices(context), options)(
+      context.cwd,
+      (d) => {
+        context.report(d);
+      },
+    ),
   }),
 });

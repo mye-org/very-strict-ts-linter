@@ -1,6 +1,5 @@
 import * as O from "fp-ts/lib/Option.js";
 import * as Ord from "fp-ts/lib/Ord.js";
-import * as P from "fp-ts/lib/Predicate.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as S from "fp-ts/lib/string.js";
 import { flow } from "fp-ts/lib/function.js";
@@ -207,7 +206,10 @@ const isExcludedTypeName = (name: string, scope: DomainTypeScope) =>
 const isDeclInSameFile = (declPathOpt: O.Option<string>, currentFilePath: string) =>
   O.exists((file: string) => normalizeFilePath(file) === currentFilePath)(declPathOpt);
 
-const isQualifyingDecl = (name: string, declFile: O.Option<string>, scope: DomainTypeScope) =>
+const isQualifyingDecl = (
+  name: string,
+  { declFile, scope }: Readonly<{ declFile: O.Option<string>; scope: DomainTypeScope }>,
+) =>
   !O.exists(isStdlibDeclFile)(declFile) &&
   (isDeclInSameFile(declFile, scope.sfPath) || scope.primarySet.has(name));
 
@@ -217,7 +219,7 @@ const resolveQualifyingDomainType = (type: ts.Type, scope: DomainTypeScope) =>
     : O.filter(
         (name: string) =>
           !isExcludedTypeName(name, scope) &&
-          isQualifyingDecl(name, resolveTsTypeDeclarationFile(type), scope),
+          isQualifyingDecl(name, { declFile: resolveTsTypeDeclarationFile(type), scope }),
       )(resolveTsTypeName(type));
 
 const expandUnwrappedMember = (unwrapped: ts.Type) =>
@@ -239,26 +241,27 @@ const appendOptionalName = (nameOpt: O.Option<string>, names: ReadonlyArray<stri
     (name: string) => RA.append(name)(names),
   )(nameOpt);
 
-const walkTypeDomainNames = (
-  acc: TypeWalkAcc,
-  rootType: ts.Type,
-  scope: DomainTypeScope,
-  // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive type expansion
-): TypeWalkAcc =>
-  acc.visited.has(rootType)
-    ? acc
-    : RA.reduce<ts.Type, TypeWalkAcc>(
-        {
-          visited: new Set([...acc.visited, rootType]),
-          names: appendOptionalName(resolveQualifyingDomainType(rootType, scope), acc.names),
-        },
-        (nextAcc, child) => walkTypeDomainNames(nextAcc, child, scope),
-      )(collectChildTypes(rootType, scope.checker));
+const walkTypeDomainNames =
+  (scope: DomainTypeScope) =>
+  (
+    acc: TypeWalkAcc,
+    rootType: ts.Type,
+    // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive type expansion
+  ): TypeWalkAcc =>
+    acc.visited.has(rootType)
+      ? acc
+      : RA.reduce<ts.Type, TypeWalkAcc>(
+          {
+            visited: new Set([...acc.visited, rootType]),
+            names: appendOptionalName(resolveQualifyingDomainType(rootType, scope), acc.names),
+          },
+          walkTypeDomainNames(scope),
+        )(collectChildTypes(rootType, scope.checker));
 
 const collectTypesDomainNames = (types: ReadonlyArray<ts.Type>, scope: DomainTypeScope) =>
   RA.reduce<ts.Type, TypeWalkAcc>(
     { visited: new Set<ts.Type>(), names: [] },
-    (acc, t) => walkTypeDomainNames(acc, t, scope),
+    walkTypeDomainNames(scope),
   )(types).names;
 
 const readDeclFileName = (decl: ts.Declaration) => decl.getSourceFile().fileName;
@@ -280,37 +283,19 @@ const resolveCanonicalAtNode = (checker: ts.TypeChecker) =>
 const resolveCanonicalSymbolAtNode = (node: ts.Node, checker: ts.TypeChecker) =>
   resolveCanonicalAtNode(checker)(node);
 
-const filterAndProjectSymbol = <T>(
-  checker: ts.TypeChecker,
-  predicate: P.Predicate<ts.Symbol>,
-  project: (canonical: ts.Symbol) => T,
-) =>
-  flow(
-    (node: ts.Node) => resolveCanonicalSymbolAtNode(node, checker),
-    O.filter(predicate),
-    O.map(project),
-  );
-
-const resolveFilteredSymbol = <T>(
-  node: ts.Node,
-  checker: ts.TypeChecker,
-  predicate: P.Predicate<ts.Symbol>,
-  project: (canonical: ts.Symbol) => T,
-) => filterAndProjectSymbol(checker, predicate, project)(node);
-
 const isQualifyingTypeRefSymbol = (canonical: ts.Symbol, scope: DomainTypeScope) =>
   !isExcludedTypeName(canonical.name, scope) &&
-  isQualifyingDecl(canonical.name, resolveFirstDeclFile(canonical), scope);
+  isQualifyingDecl(canonical.name, { declFile: resolveFirstDeclFile(canonical), scope });
+
+const resolveTypeRefDomainNameFor = (scope: DomainTypeScope) =>
+  flow(
+    (node: ts.TypeReferenceNode) => resolveCanonicalSymbolAtNode(node.typeName, scope.checker),
+    O.filter((canonical: ts.Symbol) => isQualifyingTypeRefSymbol(canonical, scope)),
+    O.map((canonical: ts.Symbol) => canonical.name),
+  );
 
 const resolveTypeRefDomainName = (node: ts.Node, scope: DomainTypeScope) =>
-  ts.isTypeReferenceNode(node)
-    ? resolveFilteredSymbol(
-        node.typeName,
-        scope.checker,
-        (canonical) => isQualifyingTypeRefSymbol(canonical, scope),
-        (canonical) => canonical.name,
-      )
-    : O.none;
+  ts.isTypeReferenceNode(node) ? resolveTypeRefDomainNameFor({ ...scope })(node) : O.none;
 
 const pairNodeWithSourceFile = (root: ts.Node) => ({
   root,
@@ -329,7 +314,7 @@ const collectAnnotationTypeRefsFor = (scope: DomainTypeScope) =>
   );
 
 const collectAnnotationTypeRefs = (node: ts.Node, scope: DomainTypeScope) =>
-  collectAnnotationTypeRefsFor(scope)(node);
+  collectAnnotationTypeRefsFor({ ...scope })(node);
 
 const resolveSymbolFirstDecl = flow(
   (s: ts.Symbol) => s.declarations,
@@ -357,12 +342,29 @@ const resolveUnwrappedExportExpr = (expr: ts.Expression, exp: RuntimeExport) => 
     : unwrapped;
 };
 
+const isShorthandExport = (e: RuntimeExport) =>
+  ts.isShorthandPropertyAssignment(e.declaration);
+
+const isPropertyAssignmentExport = (
+  e: RuntimeExport,
+): e is RuntimeExport & Readonly<{ readonly declaration: ts.PropertyAssignment }> =>
+  ts.isPropertyAssignment(e.declaration);
+
+const isExportAssignmentExport = (
+  e: RuntimeExport,
+): e is RuntimeExport & Readonly<{ readonly declaration: ts.ExportAssignment }> =>
+  ts.isExportAssignment(e.declaration);
+
 const resolveExportTargetNode = (exp: RuntimeExport) =>
-  match(exp.declaration)
-    .when(ts.isShorthandPropertyAssignment, () => resolveExportSymbolNode(exp))
-    .when(ts.isPropertyAssignment, (decl) => resolveUnwrappedExportExpr(decl.initializer, exp))
-    .when(ts.isExportAssignment, (decl) => resolveUnwrappedExportExpr(decl.expression, exp))
-    .otherwise((decl) => decl);
+  match(exp)
+    .when(isShorthandExport, resolveExportSymbolNode)
+    .when(isPropertyAssignmentExport, (e) =>
+      resolveUnwrappedExportExpr(e.declaration.initializer, e),
+    )
+    .when(isExportAssignmentExport, (e) =>
+      resolveUnwrappedExportExpr(e.declaration.expression, e),
+    )
+    .otherwise((e) => e.declaration);
 
 const resolveParamType = (param: ts.Symbol, checker: ts.TypeChecker) =>
   O.map((decl: ts.Declaration) => checker.getTypeOfSymbolAtLocation(param, decl))(
@@ -537,31 +539,43 @@ const extractStatementDeclEntries = (
     .when(ts.isVariableStatement, extractVariableDeclEntries)
     .otherwise(() => [] satisfies ReadonlyArray<readonly [ts.Identifier, ts.Node]>);
 
-const resolveUnexportedBinding = (
-  entry: readonly [ts.Identifier, ts.Node],
+const resolveUnexportedSym = (
   checker: ts.TypeChecker,
   exportedSymbols: ReadonlySet<ts.Symbol>,
 ) =>
-  resolveFilteredSymbol(
-    entry[0],
-    checker,
-    (canonical) => !exportedSymbols.has(canonical),
-    (canonical) => ({
-      sym: canonical,
-      name: entry[0].text,
-      node: entry[1],
+  flow(
+    (id: ts.Identifier) => resolveCanonicalSymbolAtNode(id, checker),
+    O.filter((canonical: ts.Symbol) => !exportedSymbols.has(canonical)),
+  );
+
+const buildUnexportedBinding =
+  (entry: readonly [ts.Identifier, ts.Node]) => (canonical: ts.Symbol) => ({
+    sym: canonical,
+    name: entry[0].text,
+    node: entry[1],
+  });
+
+const resolveUnexportedBinding = (
+  checker: ts.TypeChecker,
+  exportedSymbols: ReadonlySet<ts.Symbol>,
+) =>
+  flow(
+    (entry: readonly [ts.Identifier, ts.Node]) => ({
+      entry,
+      sym: resolveUnexportedSym(checker, exportedSymbols)(entry[0]),
     }),
+    ({ entry, sym }) => O.map(buildUnexportedBinding(entry))(sym),
   );
 
 const collectUnexportedLocals = (
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
+  ctx: MultiExportContext,
   exportedSymbols: ReadonlySet<ts.Symbol>,
-  ubiquitousSet: ReadonlySet<string>,
 ) =>
-  RA.filterMap((entry: readonly [ts.Identifier, ts.Node]) =>
-    resolveUnexportedBinding(entry, checker, exportedSymbols),
-  )(RA.flatMap((stmt: ts.Statement) => extractStatementDeclEntries(stmt, ubiquitousSet))(sf.statements));
+  RA.filterMap(resolveUnexportedBinding(ctx.scope.checker, exportedSymbols))(
+    RA.flatMap((stmt: ts.Statement) =>
+      extractStatementDeclEntries(stmt, ctx.scope.ubiquitousSet),
+    )(ctx.sf.statements),
+  );
 
 const isDirectNamedDeclaration = (parent: ts.Node, node: ts.Identifier) =>
   (ts.isVariableDeclaration(parent) ||
@@ -583,11 +597,12 @@ const resolveReferencedIdentifierSymbol = (node: ts.Node, checker: ts.TypeChecke
     ? resolveCanonicalSymbolAtNode(node, checker)
     : O.none;
 
-const collectReferencedSymbolsInNode = (
-  root: ts.Node,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-) =>
+type FileCheckerEnv = Readonly<{
+  sf: ts.SourceFile;
+  checker: ts.TypeChecker;
+}>;
+
+const collectReferencedSymbolsInNode = (root: ts.Node, { sf, checker }: FileCheckerEnv) =>
   new Set(
     RA.filterMap((node: ts.Node) => resolveReferencedIdentifierSymbol(node, checker))(
       collectTsNodes(root, sf),
@@ -597,31 +612,28 @@ const collectReferencedSymbolsInNode = (
 const lookupExportNameForSymbol = (refGraph: LocalRefGraph) =>
   flow((sym: ts.Symbol) => refGraph.exportSymbolToName.get(sym), O.fromNullable);
 
-const advanceTransitiveState = (
-  state: TransitiveWalkState,
-  candidateSymbols: ReadonlyArray<ts.Symbol>,
-  refGraph: LocalRefGraph,
-) => {
-  const nextFrontier = RA.filter(
-    (sym: ts.Symbol) => refGraph.localBySym.has(sym) && !state.visitedLocals.has(sym),
-  )(candidateSymbols);
-  return {
-    frontier: nextFrontier,
-    visitedLocals: new Set([...state.visitedLocals, ...nextFrontier]),
-    reachedExports: new Set([
-      ...state.reachedExports,
-      ...RA.filterMap(lookupExportNameForSymbol(refGraph))(candidateSymbols),
-    ]),
+const advanceTransitiveState =
+  (refGraph: LocalRefGraph) =>
+  (state: TransitiveWalkState, candidateSymbols: ReadonlyArray<ts.Symbol>) => {
+    const nextFrontier = RA.filter(
+      (sym: ts.Symbol) => refGraph.localBySym.has(sym) && !state.visitedLocals.has(sym),
+    )(candidateSymbols);
+    return {
+      frontier: nextFrontier,
+      visitedLocals: new Set([...state.visitedLocals, ...nextFrontier]),
+      reachedExports: new Set([
+        ...state.reachedExports,
+        ...RA.filterMap(lookupExportNameForSymbol(refGraph))(candidateSymbols),
+      ]),
+    };
   };
-};
 
 const stepTransitiveFrontier = (state: TransitiveWalkState, refGraph: LocalRefGraph) =>
-  advanceTransitiveState(
+  advanceTransitiveState(refGraph)(
     state,
     RA.flatMap((curr: ts.Symbol) => [...(refGraph.localDirectRefs.get(curr) ?? [])])(
       state.frontier,
     ),
-    refGraph,
   );
 
 const walkTransitiveRefs = (
@@ -638,10 +650,9 @@ const expandTransitiveRefs = (
   refGraph: LocalRefGraph,
 ) =>
   walkTransitiveRefs(
-    advanceTransitiveState(
+    advanceTransitiveState(refGraph)(
       { frontier: [], visitedLocals: new Set(), reachedExports: new Set() },
       [...initialRefs],
-      refGraph,
     ),
     refGraph,
   );
@@ -651,7 +662,7 @@ const excludeSelfExport = (reached: ReadonlySet<string>, selfName: string) =>
 
 const collectExportTargetSymbols = (ctx: ProfileBuildContext) =>
   flow(resolveExportTargetNode, (targetNode) =>
-    collectReferencedSymbolsInNode(targetNode, ctx.sf, ctx.scope.checker),
+    collectReferencedSymbolsInNode(targetNode, { sf: ctx.sf, checker: ctx.scope.checker }),
   );
 
 const collectExpandedExportRefs = (exp: RuntimeExport, ctx: ProfileBuildContext) =>
@@ -819,17 +830,14 @@ const seedClusterWalkState = (seed: string, visited: ReadonlySet<string>) => ({
   collectedReasons: [] satisfies ReadonlyArray<string>,
 });
 
-const appendSeededCluster = (
-  acc: ClusterPartitionAcc,
-  seed: string,
-  adjacency: CohesionAdjacency,
-) => {
-  const walked = walkClusterFrontier(seedClusterWalkState(seed, acc.visited), adjacency);
-  return {
-    visited: walked.seenNodes,
-    clusters: RA.append(buildCohesionCluster(walked))(acc.clusters),
+const appendSeededCluster =
+  (adjacency: CohesionAdjacency) => (acc: ClusterPartitionAcc, seed: string) => {
+    const walked = walkClusterFrontier(seedClusterWalkState(seed, acc.visited), adjacency);
+    return {
+      visited: walked.seenNodes,
+      clusters: RA.append(buildCohesionCluster(walked))(acc.clusters),
+    };
   };
-};
 
 const compareClusterByFirstExport = Ord.contramap(
   (cluster: CohesionCluster) => cluster.exports[0] ?? "",
@@ -845,7 +853,7 @@ const partitionCohesionClusters = (
       (acc, profile) =>
         acc.visited.has(profile.name)
           ? acc
-          : appendSeededCluster(acc, profile.name, adjacency),
+          : appendSeededCluster(adjacency)(acc, profile.name),
     )(profiles).clusters,
   );
 
@@ -865,28 +873,22 @@ const collectExportedSymbolSet = (
 
 const buildLocalDirectRefsMap = (
   locals: ReadonlyArray<UnexportedLocalBinding>,
-  sf: ts.SourceFile,
-  checker: ts.TypeChecker,
+  env: FileCheckerEnv,
 ) =>
   new Map(
     RA.map((l: UnexportedLocalBinding) => [
       l.sym,
-      collectReferencedSymbolsInNode(l.node, sf, checker),
+      collectReferencedSymbolsInNode(l.node, env),
     ] as const)(locals),
   );
 
 const buildLocalRefGraph = (ctx: MultiExportContext) => {
   const symbolEntries = buildExportSymbolEntries(ctx.runtimeExports, ctx.scope.checker);
-  const locals = collectUnexportedLocals(
-    ctx.sf,
-    ctx.scope.checker,
-    collectExportedSymbolSet(symbolEntries),
-    ctx.scope.ubiquitousSet,
-  );
+  const locals = collectUnexportedLocals(ctx, collectExportedSymbolSet(symbolEntries));
   return {
     exportSymbolToName: new Map(symbolEntries),
     localBySym: new Map(RA.map((l: UnexportedLocalBinding) => [l.sym, l] as const)(locals)),
-    localDirectRefs: buildLocalDirectRefsMap(locals, ctx.sf, ctx.scope.checker),
+    localDirectRefs: buildLocalDirectRefsMap(locals, { sf: ctx.sf, checker: ctx.scope.checker }),
   };
 };
 
@@ -928,12 +930,21 @@ const buildTrivialCohesionResult = (
   isCohesive: true,
 });
 
+export type CohesionAnalysisConfig = Readonly<{
+  checker: ts.TypeChecker;
+  options: O.Option<ModuleCohesionOptions>;
+}>;
+
+const DEFAULT_COHESION_OPTIONS: ModuleCohesionOptions = {
+  ubiquitousTypes: DEFAULT_UBIQUITOUS_TYPES,
+  primaryDomainTypes: [],
+};
+
 const analyzeNonBarrelCohesion = (
   sf: ts.SourceFile,
-  sfPath: string,
-  checker: ts.TypeChecker,
-  options: ModuleCohesionOptions,
+  { checker, options }: Readonly<{ checker: ts.TypeChecker; options: ModuleCohesionOptions }>,
 ) => {
+  const sfPath = normalizeFilePath(sf.fileName);
   const runtimeExports = extractFileRuntimeExports(sf, checker);
   return runtimeExports.length <= 1
     ? buildTrivialCohesionResult(sfPath, runtimeExports)
@@ -951,20 +962,17 @@ const analyzeNonBarrelCohesion = (
 
 export const analyzeFileCohesion = (
   sf: ts.SourceFile,
-  checker: ts.TypeChecker,
-  options: ModuleCohesionOptions = {
-    ubiquitousTypes: DEFAULT_UBIQUITOUS_TYPES,
-    primaryDomainTypes: [],
-  },
-): FileCohesionResult => {
-  const sfPath = normalizeFilePath(sf.fileName);
-  return isBarrelFile(sf)
+  config: CohesionAnalysisConfig,
+): FileCohesionResult =>
+  isBarrelFile(sf)
     ? {
-        fileName: sfPath,
+        fileName: normalizeFilePath(sf.fileName),
         isBarrel: true,
         exportCount: 0,
         clusters: [] satisfies ReadonlyArray<CohesionCluster>,
         isCohesive: true,
       }
-    : analyzeNonBarrelCohesion(sf, sfPath, checker, options);
-};
+    : analyzeNonBarrelCohesion(sf, {
+        checker: config.checker,
+        options: O.getOrElse(() => DEFAULT_COHESION_OPTIONS)(config.options),
+      });

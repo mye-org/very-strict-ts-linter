@@ -90,8 +90,7 @@ const buildContextTermsByDir = flow(
   RA.reduce<ts.SourceFile, ContextTermsByDir>({}, mergeSourceFileTerms),
 );
 
-const indexProgramContextTerms = (program: ts.Program) =>
-  memoizeByProgram(program, contextTermCache, buildContextTermsByDir);
+const indexProgramContextTerms = memoizeByProgram(contextTermCache, buildContextTermsByDir);
 
 const findGenericSuffix = (name: string, suffixes: ReadonlyArray<string>) =>
   RA.findFirst((s: string) => hasStrictSuffix(name, s))(suffixes);
@@ -114,94 +113,85 @@ const formatConflictingTerms = (token: string) =>
     (nonEmpty: ReadonlyArray<string>) => O.some({ token, conflicting: nonEmpty.join(", ") }),
   );
 
-const findGroupConflict = (
-  token: string,
-  ownTokens: ReadonlySet<string>,
-  group: ReadonlyArray<string>,
-  ctx: SynonymContext,
-) => {
-  const find = flow(
-    RA.filter(
-      (term: string) =>
-        term !== token &&
-        !ownTokens.has(term) &&
-        ctx.contextTerms.has(term) &&
-        !ctx.allowed.has(term),
-    ),
-    RA.uniq(S.Eq),
-    formatConflictingTerms(token),
-  );
-  return find(group);
-};
+const findGroupConflict =
+  (token: string, ownTokens: ReadonlySet<string>) =>
+  (ctx: SynonymContext) =>
+  (group: ReadonlyArray<string>) => {
+    const find = flow(
+      RA.filter(
+        (term: string) =>
+          term !== token &&
+          !ownTokens.has(term) &&
+          ctx.contextTerms.has(term) &&
+          !ctx.allowed.has(term),
+      ),
+      RA.uniq(S.Eq),
+      formatConflictingTerms(token),
+    );
+    return find(group);
+  };
 
-const matchTokenGroupConflict = (
-  token: string,
-  ownTokens: ReadonlySet<string>,
-  ctx: SynonymContext,
-) => {
-  const matchGroup = flow(
-    RA.findFirst((group: ReadonlyArray<string>) => group.includes(token)),
-    O.flatMap((group) => findGroupConflict(token, ownTokens, group, ctx)),
-  );
-  return matchGroup(ctx.synonymGroups);
-};
+const matchTokenGroupConflict =
+  (ownTokens: ReadonlySet<string>, ctx: SynonymContext) =>
+  (token: string) => {
+    const matchGroup = flow(
+      RA.findFirst((group: ReadonlyArray<string>) => group.includes(token)),
+      O.flatMap(findGroupConflict(token, ownTokens)(ctx)),
+    );
+    return matchGroup(ctx.synonymGroups);
+  };
 
-const findCollisionForTokens = (
-  tokens: ReadonlyArray<string>,
-  ownTokens: ReadonlySet<string>,
-  ctx: SynonymContext,
-) => {
-  const find = flow(
-    RA.filter((token: string) => !ctx.allowed.has(token)),
-    RA.filterMap((token) => matchTokenGroupConflict(token, ownTokens, ctx)),
-    RA.head,
-  );
-  return find(tokens);
-};
+const findCollisionForTokens =
+  (ownTokens: ReadonlySet<string>, ctx: SynonymContext) =>
+  (tokens: ReadonlyArray<string>) => {
+    const find = flow(
+      RA.filter((token: string) => !ctx.allowed.has(token)),
+      RA.filterMap(matchTokenGroupConflict(ownTokens, ctx)),
+      RA.head,
+    );
+    return find(tokens);
+  };
 
 const findSynonymCollision = (name: string, ctx: SynonymContext) => {
   const tokens = extractPascalTokens(name);
-  return findCollisionForTokens(tokens, new Set(tokens), ctx);
+  return findCollisionForTokens(new Set(tokens), ctx)(tokens);
 };
 
-const reportGenericAndCrud = (
-  id: TSESTree.Identifier,
-  symbolKind: SymbolKind,
-  repoKind: RepoKind,
-  options: Options[0],
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  O.map((suffix: string) => {
-    report({ node: id, messageId: "genericSuffix", data: { name: id.name, suffix } });
-  })(findGenericSuffix(id.name, options.genericSuffixes));
-  match({ symbolKind, repoKind })
-    .with({ symbolKind: "function", repoKind: "non-repo" }, () => {
-      O.map((verb: string) => {
-        report({ node: id, messageId: "crudVerb", data: { name: id.name, verb } });
-      })(findCrudVerb(id.name, options.crudVerbs));
-    })
-    .otherwise(() => {});
-};
+const reportGenericAndCrud =
+  (options: Options[0], report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+  (id: TSESTree.Identifier, symbolKind: SymbolKind) =>
+  (repoKind: RepoKind) => {
+    O.map((suffix: string) => {
+      report({ node: id, messageId: "genericSuffix", data: { name: id.name, suffix } });
+    })(findGenericSuffix(id.name, options.genericSuffixes));
+    match({ symbolKind, repoKind })
+      .with({ symbolKind: "function", repoKind: "non-repo" }, () => {
+        O.map((verb: string) => {
+          report({ node: id, messageId: "crudVerb", data: { name: id.name, verb } });
+        })(findCrudVerb(id.name, options.crudVerbs));
+      })
+      .otherwise(() => {});
+  };
 
-const checkIdentifier = (
-  id: TSESTree.Identifier,
-  symbolKind: SymbolKind,
-  repoKind: RepoKind,
-  contextTerms: ReadonlySet<string>,
-  options: Options[0],
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  const allowed = new Set(options.allowedTerms);
-  match(allowed.has(id.name))
-    .with(true, () => {})
-    .with(false, () => {
-      reportGenericAndCrud(id, symbolKind, repoKind, options, report);
-      O.map(({ token, conflicting }: Readonly<Record<"token" | "conflicting", string>>) => {
-        report({ node: id, messageId: "synonymCollision", data: { term: token, conflicting } });
-      })(findSynonymCollision(id.name, { contextTerms, synonymGroups: options.synonymGroups, allowed }));
-    })
-    .exhaustive();
-};
+const checkIdentifier =
+  (
+    contextTerms: ReadonlySet<string>,
+    options: Options[0],
+  ) =>
+  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+  (repoKind: RepoKind) =>
+  (id: TSESTree.Identifier, symbolKind: SymbolKind) => {
+    const allowed = new Set(options.allowedTerms);
+    match(allowed.has(id.name))
+      .with(true, () => {})
+      .with(false, () => {
+        reportGenericAndCrud(options, report)(id, symbolKind)(repoKind);
+        O.map(({ token, conflicting }: Readonly<Record<"token" | "conflicting", string>>) => {
+          report({ node: id, messageId: "synonymCollision", data: { term: token, conflicting } });
+        })(findSynonymCollision(id.name, { contextTerms, synonymGroups: options.synonymGroups, allowed }));
+      })
+      .exhaustive();
+  };
 
 const resolveDeclaratorKind = (node: TSESTree.VariableDeclarator) =>
   O.exists(isEsTreeAnonymousFunctionNode)(O.fromNullable(node.init))
@@ -224,17 +214,17 @@ const buildListenerMap = (run: (id: O.Option<TSESTree.Identifier>, symbolKind: S
   },
 });
 
-const buildListeners = (
-  contextTerms: ReadonlySet<string>,
-  fileName: string,
-  options: Options[0],
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) =>
-  buildListenerMap((id, symbolKind) => {
-    O.map((node: TSESTree.Identifier) => {
-      checkIdentifier(node, symbolKind, classifyRepoKind(fileName), contextTerms, options, report);
-    })(id);
-  });
+const buildListeners =
+  (contextTerms: ReadonlySet<string>, options: Options[0]) =>
+  (fileName: string, report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+    buildListenerMap((id, symbolKind) => {
+      O.map((node: TSESTree.Identifier) => {
+        checkIdentifier(contextTerms, options)(report)(classifyRepoKind(fileName))(
+          node,
+          symbolKind,
+        );
+      })(id);
+    });
 
 export const ubiquitousLanguage = createRule<Options, MessageIds>({
   name: "ubiquitous-language",
@@ -280,16 +270,13 @@ export const ubiquitousLanguage = createRule<Options, MessageIds>({
   create: (context, [options]) =>
     shouldLintDomainFile(
       options.enforceEverywhere ? "everywhere" : "domain-only",
-      context.filename,
       options.domainPatterns,
-    )
+    )(context.filename)
       ? buildListeners(
           indexProgramContextTerms(ESLintUtils.getParserServices(context).program)[
             resolveContextDir(context.filename)
           ] ?? new Set<string>(),
-          context.filename,
           options,
-          (d) => { context.report(d); },
-        )
+        )(context.filename, (d) => { context.report(d); })
       : {},
 });

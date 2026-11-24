@@ -71,41 +71,47 @@ const hasFiniteFirstArg = (
     RA.head<TSESTree.CallExpressionArgument>(args),
   );
 
-const checkTerminator = (
-  node: TSESTree.CallExpression,
-  terminator: TSESTree.CallExpression,
-  methodName: string,
-  services: ParserServicesWithTypeInformation,
-  report: (n: TSESTree.Node, messageId: MessageIds) => void,
-) => {
-  match({
-    methodName,
-    isFinite: hasFiniteFirstArg(node.arguments, services),
-  })
-    .with({ methodName: "otherwise", isFinite: true }, () => { report(terminator, "preferExhaustive"); })
-    .with({ methodName: "run", isFinite: true }, () => { report(terminator, "preferExhaustive"); })
-    .otherwise(() => {});
-};
-
-const checkMatchCall = (
-  node: TSESTree.CallExpression,
-  services: ParserServicesWithTypeInformation,
-  report: (n: TSESTree.Node, messageId: MessageIds) => void,
-) => {
-  match(isMatchCall(node))
-    .with(false, () => {})
-    .with(true, () => {
-      const check = flow(
-        findMatchChainTerminator,
-        O.match(
-          () => { report(node, "unterminatedMatch"); },
-          ([terminator, methodName]) => { checkTerminator(node, terminator, methodName, services, report); },
-        ),
-      );
-      check(node);
+const checkTerminator =
+  (
+    services: ParserServicesWithTypeInformation,
+    report: (n: TSESTree.Node, messageId: MessageIds) => void,
+  ) =>
+  (
+    node: TSESTree.CallExpression,
+    [terminator, methodName]: readonly [TSESTree.CallExpression, string],
+  ) => {
+    match({
+      methodName,
+      isFinite: hasFiniteFirstArg(node.arguments, services),
     })
-    .exhaustive();
-};
+      .with(
+        { methodName: "otherwise", isFinite: true },
+        { methodName: "run", isFinite: true },
+        () => { report(terminator, "preferExhaustive"); },
+      )
+      .otherwise(() => {});
+  };
+
+const checkMatchCall =
+  (
+    services: ParserServicesWithTypeInformation,
+    report: (n: TSESTree.Node, messageId: MessageIds) => void,
+  ) =>
+  (node: TSESTree.CallExpression) => {
+    match(isMatchCall(node))
+      .with(false, () => {})
+      .with(true, () => {
+        const check = flow(
+          findMatchChainTerminator,
+          O.match(
+            () => { report(node, "unterminatedMatch"); },
+            (pair) => { checkTerminator(services, report)(node, pair); },
+          ),
+        );
+        check(node);
+      })
+      .exhaustive();
+  };
 
 export const requireExhaustiveMatch = createRule<[], MessageIds>({
   name: "require-exhaustive-match",
@@ -125,10 +131,8 @@ export const requireExhaustiveMatch = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => ({
-    CallExpression: (node) => {
-      checkMatchCall(node, ESLintUtils.getParserServices(context), (n, messageId) => {
-        context.report({ node: n, messageId });
-      });
-    },
+    CallExpression: checkMatchCall(ESLintUtils.getParserServices(context), (n, messageId) => {
+      context.report({ node: n, messageId });
+    }),
   }),
 });

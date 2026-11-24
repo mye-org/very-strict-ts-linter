@@ -56,65 +56,56 @@ const resolveIdVariable =
     return resolve(id.name);
   };
 
-const checkIdentifierOrMemberArg = (
-  arg: TSESTree.Expression,
-  scope: TSESLint.Scope.Scope,
-  report: Reporter,
-) => {
-  const check = flow(
-    extractRootIdentifier,
-    O.flatMap(resolveIdVariable(scope)),
-    O.filter(({ variable }) => RA.some(isUiRuntimeDefinition)(variable.defs)),
-    O.map(({ name }) => {
-      report({ node: arg, messageId: "uiRuntimeDefinedCallback", data: { name } });
-    }),
-  );
-  check(arg);
-};
+type ResolvedIdVar = ReturnType<ReturnType<typeof resolveIdVariable>>;
 
-const reportTargetByKind = (
-  arg: TSESTree.CallExpressionArgument,
-  node: TSESTree.CallExpression,
-  sourceCode: TSESLint.SourceCode,
-  report: Reporter,
-) => {
-  match(arg)
-    .with(
-      { type: AST_NODE_TYPES.ArrowFunctionExpression },
-      { type: AST_NODE_TYPES.FunctionExpression },
-      () => {
-        report({ node: arg, messageId: "inlineWorkletCallback" });
-      },
-    )
-    .with({ type: AST_NODE_TYPES.CallExpression }, () => {
-      report({ node: arg, messageId: "uiRuntimeCreatedCallback" });
-    })
-    .with(
-      { type: AST_NODE_TYPES.Identifier },
-      { type: AST_NODE_TYPES.MemberExpression },
-      { type: AST_NODE_TYPES.ChainExpression },
-      (expr) => {
-        checkIdentifierOrMemberArg(expr, sourceCode.getScope(node), report);
-      },
-    )
-    .with(P._, () => {})
-    .exhaustive();
-};
+const checkIdentifierOrMemberArg =
+  (resolveVar: (id: TSESTree.Identifier) => ResolvedIdVar, report: Reporter) =>
+  (arg: TSESTree.Expression) => {
+    const check = flow(
+      extractRootIdentifier,
+      O.flatMap(resolveVar),
+      O.filter(({ variable }) => RA.some(isUiRuntimeDefinition)(variable.defs)),
+      O.map(({ name }) => {
+        report({ node: arg, messageId: "uiRuntimeDefinedCallback", data: { name } });
+      }),
+    );
+    check(arg);
+  };
 
-const checkScheduleOnRnCall = (
-  node: TSESTree.CallExpression,
-  sourceCode: TSESLint.SourceCode,
-  report: Reporter,
-) => {
-  const check = flow(
-    O.fromPredicate((c: TSESTree.CallExpression) => isScheduleOnRnCall(c) && isInsideWorklet(c)),
-    O.flatMap((c) => O.fromNullable(c.arguments[0])),
-    O.map((arg) => {
-      reportTargetByKind(arg, node, sourceCode, report);
-    }),
-  );
-  check(node);
-};
+const reportTargetByKind =
+  (resolveVar: (id: TSESTree.Identifier) => ResolvedIdVar, report: Reporter) =>
+  (arg: TSESTree.CallExpressionArgument) => {
+    match(arg)
+      .with(
+        { type: AST_NODE_TYPES.ArrowFunctionExpression },
+        { type: AST_NODE_TYPES.FunctionExpression },
+        () => {
+          report({ node: arg, messageId: "inlineWorkletCallback" });
+        },
+      )
+      .with({ type: AST_NODE_TYPES.CallExpression }, () => {
+        report({ node: arg, messageId: "uiRuntimeCreatedCallback" });
+      })
+      .with(
+        { type: AST_NODE_TYPES.Identifier },
+        { type: AST_NODE_TYPES.MemberExpression },
+        { type: AST_NODE_TYPES.ChainExpression },
+        checkIdentifierOrMemberArg(resolveVar, report),
+      )
+      .with(P._, () => {})
+      .exhaustive();
+  };
+
+const checkScheduleOnRnCall =
+  (sourceCode: TSESLint.SourceCode, report: Reporter) =>
+  (node: TSESTree.CallExpression) => {
+    const check = flow(
+      O.fromPredicate((c: TSESTree.CallExpression) => isScheduleOnRnCall(c) && isInsideWorklet(c)),
+      O.flatMap((c) => O.fromNullable(c.arguments[0])),
+      O.map(reportTargetByKind((id) => resolveIdVariable(sourceCode.getScope(id))(id), report)),
+    );
+    check(node);
+  };
 
 export const requireJsThreadScheduleOnRn = createRule<[], MessageIds>({
   name: "require-js-thread-schedule-on-rn",
@@ -138,11 +129,9 @@ export const requireJsThreadScheduleOnRn = createRule<[], MessageIds>({
   create: (context) =>
     isTsxFilename(context.filename)
       ? {
-          CallExpression: (node) => {
-            checkScheduleOnRnCall(node, context.sourceCode, (d) => {
-              context.report(d);
-            });
-          },
+          CallExpression: checkScheduleOnRnCall(context.sourceCode, (d) => {
+            context.report(d);
+          }),
         }
       : {},
 });

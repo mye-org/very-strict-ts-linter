@@ -197,17 +197,20 @@ const isPurityBoundaryRespected = (context: SingleCallerContext) =>
 const isPureExportConsumedByImpureModule = (
   input: ExportEvaluationInput,
   soleConsumer: string,
-  purityAnalysis: ProgramPurityAnalysis,
-) =>
-  resolveExportPurity(
-    input.runtimeExport,
-    O.fromNullable(purityAnalysis.files[input.fileGraph.fileName]),
-  ) === "pure" &&
-  O.exists(isImpureStatus)(lookupConsumerModulePurity(purityAnalysis, soleConsumer));
+) => {
+  const purityAnalysis = input.context.getPurityAnalysis();
+  return (
+    resolveExportPurity(
+      input.runtimeExport,
+      O.fromNullable(purityAnalysis.files[input.fileGraph.fileName]),
+    ) === "pure" &&
+    O.exists(isImpureStatus)(lookupConsumerModulePurity(purityAnalysis, soleConsumer))
+  );
+};
 
 const isBlockedByPurityBoundary = (input: ExportEvaluationInput, soleConsumer: string) =>
   isPurityBoundaryRespected(input.context) &&
-  isPureExportConsumedByImpureModule(input, soleConsumer, input.context.getPurityAnalysis());
+  isPureExportConsumedByImpureModule(input, soleConsumer);
 
 const readFileLineCount = (consumerFile: string) =>
   flow(
@@ -315,7 +318,10 @@ const collectFileCandidateFindings = (
   )(fileGraph.runtimeExports);
 
 const isFileNonCohesive = (sf: ts.SourceFile, context: SingleCallerContext) =>
-  !analyzeFileCohesion(sf, context.checker, context.options.cohesionOptions).isCohesive;
+  !analyzeFileCohesion(sf, {
+    checker: context.checker,
+    options: O.some(context.options.cohesionOptions),
+  }).isCohesive;
 
 const isConsumerFileCohesive = (context: SingleCallerContext) =>
   flow(
@@ -398,24 +404,31 @@ const collectAllSingleCallerCandidates = (context: SingleCallerContext) =>
 const toPurityGetter = (purityAnalysis: PurityProvider) =>
   typeof purityAnalysis === "function" ? purityAnalysis : () => purityAnalysis;
 
-const buildSingleCallerContext = (
-  program: ts.Program,
-  purityAnalysis: PurityProvider,
-  options: SingleCallerOptions,
-) => ({
-  checker: program.getTypeChecker(),
-  symbolGraph: analyzeModuleSymbolGraph(program, options.entryPoints, options.testPatterns),
-  getPurityAnalysis: toPurityGetter(purityAnalysis),
-  sourceFilesByPath: indexSourceFilesByPath(program),
-  options,
-});
+type SingleCallerConfig = Readonly<{
+  purityAnalysis: PurityProvider;
+  options: O.Option<SingleCallerOptions>;
+}>;
 
+const buildSingleCallerContext = (program: ts.Program, config: SingleCallerConfig) => {
+  const options = O.getOrElse(() => DEFAULT_SINGLE_CALLER_OPTIONS)(config.options);
+  return {
+    checker: program.getTypeChecker(),
+    symbolGraph: analyzeModuleSymbolGraph(program, {
+      entryPointPatterns: options.entryPoints,
+      testFilePatterns: options.testPatterns,
+    }),
+    getPurityAnalysis: toPurityGetter(config.purityAnalysis),
+    sourceFilesByPath: indexSourceFilesByPath(program),
+    options,
+  };
+};
+
+// eslint-disable-next-line strict-fp/no-single-caller-export -- analyzer entry point consumed by rule and tests
 export const analyzeSingleCallerExports = (
   program: ts.Program,
-  purityAnalysis: PurityProvider,
-  options: SingleCallerOptions = DEFAULT_SINGLE_CALLER_OPTIONS,
+  config: SingleCallerConfig,
 ): SingleCallerAnalysis => {
-  const context = buildSingleCallerContext(program, purityAnalysis, options);
+  const context = buildSingleCallerContext(program, config);
   return finalizeSingleCallerAnalysis(context, collectAllSingleCallerCandidates(context));
 };
 
@@ -493,18 +506,14 @@ const expandComponentFrontier = (
 ): FrontierWalkState =>
   state.pendingExports.length === 0
     ? state
-    : stepComponentFrontier(
-        collectUnvisitedNeighbors(state, adjacency),
-        state,
-        adjacency,
-      );
+    : stepComponentFrontier(state, adjacency);
 
 const stepComponentFrontier = (
-  nextFrontier: ReadonlyArray<string>,
   state: FrontierWalkState,
   adjacency: AdjacencyRecord,
-) =>
-  expandComponentFrontier(
+) => {
+  const nextFrontier = collectUnvisitedNeighbors(state, adjacency);
+  return expandComponentFrontier(
     {
       pendingExports: nextFrontier,
       seenExports: new Set([...state.seenExports, ...nextFrontier]),
@@ -512,6 +521,7 @@ const stepComponentFrontier = (
     },
     adjacency,
   );
+};
 
 const collectSortedProdConsumers = (fileGraph: FileModuleGraph) =>
   flow(
@@ -528,28 +538,25 @@ const buildConsumerExportGroup = (
   consumers: collectSortedProdConsumers(fileGraph)(members),
 });
 
-const appendSeededComponent = (
-  acc: PartitionAccumulator,
-  seed: string,
-  graphCtx: ReuseGraphContext,
-) => {
-  const walked = expandComponentFrontier(
-    { pendingExports: [seed], seenExports: new Set([...acc.visited, seed]), componentExports: [] },
-    graphCtx.adjacency,
-  );
-  return {
-    visited: walked.seenExports,
-    groups: RA.append(buildConsumerExportGroup(walked.componentExports, graphCtx.fileGraph))(
-      acc.groups,
-    ),
+const appendSeededComponent =
+  (graphCtx: ReuseGraphContext) => (acc: PartitionAccumulator, seed: string) => {
+    const walked = expandComponentFrontier(
+      { pendingExports: [seed], seenExports: new Set([...acc.visited, seed]), componentExports: [] },
+      graphCtx.adjacency,
+    );
+    return {
+      visited: walked.seenExports,
+      groups: RA.append(buildConsumerExportGroup(walked.componentExports, graphCtx.fileGraph))(
+        acc.groups,
+      ),
+    };
   };
-};
 
 const stepComponentPartition =
   (graphCtx: ReuseGraphContext) => (acc: PartitionAccumulator, exportName: string) =>
     acc.visited.has(exportName)
       ? acc
-      : appendSeededComponent(acc, exportName, graphCtx);
+      : appendSeededComponent(graphCtx)(acc, exportName);
 
 const compareGroupByFirstExport = Ord.contramap(
   (group: ConsumerExportGroup) => group.exports[0] ?? "",
@@ -596,6 +603,7 @@ const indexCommonReuseByFile = RA.reduce<
   [finding.fileName]: finding,
 }));
 
+// eslint-disable-next-line strict-fp/no-single-caller-export -- analyzer entry point consumed by rule and tests
 export const analyzeCommonReuseCohesion = (
   program: ts.Program,
   options: CommonReuseOptions = {
@@ -605,7 +613,14 @@ export const analyzeCommonReuseCohesion = (
 ): CommonReuseAnalysis => {
   const findings = RA.filterMap((fileGraph: FileModuleGraph) =>
     evaluateFileCommonReuse(fileGraph, options.minExports),
-  )(readRecordValues(analyzeModuleSymbolGraph(program, [], options.testPatterns).files));
+  )(
+    readRecordValues(
+      analyzeModuleSymbolGraph(program, {
+        entryPointPatterns: [],
+        testFilePatterns: options.testPatterns,
+      }).files,
+    ),
+  );
   return {
     findings,
     byFile: indexCommonReuseByFile(findings),

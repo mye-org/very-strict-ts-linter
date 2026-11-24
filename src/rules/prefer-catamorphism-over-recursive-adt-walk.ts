@@ -43,45 +43,41 @@ const toCatamorphismDescriptor = (node: TSESTree.Node, finding: CatamorphismFind
   },
 });
 
-const reportWalkerFindings = (
-  node: TSESTree.Node,
-  locationIndex: Readonly<Record<string, ReadonlyArray<CatamorphismFinding>>>,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  O.map(RA.map((finding: CatamorphismFinding) => { report(toCatamorphismDescriptor(node, finding)); }))(
-    O.fromNullable(locationIndex[resolveNodeLocationKey(node, services)]),
-  );
-};
-
-const checkWalkerNode = (
-  node: TSESTree.Node,
-  minWalkers: number,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => {
-  reportWalkerFindings(
-    node,
-    analyzeCatamorphisms(services.program, minWalkers).locationIndex,
-    services,
-    report,
-  );
-};
-
-const buildCatamorphismListeners = (
-  minWalkers: number,
-  services: ParserServicesWithTypeInformation,
-  report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
-) => ({
-  FunctionDeclaration: (node: TSESTree.FunctionDeclaration) => {
-    checkWalkerNode(node, minWalkers, services, report);
-  },
-  VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
-    O.map((n: TSESTree.VariableDeclarator) => { checkWalkerNode(n, minWalkers, services, report); })(
-      O.fromPredicate(hasFunctionInit)(node),
+const reportWalkerFindings =
+  (
+    services: ParserServicesWithTypeInformation,
+    report: (d: TSESLint.ReportDescriptor<MessageIds>) => void,
+  ) =>
+  (
+    node: TSESTree.Node,
+    locationIndex: Readonly<Record<string, ReadonlyArray<CatamorphismFinding>>>,
+  ) => {
+    O.map(RA.map((finding: CatamorphismFinding) => { report(toCatamorphismDescriptor(node, finding)); }))(
+      O.fromNullable(locationIndex[resolveNodeLocationKey(node, services)]),
     );
-  },
-});
+  };
+
+const checkWalkerNode =
+  (minWalkers: number, services: ParserServicesWithTypeInformation) =>
+  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
+  (node: TSESTree.Node) => {
+    reportWalkerFindings(services, report)(
+      node,
+      analyzeCatamorphisms(services.program, minWalkers).locationIndex,
+    );
+  };
+
+const buildCatamorphismListeners =
+  (minWalkers: number, services: ParserServicesWithTypeInformation) =>
+  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => {
+    const check = checkWalkerNode(minWalkers, services)(report);
+    return {
+      FunctionDeclaration: check,
+      VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
+        O.map(check)(O.fromPredicate(hasFunctionInit)(node));
+      },
+    };
+  };
 
 export const preferCatamorphismOverRecursiveAdtWalk = createRule<Options, MessageIds>({
   name: "prefer-catamorphism-over-recursive-adt-walk",
@@ -107,7 +103,7 @@ export const preferCatamorphismOverRecursiveAdtWalk = createRule<Options, Messag
     defaultOptions: [{ minWalkers: 2 }],
   },
   create: (context, [options]) =>
-    buildCatamorphismListeners(options.minWalkers, ESLintUtils.getParserServices(context), (d) => {
+    buildCatamorphismListeners(options.minWalkers, ESLintUtils.getParserServices(context))((d) => {
       context.report(d);
     }),
 });

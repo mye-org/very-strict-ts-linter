@@ -147,18 +147,16 @@ const isUnsafeMethodDeclaration = (decl: ts.Declaration) =>
 const resolveSymbol = (symbol: ts.Symbol, checker: ts.TypeChecker) =>
   symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 
-const resolveCalleeSymbol = (
-  callee: TSESTree.Expression,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
-  const resolve = flow(
-    (c: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(c),
-    (tsNode) => checker.getSymbolAtLocation(tsNode),
-    O.fromNullable,
-  );
-  return resolve(callee);
-};
+const resolveCalleeSymbol =
+  (services: ParserServicesWithTypeInformation, checker: ts.TypeChecker) =>
+  (callee: TSESTree.Expression) => {
+    const resolve = flow(
+      (c: TSESTree.Expression) => services.esTreeNodeToTSNodeMap.get(c),
+      (tsNode) => checker.getSymbolAtLocation(tsNode),
+      O.fromNullable,
+    );
+    return resolve(callee);
+  };
 
 const hasNoUnsafeDeclaration = (decls: ReadonlyArray<ts.Declaration>) =>
   !RA.some(isUnsafeMethodDeclaration)(decls);
@@ -166,13 +164,17 @@ const hasNoUnsafeDeclaration = (decls: ReadonlyArray<ts.Declaration>) =>
 const resolveSymbolDeclarations = (checker: ts.TypeChecker) => (sym: ts.Symbol) =>
   resolveSymbol(sym, checker).getDeclarations() ?? [];
 
-const isSafeMemberCallee = (
-  callee: TSESTree.Expression,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
+const isSafeMemberCallee = ({
+  callee,
+  services,
+  checker,
+}: Readonly<{
+  callee: TSESTree.Expression;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) => {
   const check = flow(
-    (c: TSESTree.Expression) => resolveCalleeSymbol(c, services, checker),
+    resolveCalleeSymbol(services, checker),
     O.map(resolveSymbolDeclarations(checker)),
     O.exists(hasNoUnsafeDeclaration),
   );
@@ -213,11 +215,15 @@ const hasNonVoidThisParam = (sig: ts.Signature, checker: ts.TypeChecker) =>
     sig.declaration.parameters,
   );
 
-const isVoidReturnCompatible = (
-  kind: ForwardedCall["kind"],
-  sig: ts.Signature,
-  checker: ts.TypeChecker,
-) =>
+const isVoidReturnCompatible = ({
+  kind,
+  sig,
+  checker,
+}: Readonly<{
+  kind: ForwardedCall["kind"];
+  sig: ts.Signature;
+  checker: ts.TypeChecker;
+}>) =>
   kind === "return" ||
   (checker.getReturnTypeOfSignature(sig).flags &
     (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never)) !==
@@ -238,43 +244,71 @@ const isAnyTsType = (type: ts.Type) => (type.flags & ts.TypeFlags.Any) !== 0;
 const zipSignatureParams = (a: ts.Signature, b: ts.Signature) =>
   RA.zip(a.getParameters(), b.getParameters());
 
-const hasAnyLeakage = (wrapperSig: ts.Signature, calleeSig: ts.Signature, checker: ts.TypeChecker) =>
+const hasAnyLeakage = ({
+  wrapperSig,
+  calleeSig,
+  checker,
+}: Readonly<{
+  wrapperSig: ts.Signature;
+  calleeSig: ts.Signature;
+  checker: ts.TypeChecker;
+}>) =>
   RA.some(
     ([wp, cp]: readonly [ts.Symbol, ts.Symbol]) =>
       isAnyTsType(checker.getTypeOfSymbol(cp)) && !isAnyTsType(checker.getTypeOfSymbol(wp)),
   )(zipSignatureParams(wrapperSig, calleeSig));
 
 const resolveNodeType = (
-  node: TSESTree.Node,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(node));
-
-const isMutuallyAssignable = (a: ts.Type, b: ts.Type, checker: ts.TypeChecker) =>
-  checker.isTypeAssignableTo(a, b) && checker.isTypeAssignableTo(b, a);
-
-const hasEquivalentAnnotatedType = (
-  node: FunctionNode,
-  callee: ResolvedCallee,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
-  const wrapperType = resolveNodeType(node, services, checker);
-  return O.exists(
-    (wrapperSig: ts.Signature) =>
-      !hasAnyLeakage(wrapperSig, callee.signature, checker) &&
-      isMutuallyAssignable(wrapperType, callee.type, checker),
-  )(O.fromNullable(wrapperType.getCallSignatures()[0]));
-};
-
-const hasPreservedExplicitSignature = (
-  node: FunctionNode,
-  callee: ResolvedCallee,
   services: ParserServicesWithTypeInformation,
   checker: ts.TypeChecker,
 ) =>
+  flow(
+    (node: TSESTree.Node) => services.esTreeNodeToTSNodeMap.get(node),
+    (tsNode) => checker.getTypeAtLocation(tsNode),
+  );
+
+const isMutuallyAssignable = ({
+  a,
+  b,
+  checker,
+}: Readonly<{
+  a: ts.Type;
+  b: ts.Type;
+  checker: ts.TypeChecker;
+}>) => checker.isTypeAssignableTo(a, b) && checker.isTypeAssignableTo(b, a);
+
+const hasEquivalentAnnotatedType = ({
+  node,
+  callee,
+  services,
+  checker,
+}: Readonly<{
+  node: FunctionNode;
+  callee: ResolvedCallee;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) => {
+  const wrapperType = resolveNodeType(services, checker)(node);
+  return O.exists(
+    (wrapperSig: ts.Signature) =>
+      !hasAnyLeakage({ wrapperSig, calleeSig: callee.signature, checker }) &&
+      isMutuallyAssignable({ a: wrapperType, b: callee.type, checker }),
+  )(O.fromNullable(wrapperType.getCallSignatures()[0]));
+};
+
+const hasPreservedExplicitSignature = ({
+  node,
+  callee,
+  services,
+  checker,
+}: Readonly<{
+  node: FunctionNode;
+  callee: ResolvedCallee;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) =>
   !hasExplicitTypeAnnotation(node) ||
-  hasEquivalentAnnotatedType(node, callee, services, checker);
+  hasEquivalentAnnotatedType({ node, callee, services, checker });
 
 const hasTypeArguments = flow(
   (call: TSESTree.CallExpression) => call.typeArguments,
@@ -291,60 +325,73 @@ const isValidCallTarget = (call: TSESTree.CallExpression) =>
   !isPipeCall(call) &&
   !isHookCallee(call.callee);
 
-const isSafeCalleeSig = (
-  node: FunctionNode,
-  { call, kind }: ForwardedCall,
-  callee: ResolvedCallee,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) =>
-  isSafeMemberCallee(call.callee, services, checker) &&
+const isSafeCalleeSig = ({
+  node,
+  forwarded: { call, kind },
+  callee,
+  services,
+  checker,
+}: Readonly<{
+  node: FunctionNode;
+  forwarded: ForwardedCall;
+  callee: ResolvedCallee;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) =>
+  isSafeMemberCallee({ callee: call.callee, services, checker }) &&
   !hasNonVoidThisParam(callee.signature, checker) &&
   hasMatchingArity(node, callee.signature) &&
-  isVoidReturnCompatible(kind, callee.signature, checker) &&
-  hasPreservedExplicitSignature(node, callee, services, checker);
+  isVoidReturnCompatible({ kind, sig: callee.signature, checker }) &&
+  hasPreservedExplicitSignature({ node, callee, services, checker });
 
-const isTypeSafeEtaReduction = (
-  node: FunctionNode,
-  forwarded: ForwardedCall,
-  services: ParserServicesWithTypeInformation,
-  checker: ts.TypeChecker,
-) => {
+const isTypeSafeEtaReduction = ({
+  node,
+  forwarded,
+  services,
+  checker,
+}: Readonly<{
+  node: FunctionNode;
+  forwarded: ForwardedCall;
+  services: ParserServicesWithTypeInformation;
+  checker: ts.TypeChecker;
+}>) => {
   const calleeType = checker.getTypeAtLocation(services.esTreeNodeToTSNodeMap.get(forwarded.call.callee));
   const sigs = calleeType.getCallSignatures();
   return (
     sigs.length === 1 &&
     O.exists((signature: ts.Signature) =>
-      isSafeCalleeSig(node, forwarded, { type: calleeType, signature }, services, checker),
+      isSafeCalleeSig({ node, forwarded, callee: { type: calleeType, signature }, services, checker }),
     )(O.fromNullable(sigs[0]))
   );
 };
 
-const isPointFreeCandidate = (
-  node: FunctionNode,
-  sourceCode: Readonly<TSESLint.SourceCode>,
-  services: ParserServicesWithTypeInformation,
-) =>
+const isPointFreeCandidate = ({
+  node,
+  sourceCode,
+  services,
+}: Readonly<{
+  node: FunctionNode;
+  sourceCode: Readonly<TSESLint.SourceCode>;
+  services: ParserServicesWithTypeInformation;
+}>) =>
   isEligibleFunction(node) &&
   O.exists(
     (forwarded: ForwardedCall) =>
       isValidCallTarget(forwarded.call) &&
       hasMatchingArgsAndParams(node.params, forwarded.call.arguments) &&
       !hasVarRefInCallee(collectRelevantDeclaredVars(node, sourceCode), forwarded.call.callee) &&
-      isTypeSafeEtaReduction(node, forwarded, services, services.program.getTypeChecker()),
+      isTypeSafeEtaReduction({ node, forwarded, services, checker: services.program.getTypeChecker() }),
   )(extractForwardedCall(node));
 
-const checkFunction = (
-  node: FunctionNode,
-  sourceCode: Readonly<TSESLint.SourceCode>,
-  services: ParserServicesWithTypeInformation,
-  report: (n: FunctionNode) => void,
-) => {
-  match(isPointFreeCandidate(node, sourceCode, services))
-    .with(true, () => { report(node); })
-    .with(false, () => {})
-    .exhaustive();
-};
+const checkFunction =
+  (sourceCode: Readonly<TSESLint.SourceCode>, services: ParserServicesWithTypeInformation) =>
+  (report: (n: FunctionNode) => void) =>
+  (node: FunctionNode) => {
+    match(isPointFreeCandidate({ node, sourceCode, services }))
+      .with(true, () => { report(node); })
+      .with(false, () => {})
+      .exhaustive();
+  };
 
 export const preferPointFree = createRule<[], MessageIds>({
   name: "prefer-point-free",
@@ -362,11 +409,12 @@ export const preferPointFree = createRule<[], MessageIds>({
     defaultOptions: [],
   },
   create: (context) => {
-    const onFunction = (node: FunctionNode) => {
-      checkFunction(node, context.sourceCode, ESLintUtils.getParserServices(context), (n) => {
-        context.report({ node: n, messageId: "preferPointFree" });
-      });
-    };
+    const onFunction = checkFunction(
+      context.sourceCode,
+      ESLintUtils.getParserServices(context),
+    )((n) => {
+      context.report({ node: n, messageId: "preferPointFree" });
+    });
     return {
       ArrowFunctionExpression: onFunction,
       FunctionExpression: onFunction,
