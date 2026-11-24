@@ -214,13 +214,13 @@ const computeGuardIndexForThresholds = (thresholds: GuardThresholds) =>
 const makeGuardCacheKey = (thresholds: GuardThresholds) =>
   `${String(thresholds.minClauses)}:${String(thresholds.minOccurrences)}`;
 
-export const analyzeGuardClauses = (
+export const analyzeGuardClauses = ((
   program: ts.Program,
   thresholds: Partial<GuardThresholds> = {},
-): GuardIndex => {
+) => {
   const resolved: GuardThresholds = { ...DEFAULT_GUARD_THRESHOLDS, ...thresholds };
   return memoizeByProgramAndKey(
     guardIndexCache,
     computeGuardIndexForThresholds(resolved),
   )(program, makeGuardCacheKey(resolved));
-};
+}) satisfies (program: ts.Program, thresholds?: Partial<GuardThresholds>) => GuardIndex;

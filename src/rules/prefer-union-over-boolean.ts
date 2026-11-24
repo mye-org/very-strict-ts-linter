@@ -123,13 +123,16 @@ const resolveParentBindingName = (parent: TSESTree.Node) =>
     .with(P._, () => O.none)
     .exhaustive();
 
+const unwrapSatisfiesParent = (parent: TSESTree.Node) =>
+  parent.type === AST_NODE_TYPES.TSSatisfiesExpression ? parent.parent : parent;
+
 const resolveEnclosingBindingName = (node: FunctionNode) =>
   node.type === AST_NODE_TYPES.FunctionDeclaration
     ? O.fromNullable(node.id?.name)
-    : resolveParentBindingName(node.parent);
+    : resolveParentBindingName(unwrapSatisfiesParent(node.parent));
 
 const hasPredicateBindingAnnotation = (node: FunctionNode) =>
-  match(node.parent)
+  match(unwrapSatisfiesParent(node.parent))
     .with({ type: AST_NODE_TYPES.VariableDeclarator, id: { type: AST_NODE_TYPES.Identifier } }, (d) =>
       hasPredicateTypeAnnotation(d.id),
     )
@@ -371,12 +374,27 @@ const isPredicatePropertyAnnotation = (ann: TSESTree.TSTypeAnnotation) =>
 const isPredicateTypeAliasParent = (alias: TSESTree.TSTypeAliasDeclaration) =>
   isPredicateTypeAliasName(alias.id.name);
 
+const isPredicateSatisfiesParent = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.TSSatisfiesExpression &&
+  node.parent.type === AST_NODE_TYPES.VariableDeclarator &&
+  isPredicateDeclarator(node.parent);
+
+const isPredicateIdentifier = (id: TSESTree.Node) =>
+  id.type === AST_NODE_TYPES.Identifier &&
+  id.parent.type === AST_NODE_TYPES.VariableDeclarator &&
+  isPredicateName(id.name);
+
+const isPredicateAnnotatedVarParent = (node: TSESTree.Node) =>
+  node.type === AST_NODE_TYPES.TSTypeAnnotation && isPredicateIdentifier(node.parent);
+
 const isExemptedFunctionType = (fnType: TSESTree.TSFunctionType) =>
   isInsideParameterAnnotation(fnType) ||
   (fnType.parent.type === AST_NODE_TYPES.TSTypeAliasDeclaration &&
     isPredicateTypeAliasParent(fnType.parent)) ||
   (fnType.parent.type === AST_NODE_TYPES.TSTypeAnnotation &&
-    isPredicatePropertyAnnotation(fnType.parent));
+    isPredicatePropertyAnnotation(fnType.parent)) ||
+  isPredicateSatisfiesParent(fnType.parent) ||
+  isPredicateAnnotatedVarParent(fnType.parent);
 
 const isExemptedNamedSignature = (sig: TSESTree.TSMethodSignature | TSESTree.TSDeclareFunction) =>
   match(sig)

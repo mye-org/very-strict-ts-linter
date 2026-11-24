@@ -65,7 +65,7 @@ const tryExtractVarDeclFn = flow(
 
 const namedFunctionExtractors = [tryExtractFuncDecl, tryExtractVarDeclFn] as const;
 
-export const extractNamedTsFunction = (node: ts.Node): O.Option<NamedTsFunction> =>
+export const extractNamedTsFunction = ((node: ts.Node) =>
   RA.findFirstMap((extract: (n: ts.Node) => O.Option<NamedTsFunction>) => extract(node))(
     namedFunctionExtractors,
-  );
+  )) satisfies (node: ts.Node) => O.Option<NamedTsFunction>;

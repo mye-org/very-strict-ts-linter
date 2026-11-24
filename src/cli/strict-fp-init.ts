@@ -33,10 +33,10 @@ const parseTier = (raw: string | undefined) => {
   return undefined;
 };
 
-export const parseInitArgs = (
+export const parseInitArgs = ((
   args: ReadonlyArray<string>,
   defaultCwd = process.cwd(),
-): InitCliOptions => {
+) => {
   let cwd = defaultCwd;
   let force = false;
   let maxTier: LintTier = DEFAULT_MAX_TIER;
@@ -63,9 +63,9 @@ export const parseInitArgs = (
     maxTier,
     help,
   } satisfies InitCliOptions;
-};
+}) satisfies (args: ReadonlyArray<string>, defaultCwd?: string) => InitCliOptions;
 
-export const buildEslintConfigTemplate = (maxTier: LintTier): string => {
+export const buildEslintConfigTemplate = ((maxTier: LintTier) => {
   const tierLine = maxTier < DEFAULT_MAX_TIER ? `\n    maxTier: ${String(maxTier)},` : "";
   return `import strictFp from "@mye-org/eslint-plugin-strict-fp";
 
@@ -87,7 +87,7 @@ export default [
   },
 ];
 `;
-};
+}) satisfies (maxTier: LintTier) => string;
 
 const otherEslintConfigNames = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs"] as const;
 
@@ -131,7 +131,7 @@ const syncPackageJsonLintScript = (packageJsonPath: string) => {
   };
 };
 
-export const runInit = (options: InitCliOptions): InitProjectResult => {
+export const runInit = ((options: InitCliOptions) => {
   const eslintConfigPath = path.join(options.cwd, "eslint.config.ts");
   const packageJsonPath = path.join(options.cwd, "package.json");
   const existingOtherConfigs = otherEslintConfigNames.filter((name) =>
@@ -158,7 +158,7 @@ export const runInit = (options: InitCliOptions): InitProjectResult => {
       : {}),
     existingOtherConfigs,
   } satisfies InitProjectResult;
-};
+}) satisfies (options: InitCliOptions) => InitProjectResult;
 
 const printHelp = () => {
   console.log(`Usage: strict-fp-init [options]

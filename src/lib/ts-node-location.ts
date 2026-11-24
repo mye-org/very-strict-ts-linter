@@ -6,11 +6,11 @@ export type TsLocation = Readonly<Record<"file", string> & Record<"line", number
 
 const asTsLocation = (loc: TsLocation) => loc;
 
-export const resolveTsNodeLocation = (node: ts.Node, sf: ts.SourceFile): TsLocation =>
+export const resolveTsNodeLocation = ((node: ts.Node, sf: ts.SourceFile) =>
   asTsLocation({
     file: normalizeFilePath(sf.fileName),
     line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
-  });
+  })) satisfies (node: ts.Node, sf: ts.SourceFile) => TsLocation;
 
 export const resolveTsNodeOwnLocation: (node: ts.Node) => TsLocation = flow(
   (node: ts.Node) => [node, node.getSourceFile()] as const,

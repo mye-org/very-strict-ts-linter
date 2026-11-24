@@ -89,35 +89,39 @@ const tierLabels: Record<LintTier, string> = {
 
 const ruleTierMap: ReadonlyMap<string, PluginRuleTier> = new Map(Object.entries(ruleTiers));
 
-export const isPhasedLintResult = (value: unknown): value is PhasedLintResult =>
-  isRecord(value) && typeof value["passed"] === "boolean" && Array.isArray(value["summaries"]);
+export const isPhasedLintResult = ((value: unknown): value is PhasedLintResult =>
+  isRecord(value) && typeof value["passed"] === "boolean" && Array.isArray(value["summaries"])) satisfies (
+  value: unknown,
+) => value is PhasedLintResult;
 
-export const classifyRuleTier = (ruleId: string): PluginRuleTier => {
+export const classifyRuleTier = ((ruleId: string) => {
   if (ruleId.startsWith("strict-fp/")) {
     const shortName = ruleId.slice("strict-fp/".length);
     return ruleTierMap.get(shortName) ?? DEFAULT_MAX_TIER;
   }
   return 1;
-};
+}) satisfies (ruleId: string) => PluginRuleTier;
 
-export const classifyMessageTier = (
+export const classifyMessageTier = ((
   message: Pick<Linter.LintMessage, "fatal" | "ruleId">,
-): PluginRuleTier => {
+) => {
   if (message.fatal === true || message.ruleId === null) {
     return 1;
   }
   return classifyRuleTier(message.ruleId);
-};
+}) satisfies (message: Pick<Linter.LintMessage, "fatal" | "ruleId">) => PluginRuleTier;
 
-const buildTierRuleFilter =
-  (tier: LintTier): ((context: { readonly ruleId: string }) => boolean) =>
+const buildTierRuleFilter = ((tier: LintTier) =>
   ({ ruleId }) =>
-    tier !== 0 && classifyRuleTier(ruleId) <= tier;
+    tier !== 0 && classifyRuleTier(ruleId) <= tier) satisfies (
+  tier: LintTier,
+) => (context: { readonly ruleId: string }) => boolean;
 
-const buildExactTierRuleFilter =
-  (tier: LintTier): ((context: { readonly ruleId: string }) => boolean) =>
+const buildExactTierRuleFilter = ((tier: LintTier) =>
   ({ ruleId }) =>
-    tier !== 0 && classifyRuleTier(ruleId) === tier;
+    tier !== 0 && classifyRuleTier(ruleId) === tier) satisfies (
+  tier: LintTier,
+) => (context: { readonly ruleId: string }) => boolean;
 
 export {
   buildExactTierRuleFilter as createExactTierRuleFilter,
@@ -132,7 +136,7 @@ const parseTier = (raw: string | undefined) => {
   return undefined;
 };
 
-export const parseCliArgs = (args: ReadonlyArray<string>): PhasedLintOptions => {
+export const parseCliArgs = ((args: ReadonlyArray<string>) => {
   let targets: ReadonlyArray<string> = [];
   let fix = false;
   let format = "stylish";
@@ -196,7 +200,7 @@ export const parseCliArgs = (args: ReadonlyArray<string>): PhasedLintOptions => 
     ...(daemonStop !== undefined ? { daemonStop } : {}),
     ...(daemonStatus !== undefined ? { daemonStatus } : {}),
   } satisfies PhasedLintOptions;
-};
+}) satisfies (args: ReadonlyArray<string>) => PhasedLintOptions;
 
 const tiersUpTo: Record<LintTier, ReadonlyArray<LintTier>> = {
   0: [0],
@@ -302,10 +306,10 @@ const runTypeCheck = (target: TypeCheckTarget) =>
     );
   });
 
-export const sliceLintResultsForTier = (
+export const sliceLintResultsForTier = ((
   results: ReadonlyArray<ESLint.LintResult>,
   tier: PluginRuleTier,
-): ReadonlyArray<ESLint.LintResult> =>
+) =>
   results.map<ESLint.LintResult>((result) => {
     const messages = result.messages.filter((msg) => classifyMessageTier(msg) === tier);
     const suppressedMessages = result.suppressedMessages.filter(
@@ -352,7 +356,10 @@ export const sliceLintResultsForTier = (
       fixableErrorCount,
       fixableWarningCount,
     };
-  });
+  })) satisfies (
+  results: ReadonlyArray<ESLint.LintResult>,
+  tier: PluginRuleTier,
+) => ReadonlyArray<ESLint.LintResult>;
 
 const buildTierSummary = async (
   tier: PluginRuleTier,
@@ -551,10 +558,10 @@ const runFixPhased = async (
   return passedResult;
 };
 
-export const runPhasedLint = async (
+export const runPhasedLint = (async (
   options: PhasedLintOptions,
   deps?: PhasedLintDependencies,
-): Promise<PhasedLintResult> => {
+) => {
   const tiers = resolveTiersToRun(options);
   const cwd = options.cwd ?? process.cwd();
   const EslintCtor = deps?.ESLintClass ?? ESLint;
@@ -566,7 +573,7 @@ export const runPhasedLint = async (
   return options.fix
     ? runFixPhased(tiers, options, { cwd, EslintCtor })
     : runNonFixPhased(tiers, options, { cwd, EslintCtor });
-};
+}) satisfies (options: PhasedLintOptions, deps?: PhasedLintDependencies) => Promise<PhasedLintResult>;
 
 const runCli = async () => {
   const options = parseCliArgs(process.argv.slice(2));

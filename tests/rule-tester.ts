@@ -7,10 +7,10 @@ RuleTester.describe = vitest.describe;
 RuleTester.it = vitest.it;
 RuleTester.itOnly = vitest.it.only;
 
-export const createRuleTester = (): RuleTester =>
-  new RuleTester();
+export const createRuleTester = (() =>
+  new RuleTester()) satisfies () => RuleTester;
 
-export const createTypeAwareRuleTester = (): RuleTester =>
+export const createTypeAwareRuleTester = (() =>
   new RuleTester({
     languageOptions: {
       parserOptions: {
@@ -18,9 +18,9 @@ export const createTypeAwareRuleTester = (): RuleTester =>
         tsconfigRootDir: path.resolve(import.meta.dirname, "fixtures"),
       },
     },
-  });
+  })) satisfies () => RuleTester;
 
-export const createDddSampleRuleTester = (): RuleTester =>
+export const createDddSampleRuleTester = (() =>
   new RuleTester({
     languageOptions: {
       parserOptions: {
@@ -28,9 +28,9 @@ export const createDddSampleRuleTester = (): RuleTester =>
         tsconfigRootDir: path.resolve(import.meta.dirname, "ddd-sample"),
       },
     },
-  });
+  })) satisfies () => RuleTester;
 
-export const createTsUnitSampleRuleTester = (): RuleTester =>
+export const createTsUnitSampleRuleTester = (() =>
   new RuleTester({
     languageOptions: {
       parserOptions: {
@@ -38,9 +38,9 @@ export const createTsUnitSampleRuleTester = (): RuleTester =>
         tsconfigRootDir: path.resolve(import.meta.dirname, "ts-unit-sample"),
       },
     },
-  });
+  })) satisfies () => RuleTester;
 
-export const createTestScopeSampleRuleTester = (): RuleTester =>
+export const createTestScopeSampleRuleTester = (() =>
   new RuleTester({
     languageOptions: {
       parserOptions: {
@@ -48,4 +48,4 @@ export const createTestScopeSampleRuleTester = (): RuleTester =>
         tsconfigRootDir: path.resolve(import.meta.dirname, "test-scope-sample"),
       },
     },
-  });
+  })) satisfies () => RuleTester;

@@ -135,32 +135,28 @@ ruleTester.run("no-explicit-return-type", noExplicitReturnType, {
       function id(x: number): number;
       function id(x: string | number) { return x; }
     `,
-    `export function greet(name: string): string { return name; }`,
-    `export default function greet(name: string): string { return name; }`,
-    `export default (a: number, b: number): number => a + b;`,
-    `export default function (x: number): number { return x * 2; }`,
-    `export const add = (a: number, b: number): number => a + b;`,
-    `export const fn = function (x: number): number { return x * 2; };`,
+    `export const greet = ((name: string) => name) satisfies (name: string) => string;`,
     `
-      const add = (a: number, b: number): number => a + b;
+      type Greet = (name: string) => string;
+      export const greet = ((name: string) => name) satisfies Greet;
+    `,
+    `export default ((a: number, b: number) => a + b) satisfies (a: number, b: number) => number;`,
+    `export default (function (x: number) { return x * 2; }) satisfies (x: number) => number;`,
+    `export const add = ((a: number, b: number) => a + b) satisfies (a: number, b: number) => number;`,
+    `export const fn = (function (x: number) { return x * 2; }) satisfies (x: number) => number;`,
+    `
+      const add = ((a: number, b: number) => a + b) satisfies (a: number, b: number) => number;
       export { add };
     `,
     `
-      const add = (a: number, b: number): number => a + b;
+      const add = ((a: number, b: number) => a + b) satisfies (a: number, b: number) => number;
       export { add as sum };
     `,
     `
-      const add = (a: number, b: number): number => a + b;
+      const add = ((a: number, b: number) => a + b) satisfies (a: number, b: number) => number;
       export default add;
     `,
-    `
-      function greet(name: string): string { return name; }
-      export { greet };
-    `,
-    `
-      function greet(name: string): string { return name; }
-      export default greet;
-    `,
+    `export const isString = ((x: unknown): x is string => typeof x === "string") satisfies (x: unknown) => x is string;`,
   ],
   invalid: [
     {
@@ -196,21 +192,107 @@ ruleTester.run("no-explicit-return-type", noExplicitReturnType, {
     },
     {
       code: `
-        export function outer(x: number): number {
+        export const outer = ((x: number) => {
           const helper = (y: number): number => y + 1;
           return helper(x);
-        }
+        }) satisfies (x: number) => number;
       `,
       errors: [{ messageId: "noExplicitReturnType" }],
     },
     {
       code: `
-        export const foo = (x: number): number => {
+        export const foo = ((x: number) => {
           const foo = (y: number): number => y;
           return foo(x);
-        };
+        }) satisfies (x: number) => number;
       `,
       errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `export const add = ((a: number, b: number): number => a + b) satisfies (a: number, b: number) => number;`,
+      errors: [{ messageId: "noExplicitReturnType" }],
+    },
+    {
+      code: `export function greet(name: string): string { return name; }`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export function greet(name: string) { return name; }`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export default function greet(name: string): string { return name; }`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export default (a: number, b: number): number => a + b;`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export default (a: number, b: number) => a + b;`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export default function (x: number): number { return x * 2; }`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export const add = (a: number, b: number): number => a + b;`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export const add = (a: number, b: number) => a + b;`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export const add: (a: number, b: number) => number = (a, b) => a + b;`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `export const fn = function (x: number): number { return x * 2; };`,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `
+        const add = (a: number, b: number): number => a + b;
+        export { add };
+      `,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `
+        const add = (a: number, b: number) => a + b;
+        export { add };
+      `,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `
+        const add = (a: number, b: number): number => a + b;
+        export { add as sum };
+      `,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `
+        const add = (a: number, b: number): number => a + b;
+        export default add;
+      `,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `
+        function greet(name: string): string { return name; }
+        export { greet };
+      `,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
+    },
+    {
+      code: `
+        function greet(name: string): string { return name; }
+        export default greet;
+      `,
+      errors: [{ messageId: "requireSatisfiesOnExportedFunction" }],
     },
   ],
 });

@@ -53,7 +53,6 @@ const resolvePipeStepTarget = (arg: TSESTree.CallExpressionArgument) =>
 
 const isChainCallbackParent = (node: TSESTree.Node) =>
   isEsTreeAnonymousFunctionNode(node) &&
-  node.parent !== undefined &&
   node.parent.type === AST_NODE_TYPES.CallExpression &&
   O.exists((target: MemberCallTarget) => CHAIN_METHOD_NAMES.has(target.method))(
     resolveMemberCall(node.parent),

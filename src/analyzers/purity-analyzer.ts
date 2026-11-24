@@ -1548,11 +1548,11 @@ const computeProgramPurity = (program: ts.Program, options: PurityOptions) => {
 
 const purityCache = new WeakMap<ts.Program, Readonly<Record<string, ProgramPurityAnalysis>>>();
 
-export const analyzeProgramPurity = (
+export const analyzeProgramPurity = ((
   program: ts.Program,
   options: PurityOptions = DEFAULT_PURITY_OPTIONS,
-): ProgramPurityAnalysis =>
+) =>
   memoizeByProgramAndKey(purityCache, (p) => computeProgramPurity(p, options))(
     program,
     formatPurityCacheKey(options),
-  );
+  )) satisfies (program: ts.Program, options?: PurityOptions) => ProgramPurityAnalysis;

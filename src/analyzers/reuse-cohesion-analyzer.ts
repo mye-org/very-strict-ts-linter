@@ -424,13 +424,13 @@ const buildSingleCallerContext = (program: ts.Program, config: SingleCallerConfi
 };
 
 // eslint-disable-next-line strict-fp/no-single-caller-export -- analyzer entry point consumed by rule and tests
-export const analyzeSingleCallerExports = (
+export const analyzeSingleCallerExports = ((
   program: ts.Program,
   config: SingleCallerConfig,
-): SingleCallerAnalysis => {
+) => {
   const context = buildSingleCallerContext(program, config);
   return finalizeSingleCallerAnalysis(context, collectAllSingleCallerCandidates(context));
-};
+}) satisfies (program: ts.Program, config: SingleCallerConfig) => SingleCallerAnalysis;
 
 const readProdConsumersForExport = (exportName: string) =>
   flow(
@@ -604,13 +604,13 @@ const indexCommonReuseByFile = RA.reduce<
 }));
 
 // eslint-disable-next-line strict-fp/no-single-caller-export -- analyzer entry point consumed by rule and tests
-export const analyzeCommonReuseCohesion = (
+export const analyzeCommonReuseCohesion = ((
   program: ts.Program,
   options: CommonReuseOptions = {
     minExports: 5,
     testPatterns: DEFAULT_TEST_PATTERNS,
   },
-): CommonReuseAnalysis => {
+) => {
   const findings = RA.filterMap((fileGraph: FileModuleGraph) =>
     evaluateFileCommonReuse(fileGraph, options.minExports),
   )(
@@ -625,4 +625,4 @@ export const analyzeCommonReuseCohesion = (
     findings,
     byFile: indexCommonReuseByFile(findings),
   };
-};
+}) satisfies (program: ts.Program, options?: CommonReuseOptions) => CommonReuseAnalysis;

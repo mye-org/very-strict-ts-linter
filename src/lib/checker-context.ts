@@ -28,5 +28,7 @@ const buildCheckerContext = (services: ParserServicesWithTypeInformation) => {
   };
 };
 
-export const toCheckerContext = (services: ParserServices): O.Option<CheckerContext> =>
-  hasTypeProgram(services) ? O.some<CheckerContext>(buildCheckerContext(services)) : O.none;
+export const toCheckerContext = ((services: ParserServices) =>
+  hasTypeProgram(services)
+    ? O.some<CheckerContext>(buildCheckerContext(services))
+    : O.none) satisfies (services: ParserServices) => O.Option<CheckerContext>;

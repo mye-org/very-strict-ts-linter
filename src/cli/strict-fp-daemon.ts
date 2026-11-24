@@ -130,16 +130,16 @@ const safeRealpath = (targetPath: string) => {
   }
 };
 
-export const resolveDaemonEndpoints = (
+export const resolveDaemonEndpoints = ((
   cwd: string,
-): { readonly socketPath: string; readonly pidPath: string } => {
+) => {
   const key = hashShort(safeRealpath(cwd));
   const baseDir = os.tmpdir();
   return {
     socketPath: path.join(baseDir, `strict-fp-daemon-${key}.sock`),
     pidPath: path.join(baseDir, `strict-fp-daemon-${key}.pid`),
   };
-};
+}) satisfies (cwd: string) => { readonly socketPath: string; readonly pidPath: string };
 
 const isLibraryOrNodeModulesPath = (fileName: string) => {
   const normalized = fileName.replace(/\\/g, "/");
@@ -817,7 +817,7 @@ const ensureDaemonRunning = async (cwd: string) => {
   throw new Error(`Failed to start strict-fp daemon for workspace ${cwd}`);
 };
 
-export const requestDaemonStatus = async (cwd: string): Promise<DaemonStatus> => {
+export const requestDaemonStatus = (async (cwd: string) => {
   const { socketPath } = resolveDaemonEndpoints(cwd);
   try {
     const resp = await sendDaemonRequest(socketPath, { type: "ping" }, 1000);
@@ -836,9 +836,9 @@ export const requestDaemonStatus = async (cwd: string): Promise<DaemonStatus> =>
   }
   const stoppedStatus: DaemonStatus = { running: false, socketPath };
   return stoppedStatus;
-};
+}) satisfies (cwd: string) => Promise<DaemonStatus>;
 
-export const stopWorkspaceDaemon = async (cwd: string): Promise<boolean> => {
+export const stopWorkspaceDaemon = (async (cwd: string) => {
   const { socketPath, pidPath } = resolveDaemonEndpoints(cwd);
   try {
     const resp = await sendDaemonRequest(socketPath, { type: "stop" }, 2000);
@@ -864,11 +864,11 @@ export const stopWorkspaceDaemon = async (cwd: string): Promise<boolean> => {
   }
 
   return false;
-};
+}) satisfies (cwd: string) => Promise<boolean>;
 
-export const runLintViaDaemon = async (
+export const runLintViaDaemon = (async (
   options: PhasedLintOptions,
-): Promise<PhasedLintResult> => {
+) => {
   const cwd = options.cwd ?? process.cwd();
   const socketPath = await ensureDaemonRunning(cwd);
   const resp = await sendDaemonRequest(
@@ -883,7 +883,7 @@ export const runLintViaDaemon = async (
     throw new Error(`Unexpected daemon response type: ${resp.type}`);
   }
   return resp.result;
-};
+}) satisfies (options: PhasedLintOptions) => Promise<PhasedLintResult>;
 
 const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 if (import.meta.url === entryUrl) {

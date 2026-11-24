@@ -960,10 +960,10 @@ const analyzeNonBarrelCohesion = (
       });
 };
 
-export const analyzeFileCohesion = (
+export const analyzeFileCohesion = ((
   sf: ts.SourceFile,
   config: CohesionAnalysisConfig,
-): FileCohesionResult =>
+) =>
   isBarrelFile(sf)
     ? {
         fileName: normalizeFilePath(sf.fileName),
@@ -975,4 +975,4 @@ export const analyzeFileCohesion = (
     : analyzeNonBarrelCohesion(sf, {
         checker: config.checker,
         options: O.getOrElse(() => DEFAULT_COHESION_OPTIONS)(config.options),
-      });
+      })) satisfies (sf: ts.SourceFile, config: CohesionAnalysisConfig) => FileCohesionResult;

@@ -96,13 +96,15 @@ const lookupSingleByFingerprint = <A>({
   )(matchFallbackByFingerprint(fp)(fallbackSingleCache, cache));
 };
 
-export const memoizeByProgram =
-  <A>(
-    cache: WeakMap<ts.Program, A>,
-    compute: (p: ts.Program) => A,
-  ): ((program: ts.Program) => A) =>
+export const memoizeByProgram = (<A>(
+  cache: WeakMap<ts.Program, A>,
+  compute: (p: ts.Program) => A,
+) =>
   (program: ts.Program) =>
-    cache.get(program) ?? lookupSingleByFingerprint({ program, cache, compute });
+    cache.get(program) ?? lookupSingleByFingerprint({ program, cache, compute })) satisfies <A>(
+  cache: WeakMap<ts.Program, A>,
+  compute: (p: ts.Program) => A,
+) => (program: ts.Program) => A;
 
 type KeyedMemoConfig<A> = Readonly<{
   cache: WeakMap<ts.Program, Readonly<Record<string, A>>>;
@@ -161,13 +163,15 @@ const lookupOrStoreKeyed =
       RR.lookup(key)(existing),
     );
 
-export const memoizeByProgramAndKey =
-  <A>(
-    cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
-    compute: (p: ts.Program) => A,
-  ): ((program: ts.Program, key: string) => A) =>
+export const memoizeByProgramAndKey = (<A>(
+  cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
+  compute: (p: ts.Program) => A,
+) =>
   (program: ts.Program, key: string) =>
     lookupOrStoreKeyed(
       { cache, compute },
       cache.get(program) ?? hydrateKeyedFromFingerprint(program, cache),
-    )(program, key);
+    )(program, key)) satisfies <A>(
+  cache: WeakMap<ts.Program, Readonly<Record<string, A>>>,
+  compute: (p: ts.Program) => A,
+) => (program: ts.Program, key: string) => A;

@@ -288,8 +288,11 @@ const computeCatamorphismsForMinWalkers = (minWalkers: number) =>
 
 const makeCatamorphismCacheKey = (minWalkers: number) => String(minWalkers);
 
-export const analyzeCatamorphisms = (program: ts.Program, minWalkers = 2): CatamorphismAnalysis =>
+export const analyzeCatamorphisms = ((program: ts.Program, minWalkers = 2) =>
   memoizeByProgramAndKey(
     analysisCache,
     computeCatamorphismsForMinWalkers(minWalkers),
-  )(program, makeCatamorphismCacheKey(minWalkers));
+  )(program, makeCatamorphismCacheKey(minWalkers))) satisfies (
+  program: ts.Program,
+  minWalkers?: number,
+) => CatamorphismAnalysis;

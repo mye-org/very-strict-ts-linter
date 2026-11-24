@@ -37,10 +37,13 @@ const extractKeyChildren = (node: TSESTree.Node, key: string) =>
     ? lookupKeyChildren(key)(node)
     : ([] satisfies ReadonlyArray<TSESTree.Node>);
 
-export const collectEstreeChildNodes = (
+export const collectEstreeChildNodes = ((
   node: TSESTree.Node,
   visitorKeys: TSESLint.SourceCode["visitorKeys"],
-): ReadonlyArray<TSESTree.Node> =>
+) =>
   RA.flatMap((key: string) => extractKeyChildren(node, key))(
     visitorKeys[node.type] ?? [],
-  );
+  )) satisfies (
+  node: TSESTree.Node,
+  visitorKeys: TSESLint.SourceCode["visitorKeys"],
+) => ReadonlyArray<TSESTree.Node>;

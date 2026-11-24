@@ -199,11 +199,14 @@ const formatMarkdownReport = (report: DiscoveryRadarReport) =>
     formatCatamorphismSection(report.catamorphismCandidates),
   ]);
 
-export const formatDiscoveryReport = (
+export const formatDiscoveryReport = ((
   report: DiscoveryRadarReport,
   format: "markdown" | "json",
-): string =>
+) =>
   match(format)
     .with("json", () => JSON.stringify(report, undefined, 2))
     .with("markdown", () => formatMarkdownReport(report))
-    .exhaustive();
+    .exhaustive()) satisfies (
+  report: DiscoveryRadarReport,
+  format: "markdown" | "json",
+) => string;

@@ -401,7 +401,7 @@ export default [
       fs.writeFileSync(path.join(tmpDir, "App.tsx"), "export const App = () => <div />;\n");
       fs.writeFileSync(path.join(tmpDir, "BadApp.tsx"), "const helper = (n: number) => n + 1; export const BadApp = () => <div>{helper(1)}</div>;\n");
       fs.writeFileSync(path.join(tmpDir, "app.config.ts"), "let cfg: any = { name: 'app' }; export default cfg;\n");
-      fs.writeFileSync(path.join(tmpDir, "logic.ts"), "export type Retry = { readonly timeoutMs: number };\nexport const fn = (): number => { let count = 1; count += 1; return count; };\n");
+      fs.writeFileSync(path.join(tmpDir, "logic.ts"), "export type Retry = { readonly timeoutMs: number };\nexport const fn = (() => { let count = 1; count += 1; return count; }) satisfies () => number;\n");
 
       const result = await runPhasedLint({
         targets: ["."],
@@ -605,7 +605,7 @@ export default [
       );
       fs.writeFileSync(
         path.join(tmpDir, "tier2-and-3.ts"),
-        "export type Retry = { readonly timeoutMs: number };\nexport const compute = (input: Retry): number => { let count = 1; count += 1; return input.timeoutMs + count; };\n",
+        "export type Retry = { readonly timeoutMs: number };\nexport const compute = ((input: Retry) => { let count = 1; count += 1; return input.timeoutMs + count; }) satisfies (input: Retry) => number;\n",
       );
 
       // 1. Clean run (maxTier: 3) invokes ESLint & lintFiles exactly once while reporting Tiers 0..3
@@ -948,8 +948,8 @@ export default [
           "  O.map(wrapGeneric),",
           ");",
           "",
-          "export const combineScoredBatch = <L>(values: ReadonlyArray<number>, label: O.Option<L>): O.Option<{ readonly batch: { readonly payload: ReadonlyArray<number> }; readonly label: L }> =>",
-          "  Ap.sequenceS(O.Applicative)({ batch: incrementAll(values), label });",
+          "export const combineScoredBatch = (<L>(values: ReadonlyArray<number>, label: O.Option<L>) =>",
+          "  Ap.sequenceS(O.Applicative)({ batch: incrementAll(values), label })) satisfies <L>(values: ReadonlyArray<number>, label: O.Option<L>) => O.Option<{ readonly batch: { readonly payload: ReadonlyArray<number> }; readonly label: L }>;",
           "",
         ].join("\n"),
       );

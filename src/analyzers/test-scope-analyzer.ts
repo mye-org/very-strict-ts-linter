@@ -3982,11 +3982,11 @@ const serializeOptionsKey = (options: TestScopeOptions) =>
 
 const analysisCache = new WeakMap<ts.Program, Readonly<Record<string, TestScopeAnalysis>>>();
 
-export const analyzeTestScope = (
+export const analyzeTestScope = ((
   program: ts.Program,
   options: TestScopeOptions = DEFAULT_TEST_SCOPE_OPTIONS,
-): TestScopeAnalysis =>
+) =>
   memoizeByProgramAndKey(analysisCache, (p) => computeTestScopeAnalysis(p, options))(
     program,
     serializeOptionsKey(options),
-  );
+  )) satisfies (program: ts.Program, options?: TestScopeOptions) => TestScopeAnalysis;

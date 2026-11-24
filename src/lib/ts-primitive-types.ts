@@ -18,18 +18,16 @@ const hasNewtypeMarkerProps = (props: ReadonlyArray<ts.Symbol>) =>
 const hasDirectBrandProp = (props: ReadonlyArray<ts.Symbol>) =>
   hasPropMatching(props, (n) => EXPLICIT_BRAND_PROPS.has(n));
 
-export const isBrandedOrNewtypeTsType = (type: ts.Type): boolean => {
+export const isBrandedOrNewtypeTsType = ((type: ts.Type) => {
   const props = type.getProperties();
   return type.isIntersection()
     ? hasPropMatching(props, (n) => BRAND_PROP_RE.test(n))
     : hasNewtypeMarkerProps(props) || hasDirectBrandProp(props);
-};
+}) satisfies (type: ts.Type) => boolean;
 
 const hasTypeFlag = (type: ts.Type, flag: ts.TypeFlags) => (type.flags & flag) !== 0;
 
-export const resolveBarePrimitiveOrLiteralKind = (
-  type: ts.Type,
-): O.Option<"string" | "number"> =>
+export const resolveBarePrimitiveOrLiteralKind = ((type: ts.Type) =>
   match({
     branded: isBrandedOrNewtypeTsType(type),
     isString: hasTypeFlag(type, ts.TypeFlags.String | ts.TypeFlags.StringLiteral),
@@ -37,7 +35,9 @@ export const resolveBarePrimitiveOrLiteralKind = (
   })
     .with({ branded: false, isString: true }, () => O.some("string" as const))
     .with({ branded: false, isNumber: true }, () => O.some("number" as const))
-    .otherwise(() => O.none satisfies O.Option<"string" | "number">);
+    .otherwise(() => O.none satisfies O.Option<"string" | "number">)) satisfies (
+  type: ts.Type,
+) => O.Option<"string" | "number">;
 
 const PRIMITIVE_TYPE_FLAGS =
   ts.TypeFlags.StringLike |
@@ -49,9 +49,11 @@ const PRIMITIVE_TYPE_FLAGS =
   ts.TypeFlags.Null |
   ts.TypeFlags.Never;
 
-export const isPrimitiveTsType = (type: ts.Type): boolean =>
+const isPrimitiveTsTypeImpl: (type: ts.Type) => boolean = (type) =>
   (type.flags & PRIMITIVE_TYPE_FLAGS) !== 0 ||
-  (type.isUnion() && type.types.length > 0 && RA.every(isPrimitiveTsType)(type.types)) ||
+  (type.isUnion() && type.types.length > 0 && RA.every(isPrimitiveTsTypeImpl)(type.types)) ||
   (type.isIntersection() &&
     isBrandedOrNewtypeTsType(type) &&
-    RA.some(isPrimitiveTsType)(type.types));
+    RA.some(isPrimitiveTsTypeImpl)(type.types));
+
+export const isPrimitiveTsType = isPrimitiveTsTypeImpl satisfies (type: ts.Type) => boolean;

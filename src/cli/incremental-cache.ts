@@ -49,11 +49,15 @@ type CacheEnvelope<T> = {
   readonly value: T;
 };
 
-export const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+export const isRecord = ((value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)) satisfies (
+  value: unknown,
+) => value is Readonly<Record<string, unknown>>;
 
-export const hashShort = (value: string): string =>
-  crypto.createHash("sha256").update(value).digest("hex").slice(0, 16);
+export const hashShort = ((value: string) =>
+  crypto.createHash("sha256").update(value).digest("hex").slice(0, 16)) satisfies (
+  value: string,
+) => string;
 
 const safeRealpath = (targetPath: string) => {
   try {
@@ -66,7 +70,7 @@ const safeRealpath = (targetPath: string) => {
 const isNonEmptyString = (value: string | undefined): value is string =>
   value !== undefined && value.trim().length > 0;
 
-export const resolveCacheDir = (cwd: string, customLocation?: string): string => {
+export const resolveCacheDir = ((cwd: string, customLocation?: string) => {
   if (isNonEmptyString(customLocation)) {
     return path.resolve(cwd, customLocation);
   }
@@ -75,31 +79,31 @@ export const resolveCacheDir = (cwd: string, customLocation?: string): string =>
     return path.join(nodeModulesDir, ".cache", "strict-fp");
   }
   return path.join(os.tmpdir(), "strict-fp-cache", hashShort(safeRealpath(cwd)));
-};
+}) satisfies (cwd: string, customLocation?: string) => string;
 
-export const buildEslintCacheOptions = (
+export const buildEslintCacheOptions = ((
   enabled: boolean | undefined,
   cacheDir: string | undefined,
-): ESLint.Options =>
+) =>
   enabled === true && isNonEmptyString(cacheDir)
     ? {
         cache: true,
         cacheStrategy: "content",
         cacheLocation: path.join(cacheDir, "eslint-cache.json"),
       }
-    : {};
+    : {}) satisfies (enabled: boolean | undefined, cacheDir: string | undefined) => ESLint.Options;
 
-export const resolveTsConfigPath = (
+export const resolveTsConfigPath = ((
   workspaceDir: string,
   configPath?: string,
-): string | undefined => {
+) => {
   if (isNonEmptyString(configPath)) {
     return path.resolve(workspaceDir, configPath);
   }
   return ts.findConfigFile(workspaceDir, (filePath) => ts.sys.fileExists(filePath), "tsconfig.json");
-};
+}) satisfies (workspaceDir: string, configPath?: string) => string | undefined;
 
-export const loadParsedTsConfig = (tsconfigPath: string): ts.ParsedCommandLine | undefined => {
+export const loadParsedTsConfig = ((tsconfigPath: string) => {
   const configFile = ts.readConfigFile(tsconfigPath, (filePath) => ts.sys.readFile(filePath));
   if (configFile.error) {
     return undefined;
@@ -111,16 +115,16 @@ export const loadParsedTsConfig = (tsconfigPath: string): ts.ParsedCommandLine |
     undefined,
     tsconfigPath,
   );
-};
+}) satisfies (tsconfigPath: string) => ts.ParsedCommandLine | undefined;
 
-export const resolveTsBuildInfoPath = (
+export const resolveTsBuildInfoPath = ((
   cacheDir: string,
   kind: "tsc" | "radar",
   tsconfigPath: string,
-): string => {
+) => {
   fs.mkdirSync(cacheDir, { recursive: true });
   return path.join(cacheDir, `${kind}-${hashShort(safeRealpath(tsconfigPath))}.tsbuildinfo`);
-};
+}) satisfies (cacheDir: string, kind: "tsc" | "radar", tsconfigPath: string) => string;
 
 const hashFileIfExists = (hash: crypto.Hash, label: string, filePath: string) => {
   try {
@@ -192,10 +196,10 @@ const hashTsConfigChain = (hash: crypto.Hash, entryTsconfigPath: string) => {
   }
 };
 
-export const computeConfigFingerprint = (
+export const computeConfigFingerprint = ((
   cwd: string,
   tsconfigPath: string | undefined,
-): string => {
+) => {
   const hash = crypto.createHash("sha256");
   hash.update(`schema:${String(CACHE_SCHEMA_VERSION)}\0`);
   hash.update(`ts:${ts.version}\0`);
@@ -213,7 +217,7 @@ export const computeConfigFingerprint = (
   }
 
   return hash.digest("hex");
-};
+}) satisfies (cwd: string, tsconfigPath: string | undefined) => string;
 
 const collectDirectorySourceFiles = (entryDirPath: string) => {
   const collected = new Set<string>();
@@ -272,7 +276,7 @@ const collectTargetSourceFiles = (
   return [...collected];
 };
 
-export const computeProjectFingerprint = (input: ProjectFingerprintInput): string => {
+export const computeProjectFingerprint = ((input: ProjectFingerprintInput) => {
   const hash = crypto.createHash("sha256");
   hash.update(`kind:${input.kind}\0`);
   hash.update(`scope:${input.scopeKey}\0`);
@@ -301,18 +305,18 @@ export const computeProjectFingerprint = (input: ProjectFingerprintInput): strin
   }
 
   return hash.digest("hex");
-};
+}) satisfies (input: ProjectFingerprintInput) => string;
 
 const resolveArtifactPath = (dir: string, scope: string, key: string) =>
   path.join(dir, `${scope}-${hashShort(key)}.json`);
 
-export const readCachedArtifact = <T>(
+export const readCachedArtifact = (<T>(
   cacheDir: string,
   namespace: string,
   cacheKey: string,
   fingerprint: string,
   isValue: (value: unknown) => value is T,
-): T | undefined => {
+) => {
   const filePath = resolveArtifactPath(cacheDir, namespace, cacheKey);
   try {
     const raw = fs.readFileSync(filePath, "utf8");
@@ -329,15 +333,21 @@ export const readCachedArtifact = <T>(
   } catch {
     return undefined;
   }
-};
+}) satisfies <T>(
+  cacheDir: string,
+  namespace: string,
+  cacheKey: string,
+  fingerprint: string,
+  isValue: (value: unknown) => value is T,
+) => T | undefined;
 
-export const writeCachedArtifact = <T>(
+export const writeCachedArtifact = (<T>(
   cacheDir: string,
   namespace: string,
   cacheKey: string,
   fingerprint: string,
   value: T,
-): void => {
+) => {
   try {
     fs.mkdirSync(cacheDir, { recursive: true });
     const filePath = resolveArtifactPath(cacheDir, namespace, cacheKey);
@@ -353,4 +363,10 @@ export const writeCachedArtifact = <T>(
   } catch {
     // Cache writes are best-effort and must never fail linting or radar runs.
   }
-};
+}) satisfies <T>(
+  cacheDir: string,
+  namespace: string,
+  cacheKey: string,
+  fingerprint: string,
+  value: T,
+) => void;

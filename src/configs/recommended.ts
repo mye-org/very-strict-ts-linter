@@ -233,17 +233,19 @@ const buildTier2WithOverrides = (options: StrictFpConfigOptions) =>
     ...buildTestScopeOptions(options),
   }) satisfies TSESLint.FlatConfig.Rules;
 
-export const buildTieredRules = (
+export const buildTieredRules = ((
   maxTier: LintTier,
   options: StrictFpConfigOptions = {},
-): TSESLint.FlatConfig.Rules => ({
+) => ({
   ...(maxTier >= 1 ? tier1Rules : {}),
   ...(maxTier >= 2 ? buildTier2WithOverrides(options) : {}),
   ...(maxTier >= 3 ? tier3Rules : {}),
-});
+})) satisfies (maxTier: LintTier, options?: StrictFpConfigOptions) => TSESLint.FlatConfig.Rules;
 
-export const strictFpRules = (options: StrictFpConfigOptions = {}): TSESLint.FlatConfig.Rules =>
-  buildTieredRules(options.maxTier ?? 3, options);
+export const strictFpRules = ((options: StrictFpConfigOptions = {}) =>
+  buildTieredRules(options.maxTier ?? 3, options)) satisfies (
+  options?: StrictFpConfigOptions,
+) => TSESLint.FlatConfig.Rules;
 
 const boundaryOverrideRules = {
   "strict-fp/functional-core-boundary": "off",
@@ -370,10 +372,10 @@ const scopeTypeCheckedConfigs = (files: ReadonlyArray<string>) =>
     ignores: [...defaultStrictFpIgnores],
   }))(tseslint.configs.strictTypeChecked);
 
-export const buildDddBoundaryConfig = (
+export const buildDddBoundaryConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
-): TSESLint.FlatConfig.ConfigArray => [
+) => [
   {
     name: "strict-fp/ddd-boundary",
     files: resolveFiles(options),
@@ -381,12 +383,15 @@ export const buildDddBoundaryConfig = (
     plugins: { "strict-fp": plugin },
     rules: dddBoundaryRules,
   },
-];
+]) satisfies (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options?: StrictFpConfigOptions,
+) => TSESLint.FlatConfig.ConfigArray;
 
-export const buildDddDiscoveryConfig = (
+export const buildDddDiscoveryConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
-): TSESLint.FlatConfig.ConfigArray => [
+) => [
   {
     name: "strict-fp/ddd-discovery",
     files: resolveFiles(options),
@@ -394,12 +399,15 @@ export const buildDddDiscoveryConfig = (
     plugins: { "strict-fp": plugin },
     rules: dddDiscoveryRules,
   },
-];
+]) satisfies (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options?: StrictFpConfigOptions,
+) => TSESLint.FlatConfig.ConfigArray;
 
-export const buildFpDiscoveryConfig = (
+export const buildFpDiscoveryConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
-): TSESLint.FlatConfig.ConfigArray => [
+) => [
   {
     name: "strict-fp/fp-discovery",
     files: resolveFiles(options),
@@ -407,12 +415,15 @@ export const buildFpDiscoveryConfig = (
     plugins: { "strict-fp": plugin },
     rules: fpDiscoveryRules,
   },
-];
+]) satisfies (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options?: StrictFpConfigOptions,
+) => TSESLint.FlatConfig.ConfigArray;
 
-export const buildTestScopeConfig = (
+export const buildTestScopeConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
-): TSESLint.FlatConfig.ConfigArray => [
+) => [
   {
     name: "strict-fp/test-scope",
     files: resolveFiles(options),
@@ -423,7 +434,10 @@ export const buildTestScopeConfig = (
       ...buildTestScopeOptions(options),
     },
   },
-];
+]) satisfies (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options?: StrictFpConfigOptions,
+) => TSESLint.FlatConfig.ConfigArray;
 
 const formatTierName = (maxTier: LintTier) => `strict-fp/tier-${String(maxTier)}`;
 
@@ -487,10 +501,10 @@ const buildReactTsxBlock = (
   rules: reactTsxRules,
 });
 
-export const buildTieredConfig = (
+export const buildTieredConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
-): TSESLint.FlatConfig.ConfigArray => {
+) => {
   const maxTier = options.maxTier ?? 3;
   return [
     ...(maxTier >= 1 ? scopeTypeCheckedConfigs(resolveFiles(options)) : []),
@@ -499,18 +513,27 @@ export const buildTieredConfig = (
     ...buildBoundaryConfig(O.fromNullable(options.boundaryFiles)),
     ...buildTestConfig(O.fromNullable(options.testFiles)),
   ];
-};
+}) satisfies (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options?: StrictFpConfigOptions,
+) => TSESLint.FlatConfig.ConfigArray;
 
-export const buildStrictFpConfig = (
+export const buildStrictFpConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictFpConfigOptions = {},
-): TSESLint.FlatConfig.ConfigArray =>
-  buildTieredConfig(plugin, { ...options, maxTier: options.maxTier ?? 3 });
+) =>
+  buildTieredConfig(plugin, { ...options, maxTier: options.maxTier ?? 3 })) satisfies (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options?: StrictFpConfigOptions,
+) => TSESLint.FlatConfig.ConfigArray;
 
-export const buildStrictReactConfig = (
+export const buildStrictReactConfig = ((
   plugin: TSESLint.FlatConfig.Plugin,
   options: StrictReactConfigOptions = {},
-): TSESLint.FlatConfig.ConfigArray => [
+) => [
   buildReactTsBlock(plugin, options),
   buildReactTsxBlock(plugin, options),
-];
+]) satisfies (
+  plugin: TSESLint.FlatConfig.Plugin,
+  options?: StrictReactConfigOptions,
+) => TSESLint.FlatConfig.ConfigArray;

@@ -345,11 +345,14 @@ const computeDiscriminantIndexForMinBranches = (minBranches: number) =>
 
 const makeDiscriminantCacheKey = (minBranches: number) => String(minBranches);
 
-export const analyzeStringlyTypedDiscriminants = (
+export const analyzeStringlyTypedDiscriminants = ((
   program: ts.Program,
   minBranches = 2,
-): DiscriminantIndex =>
+) =>
   memoizeByProgramAndKey(
     discriminantIndexCache,
     computeDiscriminantIndexForMinBranches(minBranches),
-  )(program, makeDiscriminantCacheKey(minBranches));
+  )(program, makeDiscriminantCacheKey(minBranches))) satisfies (
+  program: ts.Program,
+  minBranches?: number,
+) => DiscriminantIndex;

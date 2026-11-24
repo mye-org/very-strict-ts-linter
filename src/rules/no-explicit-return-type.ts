@@ -5,7 +5,7 @@ import { flow } from "fp-ts/lib/function.js";
 import { match, P } from "ts-pattern";
 import { createRule } from "../lib/rule-factory.js";
 
-type MessageIds = "noExplicitReturnType";
+type MessageIds = "noExplicitReturnType" | "requireSatisfiesOnExportedFunction";
 
 type FunctionNode =
   | TSESTree.FunctionDeclaration
@@ -13,6 +13,13 @@ type FunctionNode =
   | TSESTree.ArrowFunctionExpression;
 
 const EMPTY_STRINGS: ReadonlyArray<string> = [];
+
+const isSatisfiesWrapped = (node: FunctionNode) =>
+  node.parent.type === AST_NODE_TYPES.TSSatisfiesExpression &&
+  node.parent.expression === node;
+
+const unwrapSatisfies = (node: FunctionNode) =>
+  isSatisfiesWrapped(node) ? node.parent : node;
 
 const extractLocalExportName = (spec: TSESTree.ExportSpecifier) =>
   spec.local.type === AST_NODE_TYPES.Identifier
@@ -71,8 +78,8 @@ const isExportedVariableDeclarator = (
     .with(P._, () => false)
     .exhaustive();
 
-const isExportedFunction = (
-  node: FunctionNode,
+const isExportedNode = (
+  node: TSESTree.Node,
   exportedNames: ReadonlySet<string>,
 ) =>
   match(node)
@@ -99,6 +106,11 @@ const isExportedFunction = (
     .with(P._, () => false)
     .exhaustive();
 
+const isExportedFunction = (
+  node: FunctionNode,
+  exportedNames: ReadonlySet<string>,
+) => isExportedNode(unwrapSatisfies(node), exportedNames);
+
 const extractProgramBody = (sourceCode: Readonly<TSESLint.SourceCode>) =>
   sourceCode.ast.body;
 
@@ -109,11 +121,20 @@ const buildListeners = (
   const checkFunction = (node: FunctionNode) => {
     match({
       isExported: isExportedFunction(node, exportedNames),
+      hasSatisfies: isSatisfiesWrapped(node),
       returnType: node.returnType,
     })
       .with(
         {
-          isExported: false,
+          isExported: true,
+          hasSatisfies: false,
+        },
+        () => {
+          report({ node, messageId: "requireSatisfiesOnExportedFunction" });
+        },
+      )
+      .with(
+        {
           returnType: {
             typeAnnotation: { type: P.not(AST_NODE_TYPES.TSTypePredicate) },
           },
@@ -144,11 +165,13 @@ export const noExplicitReturnType = createRule<[], MessageIds>({
     type: "suggestion",
     docs: {
       description:
-        "Disallow explicit return type annotations on local helper functions so TypeScript infers the narrowest possible return type, while allowing them on exported functions.",
+        "Require exported functions to specify their return type using `satisfies`, and disallow explicit return type annotations on unexported functions so TypeScript infers them.",
     },
     messages: {
       noExplicitReturnType:
-        "Do not specify an explicit return type on local helper functions; let TypeScript infer the narrowest return type or use `satisfies`.",
+        "Do not specify an explicit return type on functions; let TypeScript infer unexported functions or use `satisfies` on exported functions.",
+      requireSatisfiesOnExportedFunction:
+        "Exported functions must specify their return type using `satisfies` (e.g. `export const fn = ((...) => ...) satisfies (...) => ...`).",
     },
     schema: [],
     defaultOptions: [],

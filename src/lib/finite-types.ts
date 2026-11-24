@@ -42,5 +42,8 @@ const isDiscriminatedObject = flow(
 const isFiniteUnionMember = (member: ts.Type) =>
   isBooleanOrLiteralOrEnum(member) || isDiscriminatedObject(member);
 
-export const isFiniteExhaustiveCandidate = (type: ts.Type): boolean =>
-  isBooleanOrLiteralOrEnum(type) || (type.isUnion() && RA.every(isFiniteUnionMember)(type.types));
+export const isFiniteExhaustiveCandidate = ((type: ts.Type) =>
+  isBooleanOrLiteralOrEnum(type) ||
+  (type.isUnion() && RA.every(isFiniteUnionMember)(type.types))) satisfies (
+  type: ts.Type,
+) => boolean;

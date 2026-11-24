@@ -47,6 +47,8 @@ const hasBothOptionTags = (types: ReadonlyArray<ts.Type>) => {
   return tags.length === 2 && new Set(tags).size === 2;
 };
 
-export const isOptionTsType = (type: ts.Type): boolean =>
+export const isOptionTsType = ((type: ts.Type) =>
   hasOptionTypeName(type) ||
-  (type.isUnion() && type.types.length === 2 && hasBothOptionTags(type.types));
+  (type.isUnion() && type.types.length === 2 && hasBothOptionTags(type.types))) satisfies (
+  type: ts.Type,
+) => boolean;

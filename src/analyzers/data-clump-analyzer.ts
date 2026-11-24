@@ -341,13 +341,13 @@ const computeClumpIndexForThresholds = (thresholds: ClumpThresholds) =>
 const makeClumpCacheKey = (thresholds: ClumpThresholds) =>
   `${String(thresholds.minSize)}:${String(thresholds.minOccurrences)}`;
 
-export const analyzeDataClumps = (
+export const analyzeDataClumps = ((
   program: ts.Program,
   thresholds: Partial<ClumpThresholds> = {},
-): ClumpIndex => {
+) => {
   const resolved: ClumpThresholds = { ...DEFAULT_CLUMP_THRESHOLDS, ...thresholds };
   return memoizeByProgramAndKey(
     clumpIndexCache,
     computeClumpIndexForThresholds(resolved),
   )(program, makeClumpCacheKey(resolved));
-};
+}) satisfies (program: ts.Program, thresholds?: Partial<ClumpThresholds>) => ClumpIndex;

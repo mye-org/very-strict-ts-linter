@@ -242,13 +242,16 @@ const computeSkeletonDuplicationsForThresholds = (thresholds: SkeletonThresholds
 const makeSkeletonCacheKey = (thresholds: SkeletonThresholds) =>
   `${String(thresholds.minSteps)}:${String(thresholds.minDistinctCombinators)}:${String(thresholds.minOccurrences)}`;
 
-export const analyzeSkeletonDuplications = (
+export const analyzeSkeletonDuplications = ((
   program: ts.Program,
   thresholds: Partial<SkeletonThresholds> = {},
-): SkeletonDuplicationAnalysis => {
+) => {
   const resolved: SkeletonThresholds = { ...DEFAULT_SKELETON_THRESHOLDS, ...thresholds };
   return memoizeByProgramAndKey(
     analysisCache,
     computeSkeletonDuplicationsForThresholds(resolved),
   )(program, makeSkeletonCacheKey(resolved));
-};
+}) satisfies (
+  program: ts.Program,
+  thresholds?: Partial<SkeletonThresholds>,
+) => SkeletonDuplicationAnalysis;

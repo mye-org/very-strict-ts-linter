@@ -558,11 +558,11 @@ const computeContextDrillingForMinDepth = (minDepth: number) =>
 
 const makeDrillingCacheKey = (minDepth: number) => String(minDepth);
 
-export const analyzeContextDrilling = (
-  program: ts.Program,
-  minDepth = 3,
-): ContextDrillingAnalysis =>
+export const analyzeContextDrilling = ((program: ts.Program, minDepth = 3) =>
   memoizeByProgramAndKey(
     analysisCache,
     computeContextDrillingForMinDepth(minDepth),
-  )(program, makeDrillingCacheKey(minDepth));
+  )(program, makeDrillingCacheKey(minDepth))) satisfies (
+  program: ts.Program,
+  minDepth?: number,
+) => ContextDrillingAnalysis;

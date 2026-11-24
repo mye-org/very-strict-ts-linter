@@ -65,10 +65,10 @@ const extractMemberPropName = (expr: TSESTree.Expression) =>
     .with(P._, () => O.none)
     .exhaustive();
 
-export const resolveCalleeName = (callee: TSESTree.Expression): O.Option<string> =>
+export const resolveCalleeName = ((callee: TSESTree.Expression) =>
   callee.type === AST_NODE_TYPES.Identifier
     ? O.some(callee.name)
-    : extractMemberPropName(callee);
+    : extractMemberPropName(callee)) satisfies (callee: TSESTree.Expression) => O.Option<string>;
 
 // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST walk
 const extractChainRootName = (expr: TSESTree.Expression): O.Option<string> =>
@@ -114,13 +114,15 @@ const isWorkletObjectHookProperty = flow(
   O.exists((name) => WORKLET_OBJECT_HOOK_NAMES.has(name)),
 );
 
-export const isWorkletFunction = (node: FunctionNode): boolean =>
-  hasWorkletDirective(node) || isWorkletCallArg(node) || isWorkletObjectHookProperty(node);
+export const isWorkletFunction = ((node: FunctionNode) =>
+  hasWorkletDirective(node) ||
+  isWorkletCallArg(node) ||
+  isWorkletObjectHookProperty(node)) satisfies (node: FunctionNode) => boolean;
 
 const hasScheduleOnRnCallee = flow(
   resolveCalleeName,
   O.exists((name: string) => name === "scheduleOnRN"),
 );
 
-export const isScheduleOnRnCall = (node: TSESTree.CallExpression): boolean =>
-  hasScheduleOnRnCallee(node.callee);
+export const isScheduleOnRnCall = ((node: TSESTree.CallExpression) =>
+  hasScheduleOnRnCallee(node.callee)) satisfies (node: TSESTree.CallExpression) => boolean;

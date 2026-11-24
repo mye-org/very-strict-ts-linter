@@ -171,14 +171,21 @@ const isExportedStmt = (node: ts.Node) => hasModifierKind(node, ts.SyntaxKind.Ex
 const isDefaultStmt = (node: ts.Node) => hasModifierKind(node, ts.SyntaxKind.DefaultKeyword);
 const isAmbientStmt = (node: ts.Node) => hasModifierKind(node, ts.SyntaxKind.DeclareKeyword);
 
-export const unwrapExpression = (expr: ts.Expression): ts.Expression =>
+const unwrapExpressionImpl = (
+  expr: ts.Expression,
+  // eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive expression unwrapping
+): ts.Expression =>
   ts.isParenthesizedExpression(expr) ||
   ts.isAsExpression(expr) ||
   ts.isSatisfiesExpression(expr) ||
   ts.isTypeAssertionExpression(expr) ||
   ts.isNonNullExpression(expr)
-    ? unwrapExpression(expr.expression)
+    ? unwrapExpressionImpl(expr.expression)
     : expr;
+
+export const unwrapExpression = unwrapExpressionImpl satisfies (
+  expr: ts.Expression,
+) => ts.Expression;
 
 const isFunctionExpressionNode = (
   node: ts.Node,
@@ -210,10 +217,12 @@ const isBarrelAllowedStatement = (stmt: ts.Statement) =>
 const isValueExportDeclaration = (stmt: ts.Statement) =>
   ts.isExportDeclaration(stmt) && !stmt.isTypeOnly;
 
-export const isBarrelFile = (sf: ts.SourceFile): boolean =>
+const isBarrelFileImpl = (sf: ts.SourceFile) =>
   sf.statements.length > 0 &&
   RA.some(isValueExportDeclaration)(sf.statements) &&
   RA.every(isBarrelAllowedStatement)(sf.statements);
+
+export const isBarrelFile = isBarrelFileImpl satisfies (sf: ts.SourceFile) => boolean;
 
 const resolveAliasedStep = (symbol: ts.Symbol, checker: ts.TypeChecker) =>
   E.tryCatch(
@@ -248,8 +257,11 @@ const walkCanonicalSymbol =
           (aliased: ts.Symbol) => continueAliasWalk(checker)(aliased, { current, visited }),
         )(resolveAliasedStep(current, checker));
 
-export const resolveCanonicalSymbol = (symbol: ts.Symbol, checker: ts.TypeChecker): ts.Symbol =>
-  walkCanonicalSymbol(checker)(symbol, new Set<ts.Symbol>());
+export const resolveCanonicalSymbol = ((symbol: ts.Symbol, checker: ts.TypeChecker) =>
+  walkCanonicalSymbol(checker)(symbol, new Set<ts.Symbol>())) satisfies (
+  symbol: ts.Symbol,
+  checker: ts.TypeChecker,
+) => ts.Symbol;
 
 const extractPropertyNameText = (name: ts.PropertyName | ts.BindingName) =>
   match(name)
@@ -662,27 +674,29 @@ const deduplicateByExportName = (exports: ReadonlyArray<RuntimeExport>) =>
           },
   )(exports).items;
 
-export const extractFileRuntimeExports = (
+export const extractFileRuntimeExports = ((
   sf: ts.SourceFile,
   checker: ts.TypeChecker,
-): ReadonlyArray<RuntimeExport> =>
+) =>
   isBarrelFile(sf)
     ? []
     : deduplicateByExportName(
         RA.flatMap((stmt: ts.Statement) => extractStatementExports(stmt, { sf, checker }))(
           sf.statements,
         ),
-      );
+      )) satisfies (sf: ts.SourceFile, checker: ts.TypeChecker) => ReadonlyArray<RuntimeExport>;
 
 const isFunctionVariableDecl = (node: ts.Node) =>
   ts.isVariableDeclaration(node) &&
   O.exists(isFunctionExpressionLike)(O.fromNullable(node.initializer));
 
-export const isRuntimeFunctionNode = (node: ts.Node): boolean =>
+const isRuntimeFunctionNodeImpl = (node: ts.Node) =>
   ts.isFunctionDeclaration(node) ||
   ts.isMethodDeclaration(node) ||
   isFunctionExpressionNode(node) ||
   isFunctionVariableDecl(node);
+
+export const isRuntimeFunctionNode = isRuntimeFunctionNodeImpl satisfies (node: ts.Node) => boolean;
 
 const toSymbolEntry = (exp: RuntimeExport) =>
   O.map((sym: ts.Symbol) => [sym, exp] as const)(exp.symbol);
@@ -1327,11 +1341,11 @@ const computeProgramSymbolGraph = (program: ts.Program, scope: GraphQueryScope) 
   } satisfies ProgramSymbolGraph;
 };
 
-export const analyzeModuleSymbolGraph = (
+export const analyzeModuleSymbolGraph = ((
   program: ts.Program,
   scope: Partial<GraphQueryScope> = {},
-): ProgramSymbolGraph =>
+) =>
   computeProgramSymbolGraph(program, {
     entryPointPatterns: scope.entryPointPatterns ?? [],
     testFilePatterns: scope.testFilePatterns ?? DEFAULT_TEST_PATTERNS,
-  });
+  })) satisfies (program: ts.Program, scope?: Partial<GraphQueryScope>) => ProgramSymbolGraph;

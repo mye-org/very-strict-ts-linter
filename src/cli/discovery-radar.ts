@@ -25,7 +25,7 @@ import {
   writeCachedArtifact,
 } from "./incremental-cache.js";
 
-export const buildDiscoveryRadarReport = (program: ts.Program): DiscoveryRadarReport => ({
+export const buildDiscoveryRadarReport = ((program: ts.Program) => ({
   dataClumps: analyzeDataClumps(program).findings,
   polysemyModels: analyzePolysemy(program).findings,
   repeatedGuards: analyzeGuardClauses(program).clusters,
@@ -36,7 +36,7 @@ export const buildDiscoveryRadarReport = (program: ts.Program): DiscoveryRadarRe
   contextDrillingChains: analyzeContextDrilling(program).chains,
   skeletonDuplications: analyzeSkeletonDuplications(program).groups,
   catamorphismCandidates: analyzeCatamorphisms(program).candidates,
-});
+})) satisfies (program: ts.Program) => DiscoveryRadarReport;
 
 export type RadarRunOptions = {
   readonly cwd?: string;
@@ -96,7 +96,7 @@ const isDiscoveryRadarReport = (value: unknown): value is DiscoveryRadarReport =
   Array.isArray(value["skeletonDuplications"]) &&
   Array.isArray(value["catamorphismCandidates"]);
 
-export const runDiscoveryRadar = (options: RadarRunOptions = {}): RadarRunResult => {
+export const runDiscoveryRadar = ((options: RadarRunOptions = {}) => {
   const cwd = options.cwd ?? process.cwd();
   const format = options.format ?? "markdown";
   const useCache = options.cache !== false;
@@ -193,7 +193,7 @@ export const runDiscoveryRadar = (options: RadarRunOptions = {}): RadarRunResult
     cacheHit: false,
   };
   return freshResult;
-};
+}) satisfies (options?: RadarRunOptions) => RadarRunResult;
 
 const runRadarCli = () => {
   const options = parseRadarArgs(process.argv.slice(2));

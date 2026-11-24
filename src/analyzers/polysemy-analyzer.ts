@@ -384,13 +384,13 @@ const DEFAULT_POLYSEMY_THRESHOLDS: PolysemyThresholds = {
 const makePolysemyCacheKey = (thresholds: PolysemyThresholds) =>
   `${String(thresholds.minFields)}:${String(thresholds.minClusterFields)}:${String(thresholds.maxOverlap)}`;
 
-export const analyzePolysemy = (
+export const analyzePolysemy = ((
   program: ts.Program,
   thresholds: Partial<PolysemyThresholds> = {},
-): PolysemyIndex => {
+) => {
   const resolved: PolysemyThresholds = { ...DEFAULT_POLYSEMY_THRESHOLDS, ...thresholds };
   return memoizeByProgramAndKey(
     polysemyIndexCache,
     computePolysemyIndexForThresholds(resolved),
   )(program, makePolysemyCacheKey(resolved));
-};
+}) satisfies (program: ts.Program, thresholds?: Partial<PolysemyThresholds>) => PolysemyIndex;

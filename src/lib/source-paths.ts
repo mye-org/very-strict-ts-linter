@@ -2,7 +2,8 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
 
-export const normalizeFilePath = (filePath: string): string => filePath.replaceAll("\\", "/");
+export const normalizeFilePath = ((filePath: string) =>
+  filePath.replaceAll("\\", "/")) satisfies (filePath: string) => string;
 
 const isNodeModulesPath = (filePath: string) => filePath.includes("/node_modules/");
 
@@ -45,18 +46,24 @@ const isRegexMatch = (re: RegExp, target: string) => re.test(target);
 const isMatchingPattern = (filePath: string, pattern: string) =>
   isRegexMatch(compileGlobPattern(pattern), normalizeFilePath(filePath));
 
-export const isMatchingAnyPattern = (
+export const isMatchingAnyPattern = ((
   filePath: string,
   patterns: ReadonlyArray<string>,
-): boolean => RA.some((pattern: string) => isMatchingPattern(filePath, pattern))(patterns);
+) => RA.some((pattern: string) => isMatchingPattern(filePath, pattern))(patterns)) satisfies (
+  filePath: string,
+  patterns: ReadonlyArray<string>,
+) => boolean;
 
 type FilePathPredicate = (filePath: string) => boolean;
 
-export const shouldLintDomainFile = (
+export const shouldLintDomainFile = ((
   scope: "everywhere" | "domain-only",
   domainPatterns: ReadonlyArray<string>,
-): FilePathPredicate => {
+) => {
   const isIncludedFile = (filePath: string) =>
     scope === "everywhere" || isMatchingAnyPattern(filePath, domainPatterns);
   return isIncludedFile;
-};
+}) satisfies (
+  scope: "everywhere" | "domain-only",
+  domainPatterns: ReadonlyArray<string>,
+) => FilePathPredicate;

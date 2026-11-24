@@ -338,10 +338,10 @@ const summarizeWithConfig = (config: RootResolutionConfig) =>
 const makeAggregateCacheKey = (config: RootResolutionConfig) =>
   `${config.explicitOptionRoots.join(",")}|${config.aggregatePathPatterns.join(",")}`;
 
-export const analyzeAggregateGraph = (
+export const analyzeAggregateGraph = ((
   program: ts.Program,
   config: Partial<RootResolutionConfig> = {},
-): AggregateGraphSummary => {
+) => {
   const resolved: RootResolutionConfig = {
     explicitOptionRoots: config.explicitOptionRoots ?? [],
     aggregatePathPatterns: config.aggregatePathPatterns ?? DEFAULT_AGGREGATE_PATHS,
@@ -350,6 +350,9 @@ export const analyzeAggregateGraph = (
     aggregateSummaryCache,
     flow(resolveProgramGraph, summarizeWithConfig(resolved)),
   )(program, makeAggregateCacheKey(resolved));
-};
+}) satisfies (
+  program: ts.Program,
+  config?: Partial<RootResolutionConfig>,
+) => AggregateGraphSummary;
 
 

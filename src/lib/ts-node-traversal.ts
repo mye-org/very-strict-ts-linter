@@ -20,7 +20,7 @@ const filterAndExpandChildren = (sf: ts.SourceFile) =>
 const collectChildDescendants = (node: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> =>
   filterAndExpandChildren(sf)(node.getChildren(sf));
 
-export const collectTsNodes = (root: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> => [
+export const collectTsNodes = ((root: ts.Node, sf: ts.SourceFile) => [
   root,
   ...collectChildDescendants(root, sf),
-];
+]) satisfies (root: ts.Node, sf: ts.SourceFile) => ReadonlyArray<ts.Node>;
