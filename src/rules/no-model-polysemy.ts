@@ -3,6 +3,7 @@ import * as O from "fp-ts/lib/Option.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import { flow } from "fp-ts/lib/function.js";
 import { analyzePolysemy, PolysemyFinding } from "../analyzers/polysemy-analyzer.js";
+import { lazyOnce } from "../lib/lazy-once.js";
 import { createRule } from "../lib/rule-factory.js";
 import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
@@ -57,16 +58,17 @@ const checkModelNode = (
   })(O.fromNullable(byLocation[resolveModelKey(node, env.services)]));
 };
 
+const resolvePolysemyByLocation = (env: PolysemyEnv) =>
+  analyzePolysemy(env.services.program, {
+    minFields: env.options.minFields,
+    minClusterFields: env.options.minClusterFields,
+    maxOverlap: env.options.maxOverlap,
+  }).byLocation;
+
 const buildPolysemyListeners = (env: PolysemyEnv) => {
+  const getByLocation = flow(lazyOnce(() => resolvePolysemyByLocation(env)));
   const check = (node: ModelDeclNode) => {
-    checkModelNode(env)(
-      node,
-      analyzePolysemy(env.services.program, {
-        minFields: env.options.minFields,
-        minClusterFields: env.options.minClusterFields,
-        maxOverlap: env.options.maxOverlap,
-      }).byLocation,
-    );
+    checkModelNode(env)(node, getByLocation());
   };
   return {
     TSTypeAliasDeclaration: check,

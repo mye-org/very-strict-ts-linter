@@ -8,6 +8,7 @@ import * as ts from "typescript";
 import { memoizeByProgramAndKey } from "../lib/program-memo.js";
 import { collectProjectSourceFiles, normalizeFilePath } from "../lib/source-paths.js";
 import { makeLocationKey, resolveTsNodeLocation } from "../lib/ts-node-location.js";
+import { collectTsNodesUntil } from "../lib/ts-node-traversal.js";
 import {
   extractFileRuntimeExports,
   isBarrelFile,
@@ -425,22 +426,15 @@ const isVoidOrUndefinedOnly = (type: ts.Type) =>
   hasVoidOrUndefinedFlag(type) ||
   (type.isUnion() && type.types.length > 0 && RA.every(hasVoidOrUndefinedFlag)(type.types));
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for recursive AST body walk
-const collectOwnBodyNodes = (node: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> =>
-  ts.isFunctionLike(node) || ts.isJSDoc(node)
-    ? []
-    : [
-        node,
-        ...RA.flatMap((child: ts.Node) => collectOwnBodyNodes(child, sf))(node.getChildren(sf)),
-      ];
+const collectOwnBodyNodes = (node: ts.Node) => collectTsNodesUntil(node, ts.isFunctionLike);
 
 const isComplexityIncrementNode = (node: ts.Node) =>
   BRANCHING_SYNTAX_KINDS.has(node.kind) ||
   (ts.isBinaryExpression(node) && SHORT_CIRCUIT_OPERATORS.has(node.operatorToken.kind));
 
-const computeCyclomaticComplexity = (fn: ts.FunctionLikeDeclaration, sf: ts.SourceFile) =>
+const computeCyclomaticComplexity = (fn: ts.FunctionLikeDeclaration) =>
   fn.body
-    ? 1 + RA.filter(isComplexityIncrementNode)(collectOwnBodyNodes(fn.body, sf)).length
+    ? 1 + RA.filter(isComplexityIncrementNode)(collectOwnBodyNodes(fn.body)).length
     : 1;
 
 const ascendParent = (node: ts.Node) => node.parent;
@@ -925,7 +919,7 @@ const collectDirectReasons = (
   ]);
 
 const inspectFunctionBody = (fn: ts.FunctionLikeDeclaration, ctx: InspectionContext) => {
-  const bodyNodes = fn.body ? collectOwnBodyNodes(fn.body, ctx.sf) : [];
+  const bodyNodes = fn.body ? collectOwnBodyNodes(fn.body) : [];
   const callResults = RA.map((call: ts.CallExpression) =>
     inspectCallExpressionNode(call, {
       checker: ctx.checker,
@@ -938,7 +932,7 @@ const inspectFunctionBody = (fn: ts.FunctionLikeDeclaration, ctx: InspectionCont
     callDeps: RA.flatMap((r: CallInspectionResult) => r.callDeps)(callResults),
     hofInlineCallbacks: RA.flatMap((r: CallInspectionResult) => r.hofInlineCallbacks)(callResults),
     hofRefCallbacks: RA.flatMap((r: CallInspectionResult) => r.hofRefCallbacks)(callResults),
-    complexity: computeCyclomaticComplexity(fn, ctx.sf),
+    complexity: computeCyclomaticComplexity(fn),
   };
 };
 
@@ -1000,12 +994,22 @@ const resolveTopLevelVisibility =
       ? ("exported" as const)
       : ("internal" as const);
 
+const collectDirectTsChildren = (node: ts.Node) => {
+  // eslint-disable-next-line strict-fp/prefer-readonly-collections -- local accumulator for direct ts.forEachChild collection
+  const children: ts.Node[] = [];
+  ts.forEachChild(node, (child) => {
+    // eslint-disable-next-line strict-fp/no-mutation, strict-fp/prefer-fp-ts-array-methods -- O(k) direct child collection
+    children.push(child);
+  });
+  return children;
+};
+
 const collectChildrenForContext = (
   { parent, nesting }: Readonly<{ parent: ts.Node; nesting: ScopeLevel }>,
   fileCtx: FileCollectionContext,
 ) =>
   RA.flatMap((child: ts.Node) => collectNodeFunctions(child, nesting)(fileCtx))(
-    parent.getChildren(fileCtx.sf),
+    collectDirectTsChildren(parent),
   );
 
 const collectChildrenAtScope =

@@ -12,6 +12,7 @@ import {
   ContextDrillingFinding,
 } from "../analyzers/context-drilling-analyzer.js";
 import { hasFunctionInit } from "../lib/estree-function-nodes.js";
+import { lazyOnce } from "../lib/lazy-once.js";
 import { createRule } from "../lib/rule-factory.js";
 import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
@@ -52,20 +53,18 @@ const reportDrillingFindings =
     )(O.fromNullable(locationIndex[resolveNodeLocationKey(node, services)]));
   };
 
-const checkNamedFnNode =
-  (minDepth: number, services: ParserServicesWithTypeInformation) =>
-  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
-  (node: TSESTree.FunctionDeclaration | TSESTree.VariableDeclarator) => {
-    reportDrillingFindings(services, report)(
-      node,
-      analyzeContextDrilling(services.program, minDepth).locationIndex,
-    );
-  };
+const resolveDrillingIndex = (
+  minDepth: number,
+  services: ParserServicesWithTypeInformation,
+) => analyzeContextDrilling(services.program, minDepth).locationIndex;
 
 const buildDrillingListeners =
   (minDepth: number, services: ParserServicesWithTypeInformation) =>
   (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => {
-    const check = checkNamedFnNode(minDepth, services)(report);
+    const getLocationIndex = flow(lazyOnce(() => resolveDrillingIndex(minDepth, services)));
+    const check = (node: TSESTree.FunctionDeclaration | TSESTree.VariableDeclarator) => {
+      reportDrillingFindings(services, report)(node, getLocationIndex());
+    };
     return {
       FunctionDeclaration: check,
       VariableDeclarator: (node: TSESTree.VariableDeclarator) => {
