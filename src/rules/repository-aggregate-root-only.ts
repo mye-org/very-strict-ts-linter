@@ -6,6 +6,7 @@ import { flow } from "fp-ts/lib/function.js";
 import { match } from "ts-pattern";
 import * as ts from "typescript";
 import { analyzeAggregateGraph } from "../analyzers/aggregate-graph-analyzer.js";
+import { lazyOnce } from "../lib/lazy-once.js";
 import { createRule } from "../lib/rule-factory.js";
 import { unwrapContainerTsTypes } from "../lib/ts-container-types.js";
 import { resolveTsTypeName } from "../lib/ts-type-name.js";
@@ -144,24 +145,14 @@ const checkRepoDeclaration =
       .exhaustive();
   };
 
-const makeRepoNodeChecker =
-  (options: Options[0], services: ParserServicesWithTypeInformation) =>
-  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
-  (node: TSESTree.Node, name: O.Option<string>) => {
-    const check = flow(
-      O.filter(hasRepoSuffix),
-      O.map((n: string) => {
-        checkRepoDeclaration(
-          options,
-          analyzeAggregateGraph(services.program, {
-            explicitOptionRoots: options.aggregateRoots,
-            aggregatePathPatterns: options.aggregatePathPatterns,
-          }),
-        )(services, report)(node, n);
-      }),
-    );
-    check(name);
-  };
+const resolveRepoAggregateGraph = (
+  options: Options[0],
+  services: ParserServicesWithTypeInformation,
+) =>
+  analyzeAggregateGraph(services.program, {
+    explicitOptionRoots: options.aggregateRoots,
+    aggregatePathPatterns: options.aggregatePathPatterns,
+  });
 
 const extractOptionalIdName = flow(
   (id: TSESTree.ClassDeclaration["id"]) => O.fromNullable(id),
@@ -171,7 +162,12 @@ const extractOptionalIdName = flow(
 const buildRepoListeners =
   (options: Options[0], services: ParserServicesWithTypeInformation) =>
   (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => {
-    const check = makeRepoNodeChecker(options, services)(report);
+    const getGraph = flow(lazyOnce(() => resolveRepoAggregateGraph(options, services)));
+    const check = (node: TSESTree.Node, name: O.Option<string>) => {
+      O.map((n: string) => {
+        checkRepoDeclaration(options, getGraph())(services, report)(node, n);
+      })(O.filter(hasRepoSuffix)(name));
+    };
     return {
       TSTypeAliasDeclaration: (node: TSESTree.TSTypeAliasDeclaration) => { check(node, O.some(node.id.name)); },
       TSInterfaceDeclaration: (node: TSESTree.TSInterfaceDeclaration) => { check(node, O.some(node.id.name)); },

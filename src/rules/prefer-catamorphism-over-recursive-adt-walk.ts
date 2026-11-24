@@ -12,6 +12,7 @@ import {
   CatamorphismFinding,
 } from "../analyzers/catamorphism-analyzer.js";
 import { hasFunctionInit } from "../lib/estree-function-nodes.js";
+import { lazyOnce } from "../lib/lazy-once.js";
 import { createRule } from "../lib/rule-factory.js";
 import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
@@ -57,20 +58,18 @@ const reportWalkerFindings =
     );
   };
 
-const checkWalkerNode =
-  (minWalkers: number, services: ParserServicesWithTypeInformation) =>
-  (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) =>
-  (node: TSESTree.Node) => {
-    reportWalkerFindings(services, report)(
-      node,
-      analyzeCatamorphisms(services.program, minWalkers).locationIndex,
-    );
-  };
+const resolveCatamorphismIndex = (
+  minWalkers: number,
+  services: ParserServicesWithTypeInformation,
+) => analyzeCatamorphisms(services.program, minWalkers).locationIndex;
 
 const buildCatamorphismListeners =
   (minWalkers: number, services: ParserServicesWithTypeInformation) =>
   (report: (d: TSESLint.ReportDescriptor<MessageIds>) => void) => {
-    const check = checkWalkerNode(minWalkers, services)(report);
+    const getLocationIndex = flow(lazyOnce(() => resolveCatamorphismIndex(minWalkers, services)));
+    const check = (node: TSESTree.Node) => {
+      reportWalkerFindings(services, report)(node, getLocationIndex());
+    };
     return {
       FunctionDeclaration: check,
       VariableDeclarator: (node: TSESTree.VariableDeclarator) => {

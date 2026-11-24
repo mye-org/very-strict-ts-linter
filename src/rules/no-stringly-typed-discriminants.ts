@@ -2,6 +2,7 @@ import { AST_NODE_TYPES, ESLintUtils, ParserServicesWithTypeInformation, TSESLin
 import * as O from "fp-ts/lib/Option.js";
 import { flow } from "fp-ts/lib/function.js";
 import { analyzeStringlyTypedDiscriminants, DiscriminantCluster } from "../analyzers/stringly-typed-analyzer.js";
+import { lazyOnce } from "../lib/lazy-once.js";
 import { createRule } from "../lib/rule-factory.js";
 import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
@@ -94,7 +95,9 @@ export const noStringlyTypedDiscriminants = createRule<Options, MessageIds>({
       services,
       report: (d) => { context.report(d); },
     };
-    const resolveByLoc = () => analyzeStringlyTypedDiscriminants(services.program, options.minBranches).byLocation;
+    const resolveByLoc = lazyOnce(
+      () => analyzeStringlyTypedDiscriminants(services.program, options.minBranches).byLocation,
+    );
     const check = (node: TSESTree.Node) => { reportDiscriminant(env)(node, resolveByLoc()); };
     return {
       BinaryExpression: check,

@@ -4,6 +4,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { flow } from "fp-ts/lib/function.js";
 import { analyzeGuardClauses, GuardCluster } from "../analyzers/guard-clause-analyzer.js";
+import { lazyOnce } from "../lib/lazy-once.js";
 import { createRule } from "../lib/rule-factory.js";
 import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
@@ -57,21 +58,22 @@ const reportRepeatedGuard = (
   })(lookupFirstCluster(resolveLogicalLocationKey(node, env.services))(byLocation));
 };
 
-const checkLogicalExpr = (env: GuardClauseEnv) => (node: TSESTree.LogicalExpression) => {
-  O.map((n: TSESTree.LogicalExpression) => {
-    reportRepeatedGuard(env)(
-      n,
-      analyzeGuardClauses(env.services.program, {
-        minClauses: env.options.minClauses,
-        minOccurrences: env.options.minOccurrences,
-      }).byLocation,
-    );
-  })(O.fromPredicate(isTopLevelLogical)(node));
-};
+const resolveGuardByLocation = (env: GuardClauseEnv) =>
+  analyzeGuardClauses(env.services.program, {
+    minClauses: env.options.minClauses,
+    minOccurrences: env.options.minOccurrences,
+  }).byLocation;
 
-const buildGuardListeners = (env: GuardClauseEnv) => ({
-  LogicalExpression: checkLogicalExpr(env),
-});
+const buildGuardListeners = (env: GuardClauseEnv) => {
+  const getByLocation = flow(lazyOnce(() => resolveGuardByLocation(env)));
+  return {
+    LogicalExpression: (node: TSESTree.LogicalExpression) => {
+      O.map((n: TSESTree.LogicalExpression) => {
+        reportRepeatedGuard(env)(n, getByLocation());
+      })(O.fromPredicate(isTopLevelLogical)(node));
+    },
+  };
+};
 
 export const noRepeatedGuardClauses = createRule<Options, MessageIds>({
   name: "no-repeated-guard-clauses",

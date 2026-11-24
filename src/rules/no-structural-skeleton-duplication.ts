@@ -13,6 +13,7 @@ import {
   SkeletonCluster,
 } from "../analyzers/skeleton-duplication-analyzer.js";
 import { isFlowCallExpression } from "../lib/flow-call.js";
+import { lazyOnce } from "../lib/lazy-once.js";
 import { isPipeCallExpression } from "../lib/pipe-call.js";
 import { createRule } from "../lib/rule-factory.js";
 import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
@@ -71,15 +72,16 @@ const resolveSkeletonIndex = (options: Options[0], services: ParserServicesWithT
     minOccurrences: options.minOccurrences,
   }).locationIndex;
 
-const checkPipelineCall = (env: SkeletonEnv) => (node: TSESTree.CallExpression) => {
-  O.map((n: TSESTree.CallExpression) => {
-    reportCluster(env)(n, resolveSkeletonIndex(env.options, env.services));
-  })(O.fromPredicate(isPipeOrFlowNode)(node));
+const buildSkeletonListeners = (env: SkeletonEnv) => {
+  const getLocationIndex = flow(lazyOnce(() => resolveSkeletonIndex(env.options, env.services)));
+  return {
+    CallExpression: (node: TSESTree.CallExpression) => {
+      O.map((n: TSESTree.CallExpression) => {
+        reportCluster(env)(n, getLocationIndex());
+      })(O.fromPredicate(isPipeOrFlowNode)(node));
+    },
+  };
 };
-
-const buildSkeletonListeners = (env: SkeletonEnv) => ({
-  CallExpression: checkPipelineCall(env),
-});
 
 export const noStructuralSkeletonDuplication = createRule<Options, MessageIds>({
   name: "no-structural-skeleton-duplication",

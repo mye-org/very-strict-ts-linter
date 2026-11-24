@@ -1,3 +1,4 @@
+/* eslint-disable strict-fp/functional-core-boundary -- both exports are pure program analyzers; collectTsNodes uses an internal O(n) accumulator */
 import * as O from "fp-ts/lib/Option.js";
 import * as Ord from "fp-ts/lib/Ord.js";
 import * as RA from "fp-ts/lib/ReadonlyArray.js";

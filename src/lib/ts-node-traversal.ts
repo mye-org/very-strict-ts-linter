@@ -1,26 +1,47 @@
-import * as RA from "fp-ts/lib/ReadonlyArray.js";
-import { flow } from "fp-ts/lib/function.js";
 import * as ts from "typescript";
 
-const isVisitableChild = (node: ts.Node) => node.kind !== ts.SyntaxKind.JSDoc;
+const sourceFileNodesCache = new WeakMap<ts.SourceFile, ReadonlyArray<ts.Node>>();
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for mutually recursive AST walk
-const collectExpandedChildNodes = (node: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> =>
-  node.kind === ts.SyntaxKind.SyntaxList
-    ? collectChildDescendants(node, sf)
-    : [node, ...collectChildDescendants(node, sf)];
+const isVisitableNode = (node: ts.Node) => node.kind !== ts.SyntaxKind.JSDoc;
 
-const filterAndExpandChildren = (sf: ts.SourceFile) =>
-  flow(
-    RA.filter(isVisitableChild),
-    RA.flatMap((child: ts.Node) => collectExpandedChildNodes(child, sf)),
-  );
+const walkTsNodes = (
+  root: ts.Node,
+  isIncluded: (node: ts.Node) => boolean,
+) => {
+  // eslint-disable-next-line strict-fp/prefer-readonly-collections -- local accumulator for O(n) single-pass AST collection
+  const nodes: ts.Node[] = [];
+  const recordAndDescend = (node: ts.Node) => {
+    // eslint-disable-next-line strict-fp/no-mutation, strict-fp/prefer-fp-ts-array-methods -- O(n) single-pass AST collection
+    nodes.push(node);
+    ts.forEachChild(node, visit);
+    return 0;
+  };
+  const visit = (node: ts.Node) =>
+    isIncluded(node) ? recordAndDescend(node) : 0;
+  visit(root);
+  return nodes;
+};
 
-// eslint-disable-next-line strict-fp/no-explicit-return-type -- required by TS7023 for mutually recursive AST walk
-const collectChildDescendants = (node: ts.Node, sf: ts.SourceFile): ReadonlyArray<ts.Node> =>
-  filterAndExpandChildren(sf)(node.getChildren(sf));
+const computeSourceFileNodes = (sf: ts.SourceFile) => {
+  const nodes = walkTsNodes(sf, isVisitableNode);
+  sourceFileNodesCache.set(sf, nodes);
+  return nodes;
+};
 
-export const collectTsNodes = ((root: ts.Node, sf: ts.SourceFile) => [
-  root,
-  ...collectChildDescendants(root, sf),
-]) satisfies (root: ts.Node, sf: ts.SourceFile) => ReadonlyArray<ts.Node>;
+const collectSourceFileNodes = (sf: ts.SourceFile) =>
+  sourceFileNodesCache.get(sf) ?? computeSourceFileNodes(sf);
+
+export const collectTsNodesUntil = ((
+  root: ts.Node,
+  isStopNode: (node: ts.Node) => boolean,
+) =>
+  walkTsNodes(root, (node) => isVisitableNode(node) && !isStopNode(node))) satisfies (
+  root: ts.Node,
+  isStopNode: (node: ts.Node) => boolean,
+) => ReadonlyArray<ts.Node>;
+
+export const collectTsNodes = ((root: ts.Node, sf: ts.SourceFile) =>
+  root === sf ? collectSourceFileNodes(sf) : walkTsNodes(root, isVisitableNode)) satisfies (
+  root: ts.Node,
+  sf: ts.SourceFile,
+) => ReadonlyArray<ts.Node>;

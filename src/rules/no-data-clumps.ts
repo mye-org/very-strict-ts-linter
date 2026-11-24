@@ -4,6 +4,7 @@ import * as RA from "fp-ts/lib/ReadonlyArray.js";
 import * as RR from "fp-ts/lib/ReadonlyRecord.js";
 import { flow } from "fp-ts/lib/function.js";
 import { analyzeDataClumps, ClumpFinding } from "../analyzers/data-clump-analyzer.js";
+import { lazyOnce } from "../lib/lazy-once.js";
 import { createRule } from "../lib/rule-factory.js";
 import { makeLocationKey, resolveTsNodeOwnLocation } from "../lib/ts-node-location.js";
 
@@ -59,20 +60,17 @@ const reportFirstClump = (
   reportIfFound(node);
 };
 
-const runClumpCheck =
-  (env: ClumpCheckEnv) =>
-  (node: ClumpCandidateNode) => {
-    reportFirstClump(env)(
-      node,
-      analyzeDataClumps(env.services.program, {
-        minSize: env.options.minSize,
-        minOccurrences: env.options.minOccurrences,
-      }).byLocation,
-    );
-  };
+const resolveClumpsByLocation = (env: ClumpCheckEnv) =>
+  analyzeDataClumps(env.services.program, {
+    minSize: env.options.minSize,
+    minOccurrences: env.options.minOccurrences,
+  }).byLocation;
 
 const makeClumpListeners = (env: ClumpCheckEnv) => {
-  const check = runClumpCheck(env);
+  const getByLocation = flow(lazyOnce(() => resolveClumpsByLocation(env)));
+  const check = (node: ClumpCandidateNode) => {
+    reportFirstClump(env)(node, getByLocation());
+  };
   return {
     FunctionDeclaration: check,
     FunctionExpression: check,
